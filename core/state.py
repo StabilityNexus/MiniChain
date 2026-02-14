@@ -19,6 +19,9 @@ class State:
         return self.accounts[address]
 
     def verify_transaction_logic(self, tx):
+        if not tx.verify():
+            print(f"Error: Invalid signature for tx from {tx.sender[:8]}...")
+            return False
         sender_acc = self.get_account(tx.sender)
         if sender_acc['balance'] < tx.amount:
             print(f"Error: Insufficient balance for {tx.sender[:8]}...")
