@@ -17,6 +17,7 @@ class Block:
             "previous_hash": self.previous_hash,
             "transactions": [tx.to_dict() for tx in self.transactions],
             "timestamp": self.timestamp,
+            "difficulty": self.difficulty,
             "nonce": self.nonce,
             "hash": self.hash
         }
@@ -28,5 +29,6 @@ class Block:
             "previous_hash": self.previous_hash,
             "transactions": [tx.to_dict() for tx in self.transactions],
             "timestamp": self.timestamp,
+            "difficulty": self.difficulty,
             "nonce": self.nonce
         }
