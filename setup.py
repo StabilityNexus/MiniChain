@@ -5,8 +5,8 @@ setup(
     version="0.1.0",
     packages=find_packages(),
     install_requires=[
-        "pynacl",
-        "py-libp2p",
+        "pynacl>=1.5.0",
+        "py-libp2p>=0.2.0",
     ],
     entry_points={
         'console_scripts': [
