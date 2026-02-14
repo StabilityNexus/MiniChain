@@ -1,6 +1,4 @@
 class ContractMachine:
-
-class ContractMachine:
     """
     A minimal execution environment for Python-based smart contracts.
     """
