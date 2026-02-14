@@ -33,7 +33,7 @@ class Blockchain:
             return False
 
         # 3. Enforce Correct Difficulty
-        required_difficulty = block.difficulty or self.difficulty
+        required_difficulty = block.difficulty if block.difficulty is not None else self.difficulty
 
         if not computed_hash.startswith("0" * required_difficulty):
             print("Error: Invalid Proof of Work")
