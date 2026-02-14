@@ -25,14 +25,14 @@ if msg['data'] == 'increment':
     storage['counter'] = storage.get('counter', 0) + 1
 """
 
-        # Deploy
+        # Deploy contract
         tx_deploy = Transaction(self.pk, None, 0, 0, data=code)
         tx_deploy.sign(self.sk)
 
         contract_addr = self.state.apply_transaction(tx_deploy)
         self.assertTrue(isinstance(contract_addr, str))
 
-        # Call
+        # Call contract
         tx_call = Transaction(self.pk, contract_addr, 0, 1, data="increment")
         tx_call.sign(self.sk)
 
@@ -72,12 +72,14 @@ if msg['data'] == 'increment':
 raise Exception("boom")
 """
 
+        # Deploy contract
         tx_deploy = Transaction(self.pk, None, 0, 0, data=code)
         tx_deploy.sign(self.sk)
 
         contract_addr = self.state.apply_transaction(tx_deploy)
         self.assertTrue(isinstance(contract_addr, str))
 
+        # Call contract that raises
         tx_call = Transaction(self.pk, contract_addr, 0, 1, data="anything")
         tx_call.sign(self.sk)
 
@@ -85,8 +87,6 @@ raise Exception("boom")
         self.assertFalse(result)
 
         contract_acc = self.state.get_account(contract_addr)
-
-        # Ensure storage not mutated
         self.assertEqual(contract_acc["storage"], {})
 
     def test_redeploy_same_address(self):
@@ -94,14 +94,18 @@ raise Exception("boom")
 
         code = "storage['x'] = 1"
 
+        # First deploy
         tx1 = Transaction(self.pk, None, 0, 0, data=code)
         tx1.sign(self.sk)
 
         addr = self.state.apply_transaction(tx1)
         self.assertTrue(isinstance(addr, str))
 
-        # Attempt redeploy with same nonce (should fail)
-        tx2 = Transaction(self.pk, None, 0, 0, data=code)
+        # Use correct next nonce to bypass nonce validation
+        sender_after = self.state.get_account(self.pk)
+        next_nonce = sender_after["nonce"]
+
+        tx2 = Transaction(self.pk, None, 0, next_nonce, data=code)
         tx2.sign(self.sk)
 
         result = self.state.apply_transaction(tx2)
@@ -116,7 +120,7 @@ raise Exception("boom")
 
         code = "storage['x'] = 1"
 
-        # Deploy
+        # Deploy contract
         tx_deploy = Transaction(self.pk, None, 10, initial_nonce, data=code)
         tx_deploy.sign(self.sk)
 
@@ -127,7 +131,7 @@ raise Exception("boom")
         self.assertEqual(sender_after_deploy["nonce"], initial_nonce + 1)
         self.assertEqual(sender_after_deploy["balance"], initial_balance - 10)
 
-        # Call
+        # Call contract
         tx_call = Transaction(
             self.pk,
             contract_addr,
