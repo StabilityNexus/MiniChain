@@ -1,4 +1,5 @@
-from consensus.pow import calculate_hash
+from consensus.pow import calculate_hash, mine_block
+from core.block import Block
 
 
 class Blockchain:
