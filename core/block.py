@@ -1,13 +1,14 @@
 import time
 
 class Block:
-    def __init__(self, index, previous_hash, transactions, timestamp=None):
+    def __init__(self, index, previous_hash, transactions, timestamp=None, difficulty=None):
         self.index = index
         self.previous_hash = previous_hash
         self.transactions = transactions
-        self.timestamp = timestamp or time.time()
+        self.timestamp = time.time() if timestamp is None else timestamp
         self.nonce = 0
         self.hash = None
+        self.difficulty = difficulty
 
     def to_dict(self):
         """Full block data for serialization/transport."""
