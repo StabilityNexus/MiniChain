@@ -139,11 +139,12 @@ if msg['data']:
     )
     
     mined_block_2 = mine_block(block_2)
-    chain.add_block(mined_block_2)
-    
-    # Apply transactions
-    for tx in mined_block_2.transactions:
-        state.apply_transaction(tx)
+    if chain.add_block(mined_block_2):
+        print(f"    Block #{mined_block_2.index} added!")
+        for tx in mined_block_2.transactions:
+            state.apply_transaction(tx)
+    else:
+        print("ERROR: Block 2 rejected by chain!")
 
     # ------------------------------------------------------------------
     # FINAL CHECKS
