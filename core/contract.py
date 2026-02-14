@@ -1,5 +1,4 @@
-import sys
-from io import StringIO
+class ContractMachine:
 
 class ContractMachine:
     """
