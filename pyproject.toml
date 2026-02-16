@@ -1,0 +1,39 @@
+[build-system]
+requires = ["hatchling>=1.24"]
+build-backend = "hatchling.build"
+
+[project]
+name = "minichain"
+version = "0.1.0"
+description = "Minimal, research-oriented blockchain in Python"
+readme = "README.md"
+requires-python = ">=3.11"
+authors = [{ name = "MiniChain Contributors" }]
+dependencies = [
+  "PyNaCl>=1.5.0",
+]
+
+[project.optional-dependencies]
+network = [
+  "py-libp2p>=0.2.0",
+]
+dev = [
+  "pytest>=8.0",
+  "ruff>=0.7.0",
+]
+
+[project.scripts]
+minichain-node = "minichain.__main__:main"
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+addopts = "-q"
+testpaths = ["tests"]
+pythonpath = ["src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I"]

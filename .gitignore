@@ -258,6 +258,17 @@ pythontex-files-*/
 # easy-todo
 *.lod
 
+# MiniChain local planning docs (do not commit)
+issues.md
+architectureProposal.md
+
+# Python caches and virtualenvs
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.venv/
+
 # xcolor
 *.xcp
 
@@ -324,3 +335,6 @@ TSWLatexianTemp*
 # option is specified. Footnotes are the stored in a file with suffix Notes.bib.
 # Uncomment the next line to have this generated file ignored.
 #*Notes.bib
+
+
+docs/
