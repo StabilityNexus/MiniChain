@@ -14,6 +14,7 @@ COMPONENT_MODULES = [
     "network",
     "storage",
     "node",
+    "serialization",
 ]
 
 
