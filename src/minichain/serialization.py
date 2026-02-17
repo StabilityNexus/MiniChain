@@ -25,7 +25,9 @@ BLOCK_HEADER_FIELD_ORDER = (
 )
 
 
-def _to_field_map(value: Mapping[str, Any] | object, field_order: tuple[str, ...]) -> dict[str, Any]:
+def _to_field_map(
+    value: Mapping[str, Any] | object, field_order: tuple[str, ...]
+) -> dict[str, Any]:
     if isinstance(value, Mapping):
         source = dict(value)
     else:
