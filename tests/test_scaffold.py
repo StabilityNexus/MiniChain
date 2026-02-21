@@ -16,6 +16,7 @@ COMPONENT_MODULES = [
     "node",
     "serialization",
     "merkle",
+    "genesis",
 ]
 
 
