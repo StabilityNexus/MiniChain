@@ -1,0 +1,207 @@
+# Enables IDE autocompletion for this config file
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json 
+
+# Language for CodeRabbit's review comments
+language: en
+
+# Enable experimental features (currently not using any specific early_access features)
+early_access: true
+
+chat:
+  # CodeRabbit will automatically respond to @coderabbitai mentions in PR comments
+  auto_reply: true
+
+issue_enrichment:
+  labeling:
+    auto_apply_labels: true
+    labeling_instructions:
+      - label: bug
+        instructions: Issues reporting bugs, errors, crashes, incorrect behavior, or unexpected results. This includes runtime errors, logic errors, broken functionality, regressions, and any deviation from expected or documented behavior.
+      - label: enhancement
+        instructions: Feature requests, improvements to existing functionality, performance optimizations, refactoring suggestions, UI/UX enhancements, and any suggestions to make the project better or add new capabilities.
+      - label: documentation
+        instructions: Documentation updates, additions, corrections, or clarifications needed. This includes missing docs, outdated information, unclear instructions, API documentation, code examples, README improvements, and any requests for better explanations or guides.
+  planning:
+    enabled: true
+    auto_planning:
+      enabled: true
+      labels:
+        - "plan-me" # Auto-plan issues with this label
+        - "feature" # Also auto-plan these
+        - "!no-plan" # Never auto-plan issues with this label
+
+reviews:
+  profile: assertive # Options: chill (focuses on significant issues, less nitpicky about style), assertive (more thorough, flags style issues and minor improvements too)
+
+  auto_review:
+    # Automatically trigger reviews when PRs are opened or updated
+    enabled: true
+    # Skip auto-review if PR title contains these keywords
+    ignore_title_keywords:
+      - "WIP"
+    # Don't auto-review draft PRs
+    drafts: false
+    # Only auto-review PRs targeting these branches
+    base_branches:
+      - main
+      - develop
+
+  # Include a high-level summary at the start of each review
+  high_level_summary: true
+
+  # Generate sequence diagrams for complex code flows
+  sequence_diagrams: true
+
+  # Include poems in reviews
+  poem: true
+
+  # Show review completion status
+  review_status: true
+
+  # Keep the walkthrough section expanded by default
+  collapse_walkthrough: false
+
+  # Include summary of all changed files
+  changed_files_summary: true
+
+  # Automatically request changes on the PR (just leave comments)
+  request_changes_workflow: true
+
+  # Pre-merge checks to enforce before merging PRs
+  pre_merge_checks:
+    description:
+      # Validate that PR has a proper description
+      mode: warning # Options: off, warning, error
+    docstrings:
+      # Disable docstring coverage checks (let's assume we don't need them)
+      mode: off
+
+  # Exclude these paths from reviews (build artifacts and dependencies)
+  path_filters:
+    - "!**/__pycache__/**" # Python cache
+    - "!**/*.pyc" # Python compiled files
+    - "!**/venv/**" # Python virtual environment
+    - "!**/.venv/**" # Python virtual environment
+    - "!**/.pytest_cache/**" # Pytest cache
+    - "!**/.mypy_cache/**" # Mypy cache
+    - "!**/dist/**" # Build output
+    - "!**/build/**" # Build directory
+    - "!**/*.egg-info/**" # Python package metadata
+
+  # Use the following tools when reviewing
+  tools:
+    shellcheck:
+      enabled: true
+    ruff:
+      enabled: true
+    markdownlint:
+      enabled: true
+    github-checks:
+      enabled: true
+      timeout_ms: 90000
+    languagetool:
+      enabled: true
+      enabled_only: false
+      level: default
+    biome:
+      enabled: true
+    hadolint:
+      enabled: true
+    swiftlint:
+      enabled: true
+    phpstan:
+      enabled: true
+      level: default
+    golangci-lint:
+      enabled: true
+    yamllint:
+      enabled: true
+    gitleaks:
+      enabled: true
+    checkov:
+      enabled: true
+    detekt:
+      enabled: true
+    eslint:
+      enabled: true
+
+  # Apply the following labels to PRs
+  labeling_instructions:
+    - label: Python Lang
+      instructions: Apply when the PR/MR contains changes to python source-code
+    - label: Documentation
+      instructions: >-
+        Apply whenever project documentation (namely markdown source-code) is
+        updated by the PR/MR
+    - label: Linter
+      instructions: >-
+        Apply when the purpose of the PR/MR is related to fixing the feedback
+        from a linter
+
+  # Review instructions that apply to all files
+  instructions: >-
+    - Verify that documentation and comments are free of spelling mistakes
+    - Ensure that test code is automated, comprehensive, and follows testing best practices
+    - Verify that all critical functionality is covered by tests
+    - Confirm that the code meets the project's requirements and objectives
+    - Confirm that copyright years are up-to date whenever a file is changed
+    - Point out redundant obvious comments that do not add clarity to the code
+    - Ensure that comments are concise and suggest more concise comment statements if possible
+    - Discourage usage of verbose comment styles such as NatSpec
+    - Look for code duplication
+    - Suggest code completions when:
+        - seeing a TODO comment
+        - seeing a FIXME comment
+
+  # Custom review instructions for specific file patterns
+  path_instructions:
+    # Python files (Blockchain infrastructure)
+    - path: "**/*.{py}"
+      instructions: |
+        Python:
+        - Check for major PEP 8 violations and Python best practices.
+        - Ensure type hints are used where appropriate (PEP 484).
+        - Verify blockchain-specific code follows best practices for:
+            - Cryptographic operations (use established libraries like cryptography, pycryptodome)
+            - Consensus algorithm implementations
+            - P2P networking code
+            - Block validation and chain verification logic
+            - Transaction pool management
+            - Wallet and key management security
+        - Check for proper error handling in network operations.
+        - Ensure concurrency/threading is handled safely (asyncio, threading).
+        - Verify database operations (likely SQLite/PostgreSQL for chain data) are optimized.
+        - Check for memory efficiency in blockchain data structures.
+        - Ensure proper logging is implemented for debugging node operations.
+        - Validate configuration management follows secure practices.
+        - Check for potential DoS vulnerabilities in network handlers.
+        - Ensure unit tests cover edge cases in blockchain logic (forks, reorgs, invalid blocks).
+
+    # Python test files
+    - path: "**/test_*.py"
+      instructions: |
+        Review test files for:
+        - Comprehensive coverage of blockchain components (blocks, transactions, consensus, networking)
+        - Proper use of pytest fixtures for test isolation
+        - Async behavior is properly tested (pytest-asyncio)
+        - Mocking of network calls and cryptographic operations
+        - Test descriptions are sufficiently detailed to clarify the purpose of each test
+        - The tests are not tautological
+        - Edge cases in blockchain scenarios (empty blocks, large transactions, invalid signatures)
+
+    # Configuration files
+    - path: "**/*.yaml"
+      instructions: |
+        Review YAML configuration files for:
+        - Proper syntax and formatting
+        - No hardcoded secrets or sensitive data
+        - Sensible default values for blockchain parameters
+
+    # Documentation
+    - path: "**/*.md"
+      instructions: |
+        Review markdown documentation for:
+        - Clear setup instructions for running a node
+        - Architecture documentation explaining the blockchain design
+        - API documentation for any exposed interfaces
+        - Troubleshooting guides for common issues
