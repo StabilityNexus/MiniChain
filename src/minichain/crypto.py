@@ -34,8 +34,14 @@ def generate_key_pair() -> tuple[SigningKey, VerifyKey]:
 def derive_address(verify_key: VerifyKey) -> str:
     """Derive a 20-byte address from a verify key as lowercase hex."""
     _require_nacl()
-    digest = blake2b(verify_key.encode(), encoder=RawEncoder)
+    digest = blake2b_digest(verify_key.encode())
     return digest[:ADDRESS_LENGTH_BYTES].hex()
+
+
+def blake2b_digest(data: bytes) -> bytes:
+    """Compute a 32-byte BLAKE2b digest."""
+    _require_nacl()
+    return blake2b(data, encoder=RawEncoder)
 
 
 def serialize_signing_key(signing_key: SigningKey) -> str:
