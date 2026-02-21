@@ -53,3 +53,11 @@ def test_mismatched_public_key_and_sender_is_rejected() -> None:
     tampered = replace(tx, public_key=serialize_verify_key(other_verify_key))
 
     assert not tampered.verify()
+
+
+def test_transaction_id_changes_when_signature_changes() -> None:
+    tx, _ = _build_signed_transaction()
+    original_id = tx.transaction_id()
+    tampered = replace(tx, signature="00" * 64)
+
+    assert tampered.transaction_id() != original_id
