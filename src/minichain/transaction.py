@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from minichain.crypto import (
+    blake2b_digest,
     derive_address,
     deserialize_verify_key,
     serialize_verify_key,
@@ -51,6 +52,15 @@ class Transaction:
     def signing_bytes(self) -> bytes:
         """Return canonical bytes for signature generation/verification."""
         return serialize_transaction(self.signing_payload())
+
+    def transaction_id(self) -> bytes:
+        """Return a deterministic transaction hash for Merkle commitments."""
+        digest_input = bytearray(self.signing_bytes())
+        if self.signature:
+            digest_input.extend(bytes.fromhex(self.signature))
+        if self.public_key:
+            digest_input.extend(bytes.fromhex(self.public_key))
+        return blake2b_digest(bytes(digest_input))
 
     def _validate_common_fields(self) -> bool:
         if not _is_lower_hex(self.sender, ADDRESS_HEX_LENGTH):
