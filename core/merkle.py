@@ -1,18 +1,5 @@
-import hashlib
 import json
-from dataclasses import dataclass
-
-
-def _sha256(data: str) -> str:
-    return hashlib.sha256(data.encode()).hexdigest()
-
-
-@dataclass
-class MerkleProof:
-    tx_hash: str
-    merkle_root: str
-    proof: list[dict]
-    verification_status: bool
+from core.utils import _sha256
 
 
 class MerkleTree:
@@ -38,7 +25,7 @@ class MerkleTree:
         tree = [self.tx_hashes[:]]
         
         while len(tree[-1]) > 1:
-            current_level = tree[-1]
+            current_level = list(tree[-1])
             if len(current_level) % 2 != 0:
                 current_level.append(current_level[-1])
             

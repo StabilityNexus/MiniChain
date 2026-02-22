@@ -30,13 +30,26 @@ class Blockchain:
             self._create_genesis_block()
             return
 
+        temp_file = None
         try:
             with open(self._chain_file, 'r') as f:
                 data = json.load(f)
 
             self.chain = []
             for block_data in data.get("chain", []):
-                transactions = [Transaction(**tx) for tx in block_data.get("transactions", [])]
+                transactions = []
+                for tx in block_data.get("transactions", []):
+                    t = Transaction(
+                        sender=tx["sender"],
+                        receiver=tx.get("receiver"),
+                        amount=tx["amount"],
+                        nonce=tx["nonce"],
+                        data=tx.get("data"),
+                        signature=tx.get("signature")
+                    )
+                    t.timestamp = tx.get("timestamp", t.timestamp)
+                    transactions.append(t)
+                
                 block = Block(
                     index=block_data["index"],
                     previous_hash=block_data["previous_hash"],
@@ -48,16 +61,50 @@ class Blockchain:
                 block.hash = block_data.get("hash")
                 self.chain.append(block)
 
-            if data.get("state"):
-                self.state = State.from_dict(data["state"])
+            for i in range(1, len(self.chain)):
+                prev_block = self.chain[i - 1]
+                curr_block = self.chain[i]
+                
+                if curr_block.previous_hash != prev_block.hash:
+                    logger.warning(f"Loaded chain has invalid previous_hash at block {i}. Rejecting loaded chain.")
+                    self.chain = []
+                    break
+                
+                if curr_block.hash != calculate_hash(curr_block.to_header_dict()):
+                    logger.warning(f"Loaded chain has invalid hash at block {i}. Rejecting loaded chain.")
+                    self.chain = []
+                    break
+                
+                expected_merkle = curr_block.merkle_root
+                computed_merkle = Block(
+                    index=curr_block.index,
+                    previous_hash=curr_block.previous_hash,
+                    transactions=curr_block.transactions,
+                    timestamp=curr_block.timestamp,
+                    difficulty=curr_block.difficulty
+                ).merkle_root
+                
+                if expected_merkle != computed_merkle:
+                    logger.warning(f"Loaded chain has invalid merkle_root at block {i}. Rejecting loaded chain.")
+                    self.chain = []
+                    break
+            else:
+                if len(self.chain) == 0:
+                    self._create_genesis_block()
+                elif data.get("state"):
+                    self.state = State.from_dict(data["state"])
+                    logger.info(f"Loaded chain with {len(self.chain)} blocks from {self._chain_file}")
+                    return
 
-            logger.info(f"Loaded chain with {len(self.chain)} blocks from {self._chain_file}")
+            if not self.chain:
+                self._create_genesis_block()
 
         except Exception as e:
             logger.warning(f"Failed to load chain from {self._chain_file}: {e}. Creating new genesis block.")
             self._create_genesis_block()
 
     def save_to_file(self):
+        temp_file = None
         try:
             data = {
                 "chain": [
@@ -85,7 +132,7 @@ class Blockchain:
 
         except Exception as e:
             logger.error(f"Failed to save chain to {self._chain_file}: {e}")
-            if os.path.exists(temp_file):
+            if temp_file is not None and os.path.exists(temp_file):
                 os.remove(temp_file)
 
     def _create_genesis_block(self):

@@ -102,6 +102,16 @@ class TestMerkleTree(unittest.TestCase):
         result = MerkleTree.verify_proof(tampered_tx_hash, proof, root)
         self.assertFalse(result)
 
+    def test_calculate_merkle_root_matches_tree(self):
+        txs = [
+            {"sender": "alice", "receiver": "bob", "amount": 10},
+            {"sender": "bob", "receiver": "charlie", "amount": 5},
+            {"sender": "charlie", "receiver": "dave", "amount": 3}
+        ]
+        root1 = calculate_merkle_root(txs)
+        root2 = MerkleTree(txs).get_merkle_root()
+        self.assertEqual(root1, root2)
+
     def test_invalid_index(self):
         txs = [
             {"sender": "alice", "receiver": "bob", "amount": 10},

@@ -1,13 +1,9 @@
 import time
-import hashlib
 import json
 from typing import List, Optional
 from core.transaction import Transaction
 from core.merkle import MerkleTree
-
-
-def _sha256(data: str) -> str:
-    return hashlib.sha256(data.encode()).hexdigest()
+from core.utils import _sha256
 
 
 class Block:

@@ -1,12 +1,21 @@
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Query
 from pydantic import BaseModel
-from typing import List, Optional
+from typing import List, Optional, Union
 
 from core import Blockchain, Block, State, Transaction
 from core.merkle import MerkleTree
 from node import Mempool
+from main import mine_and_process_block
 
-app = FastAPI(title="MiniChain API", description="SPV-enabled blockchain API")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    yield
+    blockchain.save_to_file()
+
+
+app = FastAPI(title="MiniChain API", description="SPV-enabled blockchain API", lifespan=lifespan)
 
 blockchain = Blockchain()
 mempool = Mempool()
@@ -14,10 +23,10 @@ mempool = Mempool()
 
 class TransactionResponse(BaseModel):
     sender: str
-    receiver: str
+    receiver: Optional[str] = None
     amount: int
     nonce: int
-    data: Optional[dict] = None
+    data: Optional[Union[dict, str]] = None
     timestamp: int
     signature: Optional[str] = None
     hash: Optional[str] = None
@@ -49,11 +58,6 @@ class ChainInfo(BaseModel):
     blocks: List[dict]
 
 
-@app.on_event("shutdown")
-def shutdown_event():
-    blockchain.save_to_file()
-
-
 @app.get("/")
 def root():
     return {"message": "MiniChain API with SPV Support"}
@@ -61,18 +65,24 @@ def root():
 
 @app.get("/chain", response_model=ChainInfo)
 def get_chain():
+    with blockchain._lock:
+        chain_copy = list(blockchain.chain)
+    
     return {
-        "length": len(blockchain.chain),
-        "blocks": [block.to_dict() for block in blockchain.chain]
+        "length": len(chain_copy),
+        "blocks": [block.to_dict() for block in chain_copy]
     }
 
 
 @app.get("/block/{block_index}", response_model=BlockResponse)
 def get_block(block_index: int):
-    if block_index < 0 or block_index >= len(blockchain.chain):
-        raise HTTPException(status_code=404, detail="Block not found")
+    with blockchain._lock:
+        if block_index < 0 or block_index >= len(blockchain.chain):
+            raise HTTPException(status_code=404, detail="Block not found")
+        
+        block = blockchain.chain[block_index]
+        chain_length = len(blockchain.chain)
     
-    block = blockchain.chain[block_index]
     block_dict = block.to_dict()
     
     merkle_proofs = {}
@@ -94,10 +104,11 @@ def verify_transaction(
     tx_hash: str = Query(..., description="Transaction hash to verify"),
     block_index: int = Query(..., description="Block index to verify against")
 ):
-    if block_index < 0 or block_index >= len(blockchain.chain):
-        raise HTTPException(status_code=404, detail="Block not found")
-    
-    block = blockchain.chain[block_index]
+    with blockchain._lock:
+        if block_index < 0 or block_index >= len(blockchain.chain):
+            raise HTTPException(status_code=404, detail="Block not found")
+        
+        block = blockchain.chain[block_index]
     
     tx_found = False
     tx_index = -1
@@ -145,8 +156,6 @@ def verify_transaction(
 
 @app.post("/mine")
 def mine_block_endpoint():
-    from main import mine_and_process_block
-    
     pending_nonce_map = {}
     
     result = mine_and_process_block(blockchain, mempool, pending_nonce_map)
