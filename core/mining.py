@@ -1,7 +1,7 @@
 import logging
 import re
 from core import Transaction, Block
-from consensus import mine_block
+from consensus import mine_block, MiningExceededError
 
 
 logger = logging.getLogger(__name__)
@@ -10,12 +10,8 @@ BURN_ADDRESS = "0" * 40
 
 
 def mine_and_process_block(chain, mempool, pending_nonce_map):
-    """
-    Mine block and let Blockchain handle validation + state updates.
-    DO NOT manually apply transactions again.
-    """
-
     pending_txs = mempool.get_transactions_for_block()
+    tx_hashes = [mempool._get_tx_id(tx) for tx in pending_txs]
 
     block = Block(
         index=chain.last_block.index + 1,
@@ -23,7 +19,14 @@ def mine_and_process_block(chain, mempool, pending_nonce_map):
         transactions=pending_txs,
     )
 
-    mined_block = mine_block(block)
+    try:
+        mined_block = mine_block(block)
+    except MiningExceededError:
+        for tx in pending_txs:
+            mempool._pending_txs.append(tx)
+            mempool._seen_tx_ids.update(tx_hashes)
+        logger.warning("Mining failed, transactions returned to mempool")
+        return None, []
 
     if not hasattr(mined_block, "miner"):
         mined_block.miner = BURN_ADDRESS
@@ -51,7 +54,10 @@ def mine_and_process_block(chain, mempool, pending_nonce_map):
 
         return mined_block, deployed_contracts
     else:
-        logger.error("Block rejected by chain")
+        for tx in pending_txs:
+            mempool._pending_txs.append(tx)
+            mempool._seen_tx_ids.update(tx_hashes)
+        logger.error("Block rejected by chain, transactions returned to mempool")
         return None, []
 
 

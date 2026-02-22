@@ -49,6 +49,11 @@ class TestMerkleTree(unittest.TestCase):
         tree = MerkleTree(txs)
         root = tree.get_merkle_root()
         self.assertIsNotNone(root)
+        
+        for i in range(len(txs)):
+            proof = tree.get_proof(i)
+            result = MerkleTree.verify_proof(tree.tx_hashes[i], proof, root)
+            self.assertTrue(result)
 
     def test_proof_generation(self):
         txs = [

@@ -1,7 +1,7 @@
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Query
 from pydantic import BaseModel
-from typing import List, Optional, Union
+from typing import List, Optional, Union, Dict
 
 from core import Blockchain, Block, State, Transaction
 from core.merkle import MerkleTree
@@ -9,9 +9,9 @@ from node import Mempool
 from core.mining import mine_and_process_block
 
 
-blockchain: Blockchain = None
-mempool: Mempool = None
-pending_nonce_map = {}
+blockchain: Optional[Blockchain] = None
+mempool: Optional[Mempool] = None
+pending_nonce_map: Dict[str, int] = {}
 
 
 @asynccontextmanager
@@ -70,8 +70,7 @@ def root():
 
 @app.get("/chain", response_model=ChainInfo)
 def get_chain():
-    with blockchain._lock:
-        chain_copy = list(blockchain.chain)
+    chain_copy = blockchain.get_chain_copy()
     
     return {
         "length": len(chain_copy),
@@ -81,11 +80,12 @@ def get_chain():
 
 @app.get("/block/{block_index}", response_model=BlockResponse)
 def get_block(block_index: int):
-    with blockchain._lock:
-        if block_index < 0 or block_index >= len(blockchain.chain):
-            raise HTTPException(status_code=404, detail="Block not found")
-        
-        block = blockchain.chain[block_index]
+    chain_copy = blockchain.get_chain_copy()
+    
+    if block_index < 0 or block_index >= len(chain_copy):
+        raise HTTPException(status_code=404, detail="Block not found")
+    
+    block = chain_copy[block_index]
     
     block_dict = block.to_dict()
     
@@ -108,11 +108,12 @@ def verify_transaction(
     tx_hash: str = Query(..., description="Transaction hash to verify"),
     block_index: int = Query(..., description="Block index to verify against")
 ):
-    with blockchain._lock:
-        if block_index < 0 or block_index >= len(blockchain.chain):
-            raise HTTPException(status_code=404, detail="Block not found")
-        
-        block = blockchain.chain[block_index]
+    chain_copy = blockchain.get_chain_copy()
+    
+    if block_index < 0 or block_index >= len(chain_copy):
+        raise HTTPException(status_code=404, detail="Block not found")
+    
+    block = chain_copy[block_index]
     
     tx_found = False
     tx_index = -1
@@ -165,7 +166,6 @@ def mine_block_endpoint():
     block, *_ = mine_and_process_block(blockchain, mempool, pending_nonce_map)
     
     if block:
-        blockchain.save_to_file()
         return {"message": "Block mined successfully", "block": block.to_dict()}
     else:
         raise HTTPException(status_code=400, detail="Failed to mine block")

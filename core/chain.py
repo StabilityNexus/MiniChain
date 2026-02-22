@@ -25,6 +25,10 @@ class Blockchain:
         self._chain_file = chain_file or DEFAULT_CHAIN_FILE
         self._load_from_file()
 
+    def get_chain_copy(self):
+        with self._lock:
+            return list(self.chain)
+
     def _load_from_file(self):
         if not os.path.exists(self._chain_file):
             self._create_genesis_block()
@@ -62,12 +66,14 @@ class Blockchain:
 
             if len(self.chain) == 0:
                 self._create_genesis_block()
+                logger.info(f"Loaded chain with {len(self.chain)} blocks from {self._chain_file}")
                 return
 
             genesis = self.chain[0]
             if genesis.hash != "0" * 64 or genesis.previous_hash != "0":
                 logger.warning("Loaded chain has invalid genesis block. Rejecting loaded chain.")
                 self._create_genesis_block()
+                logger.info(f"Created new genesis block after rejecting invalid chain")
                 return
 
             for i in range(1, len(self.chain)):
@@ -95,36 +101,38 @@ class Blockchain:
             else:
                 if data.get("state"):
                     self.state = State.from_dict(data["state"])
-                    logger.info(f"Loaded chain with {len(self.chain)} blocks from {self._chain_file}")
-                    return
+                logger.info(f"Loaded chain with {len(self.chain)} blocks from {self._chain_file}")
+                return
 
             if not self.chain:
                 self._create_genesis_block()
+                logger.info(f"Created new genesis block after rejecting invalid chain")
 
         except Exception as e:
             logger.warning(f"Failed to load chain from {self._chain_file}: {e}. Creating new genesis block.")
             self._create_genesis_block()
 
-    def save_to_file(self):
+    def _serialize_chain_data(self):
+        return {
+            "chain": [
+                {
+                    "index": block.index,
+                    "previous_hash": block.previous_hash,
+                    "merkle_root": block.merkle_root,
+                    "timestamp": block.timestamp,
+                    "difficulty": block.difficulty,
+                    "nonce": block.nonce,
+                    "hash": block.hash,
+                    "transactions": [tx.to_dict() for tx in block.transactions]
+                }
+                for block in self.chain
+            ],
+            "state": self.state.to_dict() if hasattr(self.state, 'to_dict') else {}
+        }
+
+    def _save_to_file_unlocked(self, data):
         temp_file = None
         try:
-            data = {
-                "chain": [
-                    {
-                        "index": block.index,
-                        "previous_hash": block.previous_hash,
-                        "merkle_root": block.merkle_root,
-                        "timestamp": block.timestamp,
-                        "difficulty": block.difficulty,
-                        "nonce": block.nonce,
-                        "hash": block.hash,
-                        "transactions": [tx.to_dict() for tx in block.transactions]
-                    }
-                    for block in self.chain
-                ],
-                "state": self.state.to_dict() if hasattr(self.state, 'to_dict') else {}
-            }
-
             temp_file = self._chain_file + ".tmp"
             with open(temp_file, 'w') as f:
                 json.dump(data, f, indent=2)
@@ -137,10 +145,12 @@ class Blockchain:
             if temp_file is not None and os.path.exists(temp_file):
                 os.remove(temp_file)
 
+    def save_to_file(self):
+        with self._lock:
+            data = self._serialize_chain_data()
+        self._save_to_file_unlocked(data)
+
     def _create_genesis_block(self):
-        """
-        Creates the genesis block with a fixed hash.
-        """
         genesis_block = Block(
             index=0,
             previous_hash="0",
@@ -151,18 +161,10 @@ class Blockchain:
 
     @property
     def last_block(self):
-        """
-        Returns the most recent block in the chain.
-        """
         with self._lock:
             return self.chain[-1]
 
     def add_block(self, block):
-        """
-        Validates and adds a block to the chain if all transactions succeed.
-        Uses a copied State to ensure atomic validation.
-        """
-
         with self._lock:
             if block.previous_hash != self.last_block.hash:
                 logger.warning("Block %s rejected: Invalid previous hash %s != %s", block.index, block.previous_hash, self.last_block.hash)
@@ -188,30 +190,7 @@ class Blockchain:
             self.state = temp_state
             self.chain.append(block)
             
-            data = {
-                "chain": [
-                    {
-                        "index": b.index,
-                        "previous_hash": b.previous_hash,
-                        "merkle_root": b.merkle_root,
-                        "timestamp": b.timestamp,
-                        "difficulty": b.difficulty,
-                        "nonce": b.nonce,
-                        "hash": b.hash,
-                        "transactions": [tx.to_dict() for tx in b.transactions]
-                    }
-                    for b in self.chain
-                ],
-                "state": self.state.to_dict() if hasattr(self.state, 'to_dict') else {}
-            }
+            data = self._serialize_chain_data()
 
-        try:
-            temp_file = self._chain_file + ".tmp"
-            with open(temp_file, 'w') as f:
-                json.dump(data, f, indent=2)
-            os.replace(temp_file, self._chain_file)
-            logger.info(f"Saved chain with {len(self.chain)} blocks to {self._chain_file}")
-        except Exception as e:
-            logger.error(f"Failed to save chain to {self._chain_file}: {e}")
-
+        self._save_to_file_unlocked(data)
         return True
