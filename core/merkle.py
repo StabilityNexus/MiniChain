@@ -61,6 +61,11 @@ class MerkleTree:
                     "hash": level[sibling_idx],
                     "position": "left" if is_right else "right"
                 })
+            else:
+                proof.append({
+                    "hash": level[index],
+                    "position": "left" if is_right else "right"
+                })
 
             index //= 2
 

@@ -34,6 +34,11 @@ class TestMerkleTree(unittest.TestCase):
         proof1 = tree.get_proof(1)
         self.assertIsNotNone(proof0)
         self.assertIsNotNone(proof1)
+        
+        result0 = MerkleTree.verify_proof(tree.tx_hashes[0], proof0, root)
+        result1 = MerkleTree.verify_proof(tree.tx_hashes[1], proof1, root)
+        self.assertTrue(result0)
+        self.assertTrue(result1)
 
     def test_odd_transaction_count(self):
         txs = [

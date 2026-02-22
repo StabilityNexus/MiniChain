@@ -6,19 +6,24 @@ from typing import List, Optional, Union
 from core import Blockchain, Block, State, Transaction
 from core.merkle import MerkleTree
 from node import Mempool
-from main import mine_and_process_block
+from core.mining import mine_and_process_block
+
+
+blockchain: Blockchain = None
+mempool: Mempool = None
+pending_nonce_map = {}
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    global blockchain, mempool
+    blockchain = Blockchain()
+    mempool = Mempool()
     yield
     blockchain.save_to_file()
 
 
 app = FastAPI(title="MiniChain API", description="SPV-enabled blockchain API", lifespan=lifespan)
-
-blockchain = Blockchain()
-mempool = Mempool()
 
 
 class TransactionResponse(BaseModel):
@@ -81,12 +86,11 @@ def get_block(block_index: int):
             raise HTTPException(status_code=404, detail="Block not found")
         
         block = blockchain.chain[block_index]
-        chain_length = len(blockchain.chain)
     
     block_dict = block.to_dict()
     
     merkle_proofs = {}
-    for i, tx in enumerate(block.transactions):
+    for i, _ in enumerate(block.transactions):
         tx_hash = block.get_tx_hash(i)
         if tx_hash:
             proof = block.get_merkle_proof(i)
@@ -112,7 +116,7 @@ def verify_transaction(
     
     tx_found = False
     tx_index = -1
-    for i, tx in enumerate(block.transactions):
+    for i, _ in enumerate(block.transactions):
         tx_hash_computed = block.get_tx_hash(i)
         if tx_hash_computed == tx_hash:
             tx_found = True
@@ -156,13 +160,13 @@ def verify_transaction(
 
 @app.post("/mine")
 def mine_block_endpoint():
-    pending_nonce_map = {}
+    global pending_nonce_map
     
-    result = mine_and_process_block(blockchain, mempool, pending_nonce_map)
+    block, *_ = mine_and_process_block(blockchain, mempool, pending_nonce_map)
     
-    if result[0]:
+    if block:
         blockchain.save_to_file()
-        return {"message": "Block mined successfully", "block": result[0].to_dict()}
+        return {"message": "Block mined successfully", "block": block.to_dict()}
     else:
         raise HTTPException(status_code=400, detail="Failed to mine block")
 
