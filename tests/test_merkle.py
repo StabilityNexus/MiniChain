@@ -13,6 +13,13 @@ class TestMerkleTree(unittest.TestCase):
         root = tree.get_merkle_root()
         self.assertIsNotNone(root)
         self.assertEqual(len(root), 64)
+        
+        proof = tree.get_proof(0)
+        self.assertEqual(proof, [])
+        
+        tx_hash = tree.tx_hashes[0]
+        result = MerkleTree.verify_proof(tx_hash, proof, root)
+        self.assertTrue(result)
 
     def test_two_transactions(self):
         txs = [
@@ -79,6 +86,20 @@ class TestMerkleTree(unittest.TestCase):
         proof = tree.get_proof(0)
         
         result = MerkleTree.verify_proof(tx_hash, proof, wrong_root)
+        self.assertFalse(result)
+
+    def test_proof_verification_fails_wrong_tx_hash(self):
+        txs = [
+            {"sender": "alice", "receiver": "bob", "amount": 10},
+            {"sender": "bob", "receiver": "charlie", "amount": 5}
+        ]
+        tree = MerkleTree(txs)
+        
+        root = tree.get_merkle_root()
+        proof = tree.get_proof(0)
+        
+        tampered_tx_hash = "a" * 64
+        result = MerkleTree.verify_proof(tampered_tx_hash, proof, root)
         self.assertFalse(result)
 
     def test_invalid_index(self):

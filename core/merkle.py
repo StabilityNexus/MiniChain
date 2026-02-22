@@ -1,6 +1,5 @@
 import hashlib
 import json
-from typing import List, Optional, Tuple
 from dataclasses import dataclass
 
 
@@ -12,24 +11,27 @@ def _sha256(data: str) -> str:
 class MerkleProof:
     tx_hash: str
     merkle_root: str
-    proof: List[dict]
+    proof: list[dict]
     verification_status: bool
 
 
 class MerkleTree:
-    def __init__(self, transactions: List[dict]):
+    LEAF_PREFIX = "leaf:"
+    NODE_PREFIX = "node:"
+
+    def __init__(self, transactions: list[dict]):
         self.transactions = transactions
         self.tx_hashes = self._hash_transactions()
         self.tree = self._build_tree()
         self.root = self._get_root()
 
-    def _hash_transactions(self) -> List[str]:
+    def _hash_transactions(self) -> list[str]:
         return [
-            _sha256(json.dumps(tx, sort_keys=True))
+            _sha256(self.LEAF_PREFIX + json.dumps(tx, sort_keys=True))
             for tx in self.transactions
         ]
 
-    def _build_tree(self) -> List[List[str]]:
+    def _build_tree(self) -> list[list[str]]:
         if not self.tx_hashes:
             return []
 
@@ -43,21 +45,21 @@ class MerkleTree:
             new_level = []
             for i in range(0, len(current_level), 2):
                 combined = current_level[i] + current_level[i + 1]
-                new_level.append(_sha256(combined))
+                new_level.append(_sha256(self.NODE_PREFIX + combined))
             
             tree.append(new_level)
         
         return tree
 
-    def _get_root(self) -> Optional[str]:
+    def _get_root(self) -> str | None:
         if not self.tree:
             return None
         return self.tree[-1][0] if self.tree[-1] else None
 
-    def get_merkle_root(self) -> Optional[str]:
+    def get_merkle_root(self) -> str | None:
         return self.root
 
-    def get_proof(self, index: int) -> Optional[List[dict]]:
+    def get_proof(self, index: int) -> list[dict] | None:
         if index < 0 or index >= len(self.tx_hashes):
             return None
 
@@ -78,7 +80,7 @@ class MerkleTree:
         return proof
 
     @staticmethod
-    def verify_proof(tx_hash: str, proof: List[dict], merkle_root: str) -> bool:
+    def verify_proof(tx_hash: str, proof: list[dict], merkle_root: str) -> bool:
         current_hash = tx_hash
         
         for item in proof:
@@ -90,12 +92,12 @@ class MerkleTree:
             else:
                 combined = current_hash + sibling_hash
             
-            current_hash = _sha256(combined)
+            current_hash = _sha256(MerkleTree.NODE_PREFIX + combined)
         
         return current_hash == merkle_root
 
 
-def calculate_merkle_root(transactions: List[dict]) -> Optional[str]:
+def calculate_merkle_root(transactions: list[dict]) -> str | None:
     if not transactions:
         return None
     tree = MerkleTree(transactions)

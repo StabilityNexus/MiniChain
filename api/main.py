@@ -1,15 +1,15 @@
 from fastapi import FastAPI, HTTPException, Query
 from pydantic import BaseModel
 from typing import List, Optional
-import hashlib
-import json
 
 from core import Blockchain, Block, State, Transaction
 from core.merkle import MerkleTree
+from node import Mempool
 
 app = FastAPI(title="MiniChain API", description="SPV-enabled blockchain API")
 
 blockchain = Blockchain()
+mempool = Mempool()
 
 
 class TransactionResponse(BaseModel):
@@ -30,7 +30,7 @@ class BlockResponse(BaseModel):
     timestamp: int
     difficulty: Optional[int]
     nonce: int
-    hash: str
+    hash: Optional[str] = None
     transactions: List[TransactionResponse]
     merkle_proofs: Optional[dict] = None
 
@@ -49,8 +49,9 @@ class ChainInfo(BaseModel):
     blocks: List[dict]
 
 
-def compute_tx_hash(tx_dict: dict) -> str:
-    return hashlib.sha256(json.dumps(tx_dict, sort_keys=True).encode()).hexdigest()
+@app.on_event("shutdown")
+def shutdown_event():
+    blockchain.save_to_file()
 
 
 @app.get("/")
@@ -76,10 +77,11 @@ def get_block(block_index: int):
     
     merkle_proofs = {}
     for i, tx in enumerate(block.transactions):
-        tx_hash = compute_tx_hash(tx.to_dict())
-        proof = block.get_merkle_proof(i)
-        if proof:
-            merkle_proofs[tx_hash] = proof
+        tx_hash = block.get_tx_hash(i)
+        if tx_hash:
+            proof = block.get_merkle_proof(i)
+            if proof is not None:
+                merkle_proofs[tx_hash] = proof
     
     return {
         **block_dict,
@@ -100,7 +102,7 @@ def verify_transaction(
     tx_found = False
     tx_index = -1
     for i, tx in enumerate(block.transactions):
-        tx_hash_computed = compute_tx_hash(tx.to_dict())
+        tx_hash_computed = block.get_tx_hash(i)
         if tx_hash_computed == tx_hash:
             tx_found = True
             tx_index = i
@@ -119,6 +121,16 @@ def verify_transaction(
     proof = block.get_merkle_proof(tx_index)
     merkle_root = block.merkle_root or ""
     
+    if proof is None:
+        return {
+            "tx_hash": tx_hash,
+            "block_index": block_index,
+            "merkle_root": merkle_root,
+            "proof": [],
+            "verification_status": False,
+            "message": "Failed to generate Merkle proof"
+        }
+    
     verification_status = MerkleTree.verify_proof(tx_hash, proof, merkle_root)
     
     return {
@@ -134,14 +146,13 @@ def verify_transaction(
 @app.post("/mine")
 def mine_block_endpoint():
     from main import mine_and_process_block
-    from node import Mempool
     
-    mempool = Mempool()
     pending_nonce_map = {}
     
     result = mine_and_process_block(blockchain, mempool, pending_nonce_map)
     
     if result[0]:
+        blockchain.save_to_file()
         return {"message": "Block mined successfully", "block": result[0].to_dict()}
     else:
         raise HTTPException(status_code=400, detail="Failed to mine block")
@@ -149,4 +160,4 @@ def mine_block_endpoint():
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run(app, host="127.0.0.1", port=8000)

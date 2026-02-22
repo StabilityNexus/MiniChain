@@ -87,7 +87,6 @@ class Block:
         return self._merkle_tree.get_proof(tx_index)
 
     def get_tx_hash(self, tx_index: int) -> Optional[str]:
-        if tx_index < 0 or tx_index >= len(self.transactions):
+        if tx_index < 0 or tx_index >= len(self._merkle_tree.tx_hashes):
             return None
-        tx_dict = self.transactions[tx_index].to_dict()
-        return _sha256(json.dumps(tx_dict, sort_keys=True))
+        return self._merkle_tree.tx_hashes[tx_index]
