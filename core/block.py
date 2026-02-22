@@ -3,35 +3,11 @@ import hashlib
 import json
 from typing import List, Optional
 from core.transaction import Transaction
+from core.merkle import MerkleTree
 
 
 def _sha256(data: str) -> str:
     return hashlib.sha256(data.encode()).hexdigest()
-
-
-def _calculate_merkle_root(transactions: List[Transaction]) -> Optional[str]:
-    if not transactions:
-        return None
-
-    # Hash each transaction deterministically
-    tx_hashes = [
-        _sha256(json.dumps(tx.to_dict(), sort_keys=True))
-        for tx in transactions
-    ]
-
-    # Build Merkle tree
-    while len(tx_hashes) > 1:
-        if len(tx_hashes) % 2 != 0:
-            tx_hashes.append(tx_hashes[-1])  # duplicate last if odd
-
-        new_level = []
-        for i in range(0, len(tx_hashes), 2):
-            combined = tx_hashes[i] + tx_hashes[i + 1]
-            new_level.append(_sha256(combined))
-
-        tx_hashes = new_level
-
-    return tx_hashes[0]
 
 
 class Block:
@@ -58,8 +34,8 @@ class Block:
         self.nonce: int = 0
         self.hash: Optional[str] = None
 
-        # NEW: compute merkle root once
-        self.merkle_root: Optional[str] = _calculate_merkle_root(self.transactions)
+        self._merkle_tree = MerkleTree([tx.to_dict() for tx in self.transactions])
+        self.merkle_root: Optional[str] = self._merkle_tree.get_merkle_root()
 
     # -------------------------
     # HEADER (used for mining)
@@ -103,3 +79,15 @@ class Block:
             sort_keys=True
         )
         return _sha256(header_string)
+
+    # -------------------------
+    # MERKLE PROOF
+    # -------------------------
+    def get_merkle_proof(self, tx_index: int) -> Optional[List[dict]]:
+        return self._merkle_tree.get_proof(tx_index)
+
+    def get_tx_hash(self, tx_index: int) -> Optional[str]:
+        if tx_index < 0 or tx_index >= len(self.transactions):
+            return None
+        tx_dict = self.transactions[tx_index].to_dict()
+        return _sha256(json.dumps(tx_dict, sort_keys=True))
