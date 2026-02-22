@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 from threading import Event
+from typing import Sequence
 
 from minichain.block import BlockHeader
 
@@ -32,6 +33,46 @@ def is_valid_pow(header: BlockHeader) -> bool:
     if header.difficulty_target <= 0 or header.difficulty_target > MAX_TARGET:
         return False
     return hash_to_int(header.hash()) <= header.difficulty_target
+
+
+def compute_next_difficulty_target(
+    chain: Sequence[BlockHeader],
+    *,
+    adjustment_interval: int = 10,
+    target_block_time_seconds: int = 30,
+) -> int:
+    """Compute the next difficulty target using bounded proportional retargeting."""
+    if adjustment_interval <= 0:
+        raise ValueError("adjustment_interval must be positive")
+    if target_block_time_seconds <= 0:
+        raise ValueError("target_block_time_seconds must be positive")
+    if not chain:
+        raise ValueError("chain must contain at least one header")
+
+    tip = chain[-1]
+    validate_difficulty_target(tip.difficulty_target)
+
+    if tip.block_height == 0:
+        return tip.difficulty_target
+    if tip.block_height % adjustment_interval != 0:
+        return tip.difficulty_target
+    if len(chain) <= adjustment_interval:
+        return tip.difficulty_target
+
+    start_header = chain[-(adjustment_interval + 1)]
+    elapsed_seconds = tip.timestamp - start_header.timestamp
+    if elapsed_seconds <= 0:
+        elapsed_seconds = 1
+
+    expected_seconds = adjustment_interval * target_block_time_seconds
+    unbounded_target = (tip.difficulty_target * elapsed_seconds) // expected_seconds
+
+    min_target = max(1, tip.difficulty_target // 2)
+    max_target = min(MAX_TARGET, tip.difficulty_target * 2)
+    bounded_target = min(max(unbounded_target, min_target), max_target)
+
+    validate_difficulty_target(bounded_target)
+    return bounded_target
 
 
 def mine_block_header(
