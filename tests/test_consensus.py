@@ -5,7 +5,12 @@ from __future__ import annotations
 from threading import Event
 
 from minichain.block import BlockHeader
-from minichain.consensus import MiningInterrupted, is_valid_pow, mine_block_header
+from minichain.consensus import (
+    MiningInterrupted,
+    compute_next_difficulty_target,
+    is_valid_pow,
+    mine_block_header,
+)
 
 
 def _header_template(difficulty_target: int) -> BlockHeader:
@@ -18,6 +23,28 @@ def _header_template(difficulty_target: int) -> BlockHeader:
         nonce=0,
         block_height=10,
     )
+
+
+def _make_chain(
+    *,
+    heights: list[int],
+    timestamps: list[int],
+    difficulty_target: int,
+) -> list[BlockHeader]:
+    if len(heights) != len(timestamps):
+        raise ValueError("heights and timestamps must have the same length")
+    return [
+        BlockHeader(
+            version=0,
+            previous_hash=f"{height:064x}",
+            merkle_root="22" * 32,
+            timestamp=timestamp,
+            difficulty_target=difficulty_target,
+            nonce=0,
+            block_height=height,
+        )
+        for height, timestamp in zip(heights, timestamps, strict=True)
+    ]
 
 
 def test_valid_pow_is_accepted() -> None:
@@ -67,3 +94,75 @@ def test_mining_raises_when_nonce_range_exhausted() -> None:
         assert "No valid nonce found" in str(exc)
     else:
         raise AssertionError("Expected RuntimeError when nonce space exhausted")
+
+
+def test_difficulty_unchanged_when_not_on_adjustment_height() -> None:
+    chain = _make_chain(
+        heights=[0, 1, 2, 3, 5],
+        timestamps=[0, 10, 20, 30, 40],
+        difficulty_target=1_000_000,
+    )
+    assert (
+        compute_next_difficulty_target(
+            chain,
+            adjustment_interval=4,
+            target_block_time_seconds=10,
+        )
+        == 1_000_000
+    )
+
+
+def test_difficulty_target_decreases_when_blocks_are_fast() -> None:
+    chain = _make_chain(
+        heights=[0, 1, 2, 3, 4],
+        timestamps=[0, 5, 10, 15, 20],
+        difficulty_target=1_000_000,
+    )
+    new_target = compute_next_difficulty_target(
+        chain,
+        adjustment_interval=4,
+        target_block_time_seconds=10,
+    )
+    assert new_target == 500_000
+
+
+def test_difficulty_target_increases_when_blocks_are_slow() -> None:
+    chain = _make_chain(
+        heights=[0, 1, 2, 3, 4],
+        timestamps=[0, 20, 40, 60, 80],
+        difficulty_target=1_000_000,
+    )
+    new_target = compute_next_difficulty_target(
+        chain,
+        adjustment_interval=4,
+        target_block_time_seconds=10,
+    )
+    assert new_target == 2_000_000
+
+
+def test_difficulty_adjustment_is_capped_to_half_on_extreme_speed() -> None:
+    chain = _make_chain(
+        heights=[0, 1, 2, 3, 4],
+        timestamps=[0, 1, 2, 3, 4],
+        difficulty_target=1_000_000,
+    )
+    new_target = compute_next_difficulty_target(
+        chain,
+        adjustment_interval=4,
+        target_block_time_seconds=10,
+    )
+    assert new_target == 500_000
+
+
+def test_difficulty_adjustment_is_capped_to_double_on_extreme_delay() -> None:
+    chain = _make_chain(
+        heights=[0, 1, 2, 3, 4],
+        timestamps=[0, 100, 200, 300, 400],
+        difficulty_target=1_000_000,
+    )
+    new_target = compute_next_difficulty_target(
+        chain,
+        adjustment_interval=4,
+        target_block_time_seconds=10,
+    )
+    assert new_target == 2_000_000
