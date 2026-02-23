@@ -135,7 +135,7 @@ async def node_loop():
         await network.stop()
 
 
-async def _run_node(network, chain, mempool, pending_nonce_map, get_next_nonce):
+async def _run_node(network, state, chain, mempool, pending_nonce_map, get_next_nonce):
     await network.start()
 
     alice_sk, alice_pk = create_wallet()

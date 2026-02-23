@@ -19,9 +19,7 @@ class P2PNetwork:
         }
     """
 
-    def __init__(self, handler_callback):
-        if not callable(handler_callback):
-            raise ValueError("handler_callback must be callable")
+    def __init__(self, handler_callback=None):
         self.handler_callback = handler_callback
         self.pubsub = None  # Will be set in real implementation
 
@@ -53,10 +51,17 @@ class P2PNetwork:
         logger.info("Network: Broadcasting Block #%d", block.index)
         await self._broadcast_message("minichain-global", "block", block.to_dict())
 
+    async def stop(self):
+        logger.info("Network: Shutting down")
+        # In real libp2p, we would close the host and pubsub here
+
     async def handle_message(self, msg):
         """
         Callback when a p2p message is received.
         """
+        if not callable(self.handler_callback):
+            logger.warning("Network: No handler callback set, ignoring message")
+            return
 
         try:
             if not hasattr(msg, "data"):

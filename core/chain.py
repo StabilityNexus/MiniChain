@@ -12,9 +12,9 @@ class Blockchain:
     Manages the blockchain, validates blocks, and commits state transitions.
     """
 
-    def __init__(self):
+    def __init__(self, state=None):
         self.chain = []
-        self.state = State()
+        self.state = state if state is not None else State()
         self._lock = threading.RLock()
         self._create_genesis_block()
 
