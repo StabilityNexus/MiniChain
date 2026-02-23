@@ -13,9 +13,10 @@ def mine_and_process_block(chain, mempool, pending_nonce_map):
     pending_txs = mempool.get_transactions_for_block()
     tx_hashes = [mempool._get_tx_id(tx) for tx in pending_txs]
 
+    last_block = chain.last_block
     block = Block(
-        index=chain.last_block.index + 1,
-        previous_hash=chain.last_block.hash,
+        index=last_block.index + 1,
+        previous_hash=last_block.hash,
         transactions=pending_txs,
     )
 
