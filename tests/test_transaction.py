@@ -9,7 +9,7 @@ import pytest
 pytest.importorskip("nacl")
 
 from minichain.crypto import derive_address, generate_key_pair, serialize_verify_key
-from minichain.transaction import Transaction
+from minichain.transaction import COINBASE_SENDER, Transaction, create_coinbase_transaction
 
 
 def _build_signed_transaction() -> tuple[Transaction, object]:
@@ -61,3 +61,25 @@ def test_transaction_id_changes_when_signature_changes() -> None:
     tampered = replace(tx, signature="00" * 64)
 
     assert tampered.transaction_id() != original_id
+
+
+def test_coinbase_transaction_verifies_without_signature() -> None:
+    tx = create_coinbase_transaction(
+        miner_address="ef" * 20,
+        amount=55,
+        timestamp=1_739_760_111,
+    )
+
+    assert tx.sender == COINBASE_SENDER
+    assert tx.verify()
+
+
+def test_coinbase_with_auth_fields_is_rejected() -> None:
+    tx = create_coinbase_transaction(
+        miner_address="ef" * 20,
+        amount=55,
+        timestamp=1_739_760_111,
+    )
+    tampered = replace(tx, signature="00" * 64)
+
+    assert not tampered.verify()
