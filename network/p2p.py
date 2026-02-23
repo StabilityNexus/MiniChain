@@ -19,7 +19,7 @@ class P2PNetwork:
         }
     """
 
-    def __init__(self, handler_callback=None):
+    def __init__(self, handler_callback=None) -> None:
         self.handler_callback = handler_callback
         self.pubsub = None  # Will be set in real implementation
 
