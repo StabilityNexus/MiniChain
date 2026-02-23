@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from minichain.block import Block
+from minichain.block import Block, BlockValidationError
 from minichain.transaction import Transaction
 
 
@@ -43,6 +43,10 @@ class State:
         return self.accounts[address]
 
     def apply_transaction(self, transaction: Transaction) -> None:
+        if transaction.is_coinbase():
+            raise StateTransitionError(
+                "Coinbase transaction must be applied through apply_block"
+            )
         if not transaction.verify():
             raise StateTransitionError("Transaction signature/identity verification failed")
 
@@ -66,10 +70,22 @@ class State:
         sender.nonce += 1
         recipient.balance += transaction.amount
 
-    def apply_block(self, block: Block) -> None:
+    def apply_coinbase_transaction(self, transaction: Transaction) -> None:
+        if not transaction.is_coinbase():
+            raise StateTransitionError("Invalid coinbase transaction")
+        miner = self.get_account(transaction.recipient)
+        miner.balance += transaction.amount
+
+    def apply_block(self, block: Block, *, block_reward: int = 0) -> None:
+        try:
+            block.validate_coinbase(block_reward=block_reward)
+        except BlockValidationError as exc:
+            raise StateTransitionError(f"Block validation failed: {exc}") from exc
+
         snapshot = self.copy()
         try:
-            for transaction in block.transactions:
+            self.apply_coinbase_transaction(block.transactions[0])
+            for transaction in block.transactions[1:]:
                 self.apply_transaction(transaction)
         except StateTransitionError as exc:
             self.accounts = snapshot.accounts
@@ -81,6 +97,6 @@ def apply_transaction(state: State, transaction: Transaction) -> None:
     state.apply_transaction(transaction)
 
 
-def apply_block(state: State, block: Block) -> None:
+def apply_block(state: State, block: Block, *, block_reward: int = 0) -> None:
     """Apply all block transactions atomically, rolling back on failure."""
-    state.apply_block(block)
+    state.apply_block(block, block_reward=block_reward)

@@ -17,6 +17,7 @@ from minichain.serialization import serialize_transaction
 ADDRESS_HEX_LENGTH = 40
 PUBLIC_KEY_HEX_LENGTH = 64
 SIGNATURE_HEX_LENGTH = 128
+COINBASE_SENDER = "00" * 20
 
 
 def _is_lower_hex(value: str, expected_length: int) -> bool:
@@ -37,6 +38,22 @@ class Transaction:
     timestamp: int
     signature: str = ""
     public_key: str = ""
+
+    def is_coinbase(self) -> bool:
+        """Return whether this transaction follows coinbase conventions."""
+        if not _is_lower_hex(self.recipient, ADDRESS_HEX_LENGTH):
+            return False
+        if not isinstance(self.amount, int) or self.amount <= 0:
+            return False
+        if not isinstance(self.timestamp, int) or self.timestamp < 0:
+            return False
+        return (
+            self.sender == COINBASE_SENDER
+            and self.nonce == 0
+            and self.fee == 0
+            and self.signature == ""
+            and self.public_key == ""
+        )
 
     def signing_payload(self) -> dict[str, int | str]:
         """Return the canonical transaction payload that is signed."""
@@ -87,6 +104,8 @@ class Transaction:
 
     def verify(self) -> bool:
         """Verify transaction structure, signer identity, and signature."""
+        if self.is_coinbase():
+            return True
         if not self._validate_common_fields():
             return False
         if not _is_lower_hex(self.public_key, PUBLIC_KEY_HEX_LENGTH):
@@ -103,3 +122,23 @@ class Transaction:
             return False
         signature_bytes = bytes.fromhex(self.signature)
         return verify_signature(self.signing_bytes(), signature_bytes, verify_key)
+
+
+def create_coinbase_transaction(
+    *,
+    miner_address: str,
+    amount: int,
+    timestamp: int,
+) -> Transaction:
+    """Build a canonical coinbase transaction."""
+    coinbase = Transaction(
+        sender=COINBASE_SENDER,
+        recipient=miner_address,
+        amount=amount,
+        nonce=0,
+        fee=0,
+        timestamp=timestamp,
+    )
+    if not coinbase.is_coinbase():
+        raise ValueError("Invalid coinbase transaction fields")
+    return coinbase

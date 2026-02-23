@@ -10,6 +10,10 @@ from minichain.serialization import serialize_block_header
 from minichain.transaction import Transaction
 
 
+class BlockValidationError(ValueError):
+    """Raised when a block fails structural or semantic validation."""
+
+
 @dataclass
 class BlockHeader:
     """Consensus-critical block header."""
@@ -51,6 +55,30 @@ class Block:
 
     def has_valid_merkle_root(self) -> bool:
         return self.header.merkle_root == self.computed_merkle_root_hex()
+
+    def validate_coinbase(self, *, block_reward: int) -> None:
+        """Validate coinbase placement and reward accounting."""
+        if block_reward < 0:
+            raise BlockValidationError("block_reward must be non-negative")
+        if not self.transactions:
+            raise BlockValidationError("Block must contain a coinbase transaction")
+        if not self.has_valid_merkle_root():
+            raise BlockValidationError("Block merkle_root does not match body")
+
+        coinbase = self.transactions[0]
+        if not coinbase.is_coinbase():
+            raise BlockValidationError("First transaction must be a valid coinbase")
+
+        for transaction in self.transactions[1:]:
+            if transaction.is_coinbase():
+                raise BlockValidationError("Coinbase transaction must only appear once")
+
+        total_fees = sum(transaction.fee for transaction in self.transactions[1:])
+        expected_amount = block_reward + total_fees
+        if coinbase.amount != expected_amount:
+            raise BlockValidationError(
+                f"Invalid coinbase amount: expected {expected_amount}, got {coinbase.amount}"
+            )
 
     def hash(self) -> bytes:
         return self.header.hash()
