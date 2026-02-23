@@ -87,7 +87,7 @@ async def node_loop():
     pending_nonce_map = {}
 
     def claim_nonce(address):
-        account = state.get_account(address)
+        account = chain.state.get_account(address)
         account_nonce = account.get("nonce", 0) if account else 0
         local_nonce = pending_nonce_map.get(address, account_nonce)
         next_nonce = max(account_nonce, local_nonce)
