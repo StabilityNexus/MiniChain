@@ -44,12 +44,8 @@ except MiningExceededError:
 
         chain.state.credit_mining_reward(miner_address)
 
-        for tx in mined_block.transactions:
+for tx in mined_block.transactions:
             sync_nonce(chain.state, pending_nonce_map, tx.sender)
-
-            result = chain.state.get_account(tx.receiver) if tx.receiver else None
-            if isinstance(result, dict):
-                deployed_contracts.append(tx.receiver)
 
         return mined_block, deployed_contracts
 else:

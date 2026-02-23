@@ -71,7 +71,7 @@ if len(self.chain) == 0:
 
             genesis = self.chain[0]
             if genesis.hash != "0" * 64 or genesis.previous_hash != "0":
-logger.warning("Loaded chain has invalid genesis block. Rejecting loaded chain.")
+                logger.warning("Loaded chain has invalid genesis block. Rejecting loaded chain.")
                 self._create_genesis_block()
                 logger.info("Created new genesis block after rejecting invalid chain")
                 return
