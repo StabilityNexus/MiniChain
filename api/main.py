@@ -161,8 +161,6 @@ def verify_transaction(
 
 @app.post("/mine")
 def mine_block_endpoint():
-    global pending_nonce_map
-    
     block, *_ = mine_and_process_block(blockchain, mempool, pending_nonce_map)
     
     if block:

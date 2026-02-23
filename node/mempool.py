@@ -18,7 +18,7 @@ class Mempool:
         """
         return calculate_hash(tx.to_dict())
 
-    def add_transaction(self, tx):
+def add_transaction(self, tx):
         """
         Adds a transaction to the pool if:
         - Signature is valid
@@ -38,13 +38,22 @@ class Mempool:
 
             if len(self._pending_txs) >= self.max_size:
                 # Simple eviction: drop oldest or reject. Here we reject.
-                logger.warning("Mempool: Full, rejecting transaction")
+                logger.warning(f"Mempool: Pool full, transaction rejected")
                 return False
 
             self._pending_txs.append(tx)
             self._seen_tx_ids.add(tx_id)
-
+            logger.info(f"Mempool: Added transaction {tx_id}")
             return True
+
+    def return_transactions(self, transactions):
+        """
+        Return transactions to the pool after failed mining attempt.
+        """
+        tx_ids = {self._get_tx_id(tx) for tx in transactions}
+        with self._lock:
+            self._pending_txs.extend(transactions)
+            self._seen_tx_ids.update(tx_ids)
 
     def get_transactions_for_block(self):
         """

@@ -22,10 +22,8 @@ def mine_and_process_block(chain, mempool, pending_nonce_map):
 
     try:
         mined_block = mine_block(block)
-    except MiningExceededError:
-        for tx in pending_txs:
-            mempool._pending_txs.append(tx)
-            mempool._seen_tx_ids.update(tx_hashes)
+except MiningExceededError:
+        mempool.return_transactions(pending_txs)
         logger.warning("Mining failed, transactions returned to mempool")
         return None, []
 
@@ -54,10 +52,8 @@ def mine_and_process_block(chain, mempool, pending_nonce_map):
                 deployed_contracts.append(tx.receiver)
 
         return mined_block, deployed_contracts
-    else:
-        for tx in pending_txs:
-            mempool._pending_txs.append(tx)
-            mempool._seen_tx_ids.update(tx_hashes)
+else:
+        mempool.return_transactions(pending_txs)
         logger.error("Block rejected by chain, transactions returned to mempool")
         return None, []
 

@@ -64,16 +64,16 @@ class Blockchain:
                 block.hash = block_data.get("hash")
                 self.chain.append(block)
 
-            if len(self.chain) == 0:
+if len(self.chain) == 0:
                 self._create_genesis_block()
-                logger.info(f"Loaded chain with {len(self.chain)} blocks from {self._chain_file}")
+                logger.info("Chain file %s contained no blocks; created genesis block", self._chain_file)
                 return
 
             genesis = self.chain[0]
             if genesis.hash != "0" * 64 or genesis.previous_hash != "0":
-                logger.warning("Loaded chain has invalid genesis block. Rejecting loaded chain.")
+logger.warning("Loaded chain has invalid genesis block. Rejecting loaded chain.")
                 self._create_genesis_block()
-                logger.info(f"Created new genesis block after rejecting invalid chain")
+                logger.info("Created new genesis block after rejecting invalid chain")
                 return
 
             for i in range(1, len(self.chain)):
@@ -104,9 +104,9 @@ class Blockchain:
                 logger.info(f"Loaded chain with {len(self.chain)} blocks from {self._chain_file}")
                 return
 
-            if not self.chain:
+if not self.chain:
                 self._create_genesis_block()
-                logger.info(f"Created new genesis block after rejecting invalid chain")
+                logger.info("Created new genesis block after rejecting invalid chain")
 
         except Exception as e:
             logger.warning(f"Failed to load chain from {self._chain_file}: {e}. Creating new genesis block.")
@@ -130,7 +130,7 @@ class Blockchain:
             "state": self.state.to_dict() if hasattr(self.state, 'to_dict') else {}
         }
 
-    def _save_to_file_unlocked(self, data):
+def _save_to_file_unlocked(self, data, block_count):
         temp_file = None
         try:
             temp_file = self._chain_file + ".tmp"
@@ -138,17 +138,18 @@ class Blockchain:
                 json.dump(data, f, indent=2)
 
             os.replace(temp_file, self._chain_file)
-            logger.info(f"Saved chain with {len(self.chain)} blocks to {self._chain_file}")
+            logger.info("Saved chain with %s blocks to %s", block_count, self._chain_file)
 
         except Exception as e:
             logger.error(f"Failed to save chain to {self._chain_file}: {e}")
             if temp_file is not None and os.path.exists(temp_file):
                 os.remove(temp_file)
 
-    def save_to_file(self):
+def save_to_file(self):
         with self._lock:
             data = self._serialize_chain_data()
-        self._save_to_file_unlocked(data)
+            block_count = len(self.chain)
+        self._save_to_file_unlocked(data, block_count)
 
     def _create_genesis_block(self):
         genesis_block = Block(
@@ -187,10 +188,11 @@ class Blockchain:
                     logger.warning("Block %s rejected: Transaction failed validation", block.index)
                     return False
 
-            self.state = temp_state
+self.state = temp_state
             self.chain.append(block)
             
             data = self._serialize_chain_data()
+            block_count = len(self.chain)
 
-        self._save_to_file_unlocked(data)
+        self._save_to_file_unlocked(data, block_count)
         return True
