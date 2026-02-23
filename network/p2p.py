@@ -60,7 +60,7 @@ class P2PNetwork:
         Callback when a p2p message is received.
         """
         if not callable(self.handler_callback):
-            logger.warning("Network: No handler callback set, ignoring message")
+            logger.debug("Network: No handler callback set, ignoring message")
             return
 
         try:
