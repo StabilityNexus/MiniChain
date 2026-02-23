@@ -18,6 +18,7 @@ COMPONENT_MODULES = [
     "merkle",
     "genesis",
     "chain",
+    "mining",
 ]
 
 
