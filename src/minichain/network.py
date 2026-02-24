@@ -9,10 +9,14 @@ import secrets
 import socket
 import struct
 import time
-from dataclasses import dataclass, field
+from collections import deque
+from dataclasses import asdict, dataclass, field
 from typing import Any, Callable, Coroutine
 
+from minichain.transaction import Transaction
+
 _LOCAL_DISCOVERY_REGISTRY: set["MiniChainNetwork"] = set()
+TX_GOSSIP_PROTOCOL_ID = "/minichain/tx/1.0.0"
 
 
 class NetworkError(ValueError):
@@ -67,6 +71,7 @@ class NetworkConfig:
     mdns_group: str = "224.1.1.199"
     mdns_port: int = 10099
     mdns_interval_seconds: float = 0.5
+    seen_tx_cache_size: int = 20_000
 
     def validate(self) -> None:
         if not self.host:
@@ -79,6 +84,8 @@ class NetworkConfig:
             raise NetworkError("mdns_port must be between 0 and 65535")
         if self.mdns_interval_seconds <= 0:
             raise NetworkError("mdns_interval_seconds must be positive")
+        if self.seen_tx_cache_size <= 0:
+            raise NetworkError("seen_tx_cache_size must be positive")
         for peer in self.bootstrap_peers:
             peer.validate()
 
@@ -119,6 +126,9 @@ class MiniChainNetwork:
         self._mdns_protocol: _DiscoveryProtocol | None = None
         self._mdns_announce_task: asyncio.Task[None] | None = None
         self._use_local_discovery = False
+        self._seen_transactions: set[str] = set()
+        self._seen_transaction_order: deque[str] = deque()
+        self._transaction_handler: Callable[[Transaction], bool] | None = None
 
     @property
     def node_id(self) -> str:
@@ -148,6 +158,10 @@ class MiniChainNetwork:
     def is_connected_to(self, peer_id: str) -> bool:
         return peer_id in self._connections
 
+    def set_transaction_handler(self, handler: Callable[[Transaction], bool] | None) -> None:
+        """Register a local transaction validation/ingestion callback."""
+        self._transaction_handler = handler
+
     async def wait_for_connected_peers(self, expected_count: int, *, timeout: float = 5.0) -> None:
         if expected_count < 0:
             raise NetworkError("expected_count must be non-negative")
@@ -162,6 +176,20 @@ class MiniChainNetwork:
         raise TimeoutError(
             f"Timed out waiting for {expected_count} peers; got {len(self._connections)}"
         )
+
+    async def submit_transaction(self, transaction: Transaction) -> bool:
+        """Validate and gossip a locally submitted transaction."""
+        if not transaction.verify():
+            raise NetworkError("cannot gossip invalid transaction")
+        tx_id = transaction.transaction_id().hex()
+        if not self._remember_seen_transaction(tx_id):
+            return False
+        if not self._accept_transaction(transaction):
+            return False
+
+        message = self._transaction_payload(transaction, tx_id=tx_id)
+        await self._broadcast_message(message, exclude_peer_ids=set())
+        return True
 
     async def start(self) -> None:
         """Start the TCP server, discovery tasks, and bootstrap connections."""
@@ -347,9 +375,14 @@ class MiniChainNetwork:
 
     async def _handle_peer_message(self, peer_id: str, message: dict[str, object]) -> None:
         message_type = message.get("type")
-        if message_type != "peers":
+        if message_type == "peers":
+            await self._handle_peer_addresses(peer_id, message)
+            return
+        if message_type == "tx_gossip":
+            await self._handle_transaction_gossip(peer_id, message)
             return
 
+    async def _handle_peer_addresses(self, peer_id: str, message: dict[str, object]) -> None:
         peers = message.get("peers")
         if not isinstance(peers, list):
             raise NetworkError("peers message requires list payload")
@@ -371,6 +404,39 @@ class MiniChainNetwork:
                 )
             )
 
+    async def _handle_transaction_gossip(
+        self,
+        source_peer_id: str,
+        message: dict[str, object],
+    ) -> None:
+        if message.get("protocol") != TX_GOSSIP_PROTOCOL_ID:
+            raise NetworkError("tx_gossip protocol id mismatch")
+
+        payload = message.get("transaction")
+        if not isinstance(payload, dict):
+            raise NetworkError("tx_gossip transaction payload must be an object")
+        transaction = self._transaction_from_payload(payload)
+        if not transaction.verify():
+            return
+
+        announced_id = message.get("transaction_id")
+        if announced_id is not None and not isinstance(announced_id, str):
+            raise NetworkError("transaction_id must be a string")
+
+        tx_id = transaction.transaction_id().hex()
+        if announced_id is not None and announced_id != tx_id:
+            return
+        if not self._remember_seen_transaction(tx_id):
+            return
+        if not self._accept_transaction(transaction):
+            return
+
+        forward_payload = self._transaction_payload(transaction, tx_id=tx_id)
+        await self._broadcast_message(
+            forward_payload,
+            exclude_peer_ids={source_peer_id},
+        )
+
     def _close_connection(self, peer_id: str) -> None:
         connection = self._connections.pop(peer_id, None)
         if connection is None:
@@ -379,6 +445,24 @@ class MiniChainNetwork:
         if connection.task is not None and not connection.task.done():
             connection.task.cancel()
         connection.writer.close()
+
+    async def _broadcast_message(
+        self,
+        payload: dict[str, object],
+        *,
+        exclude_peer_ids: set[str],
+    ) -> None:
+        failed_peer_ids: list[str] = []
+        for peer_id, connection in list(self._connections.items()):
+            if peer_id in exclude_peer_ids:
+                continue
+            try:
+                await self._write_message(connection.writer, payload)
+            except Exception:
+                failed_peer_ids.append(peer_id)
+
+        for peer_id in failed_peer_ids:
+            self._close_connection(peer_id)
 
     async def _start_mdns_discovery(self) -> None:
         loop = asyncio.get_running_loop()
@@ -470,6 +554,25 @@ class MiniChainNetwork:
         self._background_tasks.add(task)
         task.add_done_callback(self._background_tasks.discard)
 
+    def _remember_seen_transaction(self, transaction_id: str) -> bool:
+        if transaction_id in self._seen_transactions:
+            return False
+
+        self._seen_transactions.add(transaction_id)
+        self._seen_transaction_order.append(transaction_id)
+        while len(self._seen_transactions) > self.config.seen_tx_cache_size:
+            oldest = self._seen_transaction_order.popleft()
+            self._seen_transactions.discard(oldest)
+        return True
+
+    def _accept_transaction(self, transaction: Transaction) -> bool:
+        if self._transaction_handler is None:
+            return True
+        try:
+            return bool(self._transaction_handler(transaction))
+        except Exception:
+            return False
+
     def _hello_payload(self) -> dict[str, object]:
         return {
             "type": "hello",
@@ -487,6 +590,20 @@ class MiniChainNetwork:
         unique_peers.discard((self.listen_host, self.listen_port))
         peers = [{"host": host, "port": port} for host, port in sorted(unique_peers)]
         return {"type": "peers", "peers": peers}
+
+    def _transaction_payload(self, transaction: Transaction, *, tx_id: str) -> dict[str, object]:
+        return {
+            "type": "tx_gossip",
+            "protocol": TX_GOSSIP_PROTOCOL_ID,
+            "transaction_id": tx_id,
+            "transaction": asdict(transaction),
+        }
+
+    def _transaction_from_payload(self, payload: dict[str, object]) -> Transaction:
+        try:
+            return Transaction(**payload)
+        except TypeError as exc:
+            raise NetworkError("invalid transaction payload shape") from exc
 
     def _peer_from_hello(
         self,
