@@ -19,6 +19,7 @@ from minichain.transaction import Transaction
 _LOCAL_DISCOVERY_REGISTRY: set["MiniChainNetwork"] = set()
 TX_GOSSIP_PROTOCOL_ID = "/minichain/tx/1.0.0"
 BLOCK_GOSSIP_PROTOCOL_ID = "/minichain/block/1.0.0"
+SYNC_PROTOCOL_ID = "/minichain/sync/1.0.0"
 
 
 class NetworkError(ValueError):
@@ -75,6 +76,7 @@ class NetworkConfig:
     mdns_interval_seconds: float = 0.5
     seen_tx_cache_size: int = 20_000
     seen_block_cache_size: int = 5_000
+    sync_batch_size: int = 128
 
     def validate(self) -> None:
         if not self.host:
@@ -91,6 +93,8 @@ class NetworkConfig:
             raise NetworkError("seen_tx_cache_size must be positive")
         if self.seen_block_cache_size <= 0:
             raise NetworkError("seen_block_cache_size must be positive")
+        if self.sync_batch_size <= 0:
+            raise NetworkError("sync_batch_size must be positive")
         for peer in self.bootstrap_peers:
             peer.validate()
 
@@ -137,6 +141,11 @@ class MiniChainNetwork:
         self._seen_block_order: deque[str] = deque()
         self._transaction_handler: Callable[[Transaction], bool] | None = None
         self._block_handler: Callable[[Block], bool] | None = None
+        self._sync_height_getter: Callable[[], int] | None = None
+        self._sync_block_getter: Callable[[int], Block | None] | None = None
+        self._sync_block_applier: Callable[[Block], bool] | None = None
+        self._peer_advertised_heights: dict[str, int] = {}
+        self._sync_inflight: set[str] = set()
 
     @property
     def node_id(self) -> str:
@@ -174,6 +183,18 @@ class MiniChainNetwork:
         """Register a local block validation/ingestion callback."""
         self._block_handler = handler
 
+    def set_sync_handlers(
+        self,
+        *,
+        get_height: Callable[[], int] | None,
+        get_block_by_height: Callable[[int], Block | None] | None,
+        apply_block: Callable[[Block], bool] | None,
+    ) -> None:
+        """Register callbacks used by `/minichain/sync/1.0.0`."""
+        self._sync_height_getter = get_height
+        self._sync_block_getter = get_block_by_height
+        self._sync_block_applier = apply_block
+
     async def wait_for_connected_peers(self, expected_count: int, *, timeout: float = 5.0) -> None:
         if expected_count < 0:
             raise NetworkError("expected_count must be non-negative")
@@ -187,6 +208,22 @@ class MiniChainNetwork:
             await asyncio.sleep(0.05)
         raise TimeoutError(
             f"Timed out waiting for {expected_count} peers; got {len(self._connections)}"
+        )
+
+    async def wait_for_height(self, expected_height: int, *, timeout: float = 5.0) -> None:
+        """Wait until local sync height reaches at least `expected_height`."""
+        if expected_height < 0:
+            raise NetworkError("expected_height must be non-negative")
+        if timeout <= 0:
+            raise NetworkError("timeout must be positive")
+
+        deadline = asyncio.get_running_loop().time() + timeout
+        while asyncio.get_running_loop().time() < deadline:
+            if self._local_chain_height() >= expected_height:
+                return
+            await asyncio.sleep(0.05)
+        raise TimeoutError(
+            f"Timed out waiting for height {expected_height}; got {self._local_chain_height()}"
         )
 
     async def submit_transaction(self, transaction: Transaction) -> bool:
@@ -267,6 +304,8 @@ class MiniChainNetwork:
 
         for peer_id in list(self._connections):
             self._close_connection(peer_id)
+        self._peer_advertised_heights.clear()
+        self._sync_inflight.clear()
 
         if self._background_tasks:
             for task in list(self._background_tasks):
@@ -316,6 +355,7 @@ class MiniChainNetwork:
                     return False
 
                 await self._write_message(writer, self._peer_list_payload())
+                await self._send_sync_status(writer)
                 self._start_peer_reader(peer_info.node_id)
                 return True
             except Exception:
@@ -352,6 +392,7 @@ class MiniChainNetwork:
                 return
 
             await self._write_message(writer, self._peer_list_payload())
+            await self._send_sync_status(writer)
             self._start_peer_reader(peer_info.node_id)
         except Exception:
             writer.close()
@@ -410,6 +451,15 @@ class MiniChainNetwork:
             return
         if message_type == "block_gossip":
             await self._handle_block_gossip(peer_id, message)
+            return
+        if message_type == "sync_status":
+            await self._handle_sync_status(peer_id, message)
+            return
+        if message_type == "sync_request":
+            await self._handle_sync_request(peer_id, message)
+            return
+        if message_type == "sync_blocks":
+            await self._handle_sync_blocks(peer_id, message)
             return
 
     async def _handle_peer_addresses(self, peer_id: str, message: dict[str, object]) -> None:
@@ -500,10 +550,112 @@ class MiniChainNetwork:
             exclude_peer_ids={source_peer_id},
         )
 
+    async def _handle_sync_status(self, peer_id: str, message: dict[str, object]) -> None:
+        if message.get("protocol") != SYNC_PROTOCOL_ID:
+            raise NetworkError("sync_status protocol id mismatch")
+        peer_height = message.get("height")
+        if not isinstance(peer_height, int):
+            raise NetworkError("sync_status height must be an integer")
+        if peer_height < 0:
+            raise NetworkError("sync_status height must be non-negative")
+
+        self._peer_advertised_heights[peer_id] = peer_height
+        if peer_height > self._local_chain_height():
+            self._spawn(self._request_missing_blocks(peer_id))
+
+    async def _handle_sync_request(self, peer_id: str, message: dict[str, object]) -> None:
+        if message.get("protocol") != SYNC_PROTOCOL_ID:
+            raise NetworkError("sync_request protocol id mismatch")
+        if self._sync_block_getter is None:
+            return
+
+        from_height = message.get("from_height")
+        to_height = message.get("to_height")
+        if not isinstance(from_height, int) or not isinstance(to_height, int):
+            raise NetworkError("sync_request heights must be integers")
+        if from_height < 0 or to_height < from_height:
+            raise NetworkError("sync_request range is invalid")
+
+        max_to_height = min(to_height, from_height + self.config.sync_batch_size - 1)
+        blocks: list[Block] = []
+        for height in range(from_height, max_to_height + 1):
+            block = self._sync_block_getter(height)
+            if block is None:
+                break
+            blocks.append(block)
+
+        connection = self._connections.get(peer_id)
+        if connection is None:
+            return
+        response = self._sync_blocks_payload(start_height=from_height, blocks=blocks)
+        await self._write_message(connection.writer, response)
+
+    async def _handle_sync_blocks(self, peer_id: str, message: dict[str, object]) -> None:
+        if message.get("protocol") != SYNC_PROTOCOL_ID:
+            raise NetworkError("sync_blocks protocol id mismatch")
+        if self._sync_block_applier is None:
+            self._sync_inflight.discard(peer_id)
+            return
+
+        start_height = message.get("start_height")
+        payloads = message.get("blocks")
+        if not isinstance(start_height, int):
+            raise NetworkError("sync_blocks start_height must be an integer")
+        if not isinstance(payloads, list):
+            raise NetworkError("sync_blocks blocks must be a list")
+
+        for entry in payloads:
+            if not isinstance(entry, dict):
+                raise NetworkError("sync_blocks entry must be an object")
+            block = self._block_from_payload(entry)
+            if not block.has_valid_merkle_root():
+                self._sync_inflight.discard(peer_id)
+                return
+            if not self._sync_block_applier(block):
+                self._sync_inflight.discard(peer_id)
+                return
+            self._remember_seen_block(block.hash().hex())
+
+        if not payloads:
+            self._sync_inflight.discard(peer_id)
+            return
+
+        self._sync_inflight.discard(peer_id)
+        if self._peer_advertised_heights.get(peer_id, -1) > self._local_chain_height():
+            self._spawn(self._request_missing_blocks(peer_id))
+
+    async def _request_missing_blocks(self, peer_id: str) -> None:
+        if peer_id in self._sync_inflight:
+            return
+        remote_height = self._peer_advertised_heights.get(peer_id)
+        if remote_height is None:
+            return
+
+        local_height = self._local_chain_height()
+        if remote_height <= local_height:
+            return
+
+        connection = self._connections.get(peer_id)
+        if connection is None:
+            return
+
+        from_height = local_height + 1
+        to_height = min(remote_height, from_height + self.config.sync_batch_size - 1)
+        request = self._sync_request_payload(from_height=from_height, to_height=to_height)
+        self._sync_inflight.add(peer_id)
+        try:
+            await self._write_message(connection.writer, request)
+        except Exception:
+            self._sync_inflight.discard(peer_id)
+            self._close_connection(peer_id)
+
     def _close_connection(self, peer_id: str) -> None:
         connection = self._connections.pop(peer_id, None)
         if connection is None:
             return
+
+        self._peer_advertised_heights.pop(peer_id, None)
+        self._sync_inflight.discard(peer_id)
 
         if connection.task is not None and not connection.task.done():
             connection.task.cancel()
@@ -617,6 +769,19 @@ class MiniChainNetwork:
         self._background_tasks.add(task)
         task.add_done_callback(self._background_tasks.discard)
 
+    async def _send_sync_status(self, writer: asyncio.StreamWriter) -> None:
+        payload = self._sync_status_payload(height=self._local_chain_height())
+        await self._write_message(writer, payload)
+
+    def _local_chain_height(self) -> int:
+        if self._sync_height_getter is None:
+            return 0
+        try:
+            height = int(self._sync_height_getter())
+        except Exception:
+            return 0
+        return max(0, height)
+
     def _remember_seen_transaction(self, transaction_id: str) -> bool:
         if transaction_id in self._seen_transactions:
             return False
@@ -673,6 +838,29 @@ class MiniChainNetwork:
         peers = [{"host": host, "port": port} for host, port in sorted(unique_peers)]
         return {"type": "peers", "peers": peers}
 
+    def _sync_status_payload(self, *, height: int) -> dict[str, object]:
+        return {
+            "type": "sync_status",
+            "protocol": SYNC_PROTOCOL_ID,
+            "height": height,
+        }
+
+    def _sync_request_payload(self, *, from_height: int, to_height: int) -> dict[str, object]:
+        return {
+            "type": "sync_request",
+            "protocol": SYNC_PROTOCOL_ID,
+            "from_height": from_height,
+            "to_height": to_height,
+        }
+
+    def _sync_blocks_payload(self, *, start_height: int, blocks: list[Block]) -> dict[str, object]:
+        return {
+            "type": "sync_blocks",
+            "protocol": SYNC_PROTOCOL_ID,
+            "start_height": start_height,
+            "blocks": [self._encode_block(block) for block in blocks],
+        }
+
     def _transaction_payload(self, transaction: Transaction, *, tx_id: str) -> dict[str, object]:
         return {
             "type": "tx_gossip",
@@ -692,10 +880,14 @@ class MiniChainNetwork:
             "type": "block_gossip",
             "protocol": BLOCK_GOSSIP_PROTOCOL_ID,
             "block_hash": block_hash,
-            "block": {
-                "header": asdict(block.header),
-                "transactions": [asdict(transaction) for transaction in block.transactions],
-            },
+            "block": self._encode_block(block),
+        }
+
+    @staticmethod
+    def _encode_block(block: Block) -> dict[str, object]:
+        return {
+            "header": asdict(block.header),
+            "transactions": [asdict(transaction) for transaction in block.transactions],
         }
 
     def _block_from_payload(self, payload: dict[str, object]) -> Block:
