@@ -13,10 +13,12 @@ from collections import deque
 from dataclasses import asdict, dataclass, field
 from typing import Any, Callable, Coroutine
 
+from minichain.block import Block, BlockHeader
 from minichain.transaction import Transaction
 
 _LOCAL_DISCOVERY_REGISTRY: set["MiniChainNetwork"] = set()
 TX_GOSSIP_PROTOCOL_ID = "/minichain/tx/1.0.0"
+BLOCK_GOSSIP_PROTOCOL_ID = "/minichain/block/1.0.0"
 
 
 class NetworkError(ValueError):
@@ -72,6 +74,7 @@ class NetworkConfig:
     mdns_port: int = 10099
     mdns_interval_seconds: float = 0.5
     seen_tx_cache_size: int = 20_000
+    seen_block_cache_size: int = 5_000
 
     def validate(self) -> None:
         if not self.host:
@@ -86,6 +89,8 @@ class NetworkConfig:
             raise NetworkError("mdns_interval_seconds must be positive")
         if self.seen_tx_cache_size <= 0:
             raise NetworkError("seen_tx_cache_size must be positive")
+        if self.seen_block_cache_size <= 0:
+            raise NetworkError("seen_block_cache_size must be positive")
         for peer in self.bootstrap_peers:
             peer.validate()
 
@@ -128,7 +133,10 @@ class MiniChainNetwork:
         self._use_local_discovery = False
         self._seen_transactions: set[str] = set()
         self._seen_transaction_order: deque[str] = deque()
+        self._seen_blocks: set[str] = set()
+        self._seen_block_order: deque[str] = deque()
         self._transaction_handler: Callable[[Transaction], bool] | None = None
+        self._block_handler: Callable[[Block], bool] | None = None
 
     @property
     def node_id(self) -> str:
@@ -162,6 +170,10 @@ class MiniChainNetwork:
         """Register a local transaction validation/ingestion callback."""
         self._transaction_handler = handler
 
+    def set_block_handler(self, handler: Callable[[Block], bool] | None) -> None:
+        """Register a local block validation/ingestion callback."""
+        self._block_handler = handler
+
     async def wait_for_connected_peers(self, expected_count: int, *, timeout: float = 5.0) -> None:
         if expected_count < 0:
             raise NetworkError("expected_count must be non-negative")
@@ -188,6 +200,21 @@ class MiniChainNetwork:
             return False
 
         message = self._transaction_payload(transaction, tx_id=tx_id)
+        await self._broadcast_message(message, exclude_peer_ids=set())
+        return True
+
+    async def submit_block(self, block: Block) -> bool:
+        """Validate and gossip a locally mined or received canonical block."""
+        if not block.has_valid_merkle_root():
+            raise NetworkError("cannot gossip block with invalid merkle root")
+
+        block_hash = block.hash().hex()
+        if not self._remember_seen_block(block_hash):
+            return False
+        if not self._accept_block(block):
+            return False
+
+        message = self._block_payload(block, block_hash=block_hash)
         await self._broadcast_message(message, exclude_peer_ids=set())
         return True
 
@@ -381,6 +408,9 @@ class MiniChainNetwork:
         if message_type == "tx_gossip":
             await self._handle_transaction_gossip(peer_id, message)
             return
+        if message_type == "block_gossip":
+            await self._handle_block_gossip(peer_id, message)
+            return
 
     async def _handle_peer_addresses(self, peer_id: str, message: dict[str, object]) -> None:
         peers = message.get("peers")
@@ -432,6 +462,39 @@ class MiniChainNetwork:
             return
 
         forward_payload = self._transaction_payload(transaction, tx_id=tx_id)
+        await self._broadcast_message(
+            forward_payload,
+            exclude_peer_ids={source_peer_id},
+        )
+
+    async def _handle_block_gossip(
+        self,
+        source_peer_id: str,
+        message: dict[str, object],
+    ) -> None:
+        if message.get("protocol") != BLOCK_GOSSIP_PROTOCOL_ID:
+            raise NetworkError("block_gossip protocol id mismatch")
+
+        payload = message.get("block")
+        if not isinstance(payload, dict):
+            raise NetworkError("block_gossip payload must be an object")
+        block = self._block_from_payload(payload)
+        if not block.has_valid_merkle_root():
+            return
+
+        announced_hash = message.get("block_hash")
+        if announced_hash is not None and not isinstance(announced_hash, str):
+            raise NetworkError("block_hash must be a string")
+
+        block_hash = block.hash().hex()
+        if announced_hash is not None and announced_hash != block_hash:
+            return
+        if not self._remember_seen_block(block_hash):
+            return
+        if not self._accept_block(block):
+            return
+
+        forward_payload = self._block_payload(block, block_hash=block_hash)
         await self._broadcast_message(
             forward_payload,
             exclude_peer_ids={source_peer_id},
@@ -573,6 +636,25 @@ class MiniChainNetwork:
         except Exception:
             return False
 
+    def _remember_seen_block(self, block_hash: str) -> bool:
+        if block_hash in self._seen_blocks:
+            return False
+
+        self._seen_blocks.add(block_hash)
+        self._seen_block_order.append(block_hash)
+        while len(self._seen_blocks) > self.config.seen_block_cache_size:
+            oldest = self._seen_block_order.popleft()
+            self._seen_blocks.discard(oldest)
+        return True
+
+    def _accept_block(self, block: Block) -> bool:
+        if self._block_handler is None:
+            return True
+        try:
+            return bool(self._block_handler(block))
+        except Exception:
+            return False
+
     def _hello_payload(self) -> dict[str, object]:
         return {
             "type": "hello",
@@ -604,6 +686,40 @@ class MiniChainNetwork:
             return Transaction(**payload)
         except TypeError as exc:
             raise NetworkError("invalid transaction payload shape") from exc
+
+    def _block_payload(self, block: Block, *, block_hash: str) -> dict[str, object]:
+        return {
+            "type": "block_gossip",
+            "protocol": BLOCK_GOSSIP_PROTOCOL_ID,
+            "block_hash": block_hash,
+            "block": {
+                "header": asdict(block.header),
+                "transactions": [asdict(transaction) for transaction in block.transactions],
+            },
+        }
+
+    def _block_from_payload(self, payload: dict[str, object]) -> Block:
+        header_payload = payload.get("header")
+        transactions_payload = payload.get("transactions")
+        if not isinstance(header_payload, dict):
+            raise NetworkError("block header payload must be an object")
+        if not isinstance(transactions_payload, list):
+            raise NetworkError("block transactions payload must be a list")
+
+        try:
+            header = BlockHeader(**header_payload)
+        except TypeError as exc:
+            raise NetworkError("invalid block header payload shape") from exc
+
+        transactions: list[Transaction] = []
+        for transaction_payload in transactions_payload:
+            if not isinstance(transaction_payload, dict):
+                raise NetworkError("transaction entry must be an object")
+            try:
+                transactions.append(Transaction(**transaction_payload))
+            except TypeError as exc:
+                raise NetworkError("invalid block transaction payload shape") from exc
+        return Block(header=header, transactions=transactions)
 
     def _peer_from_hello(
         self,
