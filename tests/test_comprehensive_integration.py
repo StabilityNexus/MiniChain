@@ -12,6 +12,7 @@ pytest.importorskip("nacl")
 from minichain.block import Block
 from minichain.chain import ChainConfig, ChainManager, ChainValidationError
 from minichain.consensus import MAX_TARGET
+from minichain.crypto import derive_address, generate_key_pair
 from minichain.genesis import GenesisConfig, create_genesis_state
 from minichain.mempool import Mempool, MempoolValidationError
 from minichain.mining import build_candidate_block, mine_candidate_block
@@ -118,6 +119,79 @@ def test_competing_blocks_trigger_fork_then_reorg_convergence() -> None:
     asyncio.run(scenario())
 
 
+def test_double_spend_nonce_reuse_is_rejected_and_not_forwarded() -> None:
+    async def scenario() -> None:
+        signing_key, verify_key = generate_key_pair()
+        sender = derive_address(verify_key)
+        balances = {sender: 200}
+
+        node_b = _build_node(
+            node_id="node-ds-b",
+            bootstrap_peers=(),
+            initial_balances=balances,
+        )
+        await node_b.network.start()
+        node_a = _build_node(
+            node_id="node-ds-a",
+            bootstrap_peers=(node_b.network.listen_address(),),
+            initial_balances=balances,
+        )
+        node_c = _build_node(
+            node_id="node-ds-c",
+            bootstrap_peers=(node_b.network.listen_address(),),
+            initial_balances=balances,
+        )
+        await node_a.network.start()
+        await node_c.network.start()
+
+        try:
+            await node_a.network.wait_for_connected_peers(1, timeout=3.0)
+            await node_b.network.wait_for_connected_peers(2, timeout=3.0)
+            await node_c.network.wait_for_connected_peers(1, timeout=3.0)
+
+            tx_one = _signed_transaction(
+                signing_key=signing_key,
+                sender=sender,
+                recipient="77" * 20,
+                amount=25,
+                nonce=0,
+                fee=1,
+                timestamp=1_739_000_010,
+            )
+            tx_two = _signed_transaction(
+                signing_key=signing_key,
+                sender=sender,
+                recipient="88" * 20,
+                amount=30,
+                nonce=0,
+                fee=1,
+                timestamp=1_739_000_011,
+            )
+
+            tx_one_id = tx_one.transaction_id().hex()
+            tx_two_id = tx_two.transaction_id().hex()
+
+            assert await node_a.network.submit_transaction(tx_one)
+            await _wait_until(
+                lambda: node_a.mempool.contains(tx_one_id)
+                and node_b.mempool.contains(tx_one_id)
+                and node_c.mempool.contains(tx_one_id),
+                timeout=3.0,
+            )
+
+            assert not await node_a.network.submit_transaction(tx_two)
+            await asyncio.sleep(0.2)
+            assert not node_a.mempool.contains(tx_two_id)
+            assert not node_b.mempool.contains(tx_two_id)
+            assert not node_c.mempool.contains(tx_two_id)
+        finally:
+            await node_c.network.stop()
+            await node_a.network.stop()
+            await node_b.network.stop()
+
+    asyncio.run(scenario())
+
+
 def _build_node(
     *,
     node_id: str,
@@ -218,6 +292,28 @@ def _accept_transaction(node: _IntegratedNode, transaction: Transaction) -> bool
     except MempoolValidationError:
         return False
     return True
+
+
+def _signed_transaction(
+    *,
+    signing_key: object,
+    sender: str,
+    recipient: str,
+    amount: int,
+    nonce: int,
+    fee: int,
+    timestamp: int,
+) -> Transaction:
+    transaction = Transaction(
+        sender=sender,
+        recipient=recipient,
+        amount=amount,
+        nonce=nonce,
+        fee=fee,
+        timestamp=timestamp,
+    )
+    transaction.sign(signing_key)
+    return transaction
 
 
 async def _wait_until(predicate, *, timeout: float) -> None:
