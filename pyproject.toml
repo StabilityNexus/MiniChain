@@ -23,6 +23,7 @@ dev = [
 ]
 
 [project.scripts]
+minichain = "minichain.__main__:main"
 minichain-node = "minichain.__main__:main"
 
 [tool.pytest.ini_options]

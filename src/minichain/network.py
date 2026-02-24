@@ -67,6 +67,7 @@ class NetworkConfig:
 
     host: str = "127.0.0.1"
     port: int = 0
+    advertise_host: str | None = None
     node_id: str | None = None
     bootstrap_peers: tuple[PeerAddress, ...] = field(default_factory=tuple)
     connect_timeout_seconds: float = 2.0
@@ -74,6 +75,7 @@ class NetworkConfig:
     mdns_group: str = "224.1.1.199"
     mdns_port: int = 10099
     mdns_interval_seconds: float = 0.5
+    reconnect_interval_seconds: float = 1.0
     seen_tx_cache_size: int = 20_000
     seen_block_cache_size: int = 5_000
     sync_batch_size: int = 128
@@ -81,6 +83,8 @@ class NetworkConfig:
     def validate(self) -> None:
         if not self.host:
             raise NetworkError("host must be non-empty")
+        if self.advertise_host is not None and not self.advertise_host:
+            raise NetworkError("advertise_host must be non-empty when provided")
         if not (0 <= self.port <= 65535):
             raise NetworkError("port must be between 0 and 65535")
         if self.connect_timeout_seconds <= 0:
@@ -89,6 +93,8 @@ class NetworkConfig:
             raise NetworkError("mdns_port must be between 0 and 65535")
         if self.mdns_interval_seconds <= 0:
             raise NetworkError("mdns_interval_seconds must be positive")
+        if self.reconnect_interval_seconds <= 0:
+            raise NetworkError("reconnect_interval_seconds must be positive")
         if self.seen_tx_cache_size <= 0:
             raise NetworkError("seen_tx_cache_size must be positive")
         if self.seen_block_cache_size <= 0:
@@ -162,6 +168,12 @@ class MiniChainNetwork:
     @property
     def listen_port(self) -> int:
         return self._listen_port
+
+    @property
+    def advertise_host(self) -> str:
+        if self.config.advertise_host is not None:
+            return self.config.advertise_host
+        return self.listen_host
 
     def listen_address(self) -> PeerAddress:
         return PeerAddress(host=self.listen_host, port=self.listen_port)
@@ -240,7 +252,7 @@ class MiniChainNetwork:
         await self._broadcast_message(message, exclude_peer_ids=set())
         return True
 
-    async def submit_block(self, block: Block) -> bool:
+    async def submit_block(self, block: Block, *, already_applied: bool = False) -> bool:
         """Validate and gossip a locally mined or received canonical block."""
         if not block.has_valid_merkle_root():
             raise NetworkError("cannot gossip block with invalid merkle root")
@@ -248,7 +260,7 @@ class MiniChainNetwork:
         block_hash = block.hash().hex()
         if not self._remember_seen_block(block_hash):
             return False
-        if not self._accept_block(block):
+        if not already_applied and not self._accept_block(block):
             return False
 
         message = self._block_payload(block, block_hash=block_hash)
@@ -276,6 +288,7 @@ class MiniChainNetwork:
 
         for peer in self.config.bootstrap_peers:
             self._spawn(self.connect_to_peer(peer, discovered_via="bootstrap"))
+        self._spawn(self._reconnect_loop())
 
     async def stop(self) -> None:
         """Stop server, discovery, and all active peer connections."""
@@ -316,7 +329,7 @@ class MiniChainNetwork:
     async def connect_to_peer(self, peer: PeerAddress, *, discovered_via: str) -> bool:
         """Open a TCP connection to a peer and perform handshake."""
         peer.validate()
-        if peer == self.listen_address():
+        if self._is_self_peer(peer):
             return False
 
         address_key = (peer.host, peer.port)
@@ -446,6 +459,8 @@ class MiniChainNetwork:
         if message_type == "peers":
             await self._handle_peer_addresses(peer_id, message)
             return
+        if message_type == "tx_result":
+            return
         if message_type == "tx_gossip":
             await self._handle_transaction_gossip(peer_id, message)
             return
@@ -475,7 +490,7 @@ class MiniChainNetwork:
             if not isinstance(host, str) or not isinstance(port, int):
                 continue
             peer = PeerAddress(host=host, port=port)
-            if peer == self.listen_address():
+            if self._is_self_peer(peer):
                 continue
             self._spawn(
                 self.connect_to_peer(
@@ -496,19 +511,32 @@ class MiniChainNetwork:
         if not isinstance(payload, dict):
             raise NetworkError("tx_gossip transaction payload must be an object")
         transaction = self._transaction_from_payload(payload)
-        if not transaction.verify():
-            return
 
         announced_id = message.get("transaction_id")
         if announced_id is not None and not isinstance(announced_id, str):
             raise NetworkError("transaction_id must be a string")
 
         tx_id = transaction.transaction_id().hex()
-        if announced_id is not None and announced_id != tx_id:
-            return
-        if not self._remember_seen_transaction(tx_id):
-            return
-        if not self._accept_transaction(transaction):
+        accepted = False
+        reason = "accepted"
+        if not transaction.verify():
+            reason = "invalid_signature_or_identity"
+        elif announced_id is not None and announced_id != tx_id:
+            reason = "transaction_id_mismatch"
+        elif not self._remember_seen_transaction(tx_id):
+            reason = "duplicate"
+        elif not self._accept_transaction(transaction):
+            reason = "rejected_by_node"
+        else:
+            accepted = True
+
+        await self._send_tx_result(
+            peer_id=source_peer_id,
+            transaction_id=tx_id,
+            accepted=accepted,
+            reason=reason,
+        )
+        if not accepted:
             return
 
         forward_payload = self._transaction_payload(transaction, tx_id=tx_id)
@@ -718,7 +746,7 @@ class MiniChainNetwork:
             payload = {
                 "service": "minichain",
                 "node_id": self.node_id,
-                "host": self.listen_host,
+                "host": self.advertise_host,
                 "port": self.listen_port,
             }
             encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
@@ -764,14 +792,73 @@ class MiniChainNetwork:
             self._known_peers[node_id] = info
         self._spawn(self.connect_to_peer(peer, discovered_via="mdns"))
 
+    async def _reconnect_loop(self) -> None:
+        while self._running:
+            for peer in self._reconnect_candidates():
+                if not self._running:
+                    return
+                await self.connect_to_peer(peer, discovered_via="reconnect")
+            await asyncio.sleep(self.config.reconnect_interval_seconds)
+
+    def _reconnect_candidates(self) -> tuple[PeerAddress, ...]:
+        seen: set[tuple[str, int]] = set()
+        ordered: list[PeerAddress] = []
+
+        for peer in self.config.bootstrap_peers:
+            key = (peer.host, peer.port)
+            if key in seen or self._is_self_peer(peer):
+                continue
+            seen.add(key)
+            ordered.append(peer)
+
+        for info in self._known_peers.values():
+            peer = info.address
+            key = (peer.host, peer.port)
+            if key in seen or self._is_self_peer(peer):
+                continue
+            seen.add(key)
+            ordered.append(peer)
+
+        return tuple(ordered)
+
     def _spawn(self, coroutine: Coroutine[Any, Any, Any]) -> None:
         task = asyncio.create_task(coroutine)
         self._background_tasks.add(task)
         task.add_done_callback(self._background_tasks.discard)
 
+    def _is_self_peer(self, peer: PeerAddress) -> bool:
+        if peer.port != self.listen_port:
+            return False
+        known_self_hosts = {
+            self.listen_host,
+            self.advertise_host,
+        }
+        return peer.host in known_self_hosts
+
     async def _send_sync_status(self, writer: asyncio.StreamWriter) -> None:
         payload = self._sync_status_payload(height=self._local_chain_height())
         await self._write_message(writer, payload)
+
+    async def _send_tx_result(
+        self,
+        *,
+        peer_id: str,
+        transaction_id: str,
+        accepted: bool,
+        reason: str,
+    ) -> None:
+        connection = self._connections.get(peer_id)
+        if connection is None:
+            return
+        payload = self._tx_result_payload(
+            transaction_id=transaction_id,
+            accepted=accepted,
+            reason=reason,
+        )
+        try:
+            await self._write_message(connection.writer, payload)
+        except Exception:
+            self._close_connection(peer_id)
 
     def _local_chain_height(self) -> int:
         if self._sync_height_getter is None:
@@ -824,7 +911,7 @@ class MiniChainNetwork:
         return {
             "type": "hello",
             "node_id": self.node_id,
-            "host": self.listen_host,
+            "host": self.advertise_host,
             "port": self.listen_port,
         }
 
@@ -835,6 +922,7 @@ class MiniChainNetwork:
         }
         unique_peers.update((peer.host, peer.port) for peer in self.config.bootstrap_peers)
         unique_peers.discard((self.listen_host, self.listen_port))
+        unique_peers.discard((self.advertise_host, self.listen_port))
         peers = [{"host": host, "port": port} for host, port in sorted(unique_peers)]
         return {"type": "peers", "peers": peers}
 
@@ -867,6 +955,20 @@ class MiniChainNetwork:
             "protocol": TX_GOSSIP_PROTOCOL_ID,
             "transaction_id": tx_id,
             "transaction": asdict(transaction),
+        }
+
+    def _tx_result_payload(
+        self,
+        *,
+        transaction_id: str,
+        accepted: bool,
+        reason: str,
+    ) -> dict[str, object]:
+        return {
+            "type": "tx_result",
+            "transaction_id": transaction_id,
+            "accepted": accepted,
+            "reason": reason,
         }
 
     def _transaction_from_payload(self, payload: dict[str, object]) -> Transaction:
