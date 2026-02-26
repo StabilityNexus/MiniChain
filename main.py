@@ -4,7 +4,7 @@ import re
 from nacl.signing import SigningKey
 from nacl.encoding import HexEncoder
 
-from core import Transaction, Blockchain, Block, State
+from core import Transaction, Blockchain, Block
 from node import Mempool
 from network import P2PNetwork
 from consensus import mine_block
@@ -80,8 +80,7 @@ def sync_nonce(state, pending_nonce_map, address):
 async def node_loop():
     logger.info("Starting MiniChain Node with Smart Contracts")
 
-    state = State()
-    chain = Blockchain(state)
+    chain = Blockchain()
     mempool = Mempool()
 
     pending_nonce_map = {}
