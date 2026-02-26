@@ -4,7 +4,7 @@ import re
 from nacl.signing import SigningKey
 from nacl.encoding import HexEncoder
 
-from minichain import Transaction, Blockchain, Block, State, Mempool, P2PNetwork, mine_block
+from minichain import Transaction, Blockchain, Block, Mempool, P2PNetwork, mine_block
 
 
 logger = logging.getLogger(__name__)

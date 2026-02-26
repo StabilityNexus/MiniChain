@@ -19,7 +19,7 @@ class P2PNetwork:
         }
     """
 
-    def __init__(self, handler_callback=None):
+    def __init__(self, handler_callback=None) -> None:
         self._handler_callback = None
         if handler_callback is not None:
             self.register_handler(handler_callback)
@@ -44,7 +44,7 @@ class P2PNetwork:
                     if hasattr(self.pubsub, method_name):
                         shutdown_meth = getattr(self.pubsub, method_name)
                         break
-                
+
                 if shutdown_meth:
                     import asyncio
                     res = shutdown_meth()
@@ -83,6 +83,9 @@ class P2PNetwork:
         """
         Callback when a p2p message is received.
         """
+        if not callable(self._handler_callback):
+            logger.debug("Network: No handler callback set, ignoring message")
+            return
 
         try:
             if not hasattr(msg, "data"):
