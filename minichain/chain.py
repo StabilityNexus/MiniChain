@@ -1,6 +1,6 @@
-from core.block import Block
-from core.state import State
-from consensus import calculate_hash
+from .block import Block
+from .state import State
+from .pow import calculate_hash
 import logging
 import threading
 

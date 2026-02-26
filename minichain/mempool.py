@@ -1,4 +1,4 @@
-from consensus.pow import calculate_hash
+from .pow import calculate_hash
 import logging
 import threading
 

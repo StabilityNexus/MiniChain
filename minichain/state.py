@@ -1,6 +1,6 @@
 from nacl.hash import sha256
 from nacl.encoding import HexEncoder
-from core.contract import ContractMachine
+from .contract import ContractMachine
 import copy
 import logging
 

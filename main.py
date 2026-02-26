@@ -4,10 +4,7 @@ import re
 from nacl.signing import SigningKey
 from nacl.encoding import HexEncoder
 
-from core import Transaction, Blockchain, Block
-from node import Mempool
-from network import P2PNetwork
-from consensus import mine_block
+from minichain import Transaction, Blockchain, Block, Mempool, P2PNetwork, mine_block
 
 
 logger = logging.getLogger(__name__)
@@ -85,7 +82,7 @@ async def node_loop():
 
     pending_nonce_map = {}
 
-    def claim_nonce(address):
+    def claim_nonce(address) -> int:
         account = chain.state.get_account(address)
         account_nonce = account.get("nonce", 0) if account else 0
         local_nonce = pending_nonce_map.get(address, account_nonce)
@@ -93,7 +90,7 @@ async def node_loop():
         pending_nonce_map[address] = next_nonce + 1
         return next_nonce
 
-    network = P2PNetwork(None)
+    network = P2PNetwork()
 
     async def _handle_network_data(data):
         logger.info("Received network data: %s", data)
@@ -126,7 +123,7 @@ async def node_loop():
         except Exception:
             logger.exception("Error processing network data: %s", data)
 
-    network.handler_callback = _handle_network_data
+    network.register_handler(_handle_network_data)
 
     try:
         await _run_node(network, chain, mempool, pending_nonce_map, claim_nonce)

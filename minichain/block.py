@@ -2,8 +2,7 @@ import time
 import hashlib
 import json
 from typing import List, Optional
-from core.transaction import Transaction
-
+from .transaction import Transaction
 
 def _sha256(data: str) -> str:
     return hashlib.sha256(data.encode()).hexdigest()
