@@ -1,3 +1,4 @@
+from minichain.consensus.difficulty import PIDDifficultyAdjuster
 class Blockchain:
     """
     Manages the blockchain, validates blocks, and commits state transitions.
