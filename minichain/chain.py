@@ -3,7 +3,7 @@ from .state import State
 from .pow import calculate_hash
 import logging
 import threading
-
+from minichain.consensus.difficulty import PIDDifficultyAdjuster
 logger = logging.getLogger(__name__)
 
 
@@ -12,12 +12,14 @@ class Blockchain:
     Manages the blockchain, validates blocks, and commits state transitions.
     """
 
-    def __init__(self):
-        self.chain = []
-        self.state = State()
-        self._lock = threading.RLock()
-        self._create_genesis_block()
-
+   def __init__(self):
+    self.chain = []
+    self.state = State()
+    self._lock = threading.RLock()
+    self.difficulty = 2
+    self.difficulty_adjuster = PIDDifficultyAdjuster(target_block_time=5)
+    self._create_genesis_block()
+        
     def _create_genesis_block(self):
         """
         Creates the genesis block with a fixed hash.
@@ -71,7 +73,10 @@ class Blockchain:
                     logger.warning("Block %s rejected: Transaction failed validation", block.index)
                     return False
 
-            # All transactions valid → commit state and append block
             self.state = temp_state
-            self.chain.append(block)
-            return True
+self.chain.append(block)
+
+self.difficulty = self.difficulty_adjuster.adjust(self.difficulty)
+print(f"⚙ Difficulty adjusted to: {self.difficulty}")
+
+return True
