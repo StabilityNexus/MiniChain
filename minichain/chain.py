@@ -54,7 +54,12 @@ class Blockchain:
             if block.index != self.last_block.index + 1:
                 logger.warning("Block %s rejected: Invalid index", block.index)
                 return False
-
+                
+             # Enforce expected network difficulty
+             if block.difficulty != self.difficulty:
+                logger.warning("Block %s rejected: Invalid difficulty", block.index)
+                return False
+                 
             # Verify block hash
             if block.hash != calculate_hash(block.to_header_dict()):
                 logger.warning("Block %s rejected: Invalid hash", block.index)
