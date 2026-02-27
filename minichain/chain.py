@@ -1,25 +1,16 @@
-from .block import Block
-from .state import State
-from .pow import calculate_hash
-import logging
-import threading
-from minichain.consensus.difficulty import PIDDifficultyAdjuster
-logger = logging.getLogger(__name__)
-
-
 class Blockchain:
     """
     Manages the blockchain, validates blocks, and commits state transitions.
     """
 
-   def __init__(self):
-    self.chain = []
-    self.state = State()
-    self._lock = threading.RLock()
-    self.difficulty = 2
-    self.difficulty_adjuster = PIDDifficultyAdjuster(target_block_time=5)
-    self._create_genesis_block()
-        
+    def __init__(self):
+        self.chain = []
+        self.state = State()
+        self._lock = threading.RLock()
+        self.difficulty = 2
+        self.difficulty_adjuster = PIDDifficultyAdjuster(target_block_time=5)
+        self._create_genesis_block()
+
     def _create_genesis_block(self):
         """
         Creates the genesis block with a fixed hash.
@@ -37,7 +28,7 @@ class Blockchain:
         """
         Returns the most recent block in the chain.
         """
-        with self._lock: # Acquire lock for thread-safe access
+        with self._lock:
             return self.chain[-1]
 
     def add_block(self, block):
@@ -45,21 +36,21 @@ class Blockchain:
         Validates and adds a block to the chain if all transactions succeed.
         Uses a copied State to ensure atomic validation.
         """
-
         with self._lock:
+
             # Check previous hash linkage
             if block.previous_hash != self.last_block.hash:
-                logger.warning("Block %s rejected: Invalid previous hash %s != %s", block.index, block.previous_hash, self.last_block.hash)
+                logger.warning("Block %s rejected: Invalid previous hash", block.index)
                 return False
 
             # Check index linkage
             if block.index != self.last_block.index + 1:
-                logger.warning("Block %s rejected: Invalid index %s != %s", block.index, block.index, self.last_block.index + 1)
+                logger.warning("Block %s rejected: Invalid index", block.index)
                 return False
 
             # Verify block hash
             if block.hash != calculate_hash(block.to_header_dict()):
-                logger.warning("Block %s rejected: Invalid hash %s", block.index, block.hash)
+                logger.warning("Block %s rejected: Invalid hash", block.index)
                 return False
 
             # Validate transactions on a temporary state copy
@@ -68,15 +59,16 @@ class Blockchain:
             for tx in block.transactions:
                 result = temp_state.validate_and_apply(tx)
 
-                # Reject block if any transaction fails
                 if not result:
-                    logger.warning("Block %s rejected: Transaction failed validation", block.index)
+                    logger.warning("Block %s rejected: Transaction failed", block.index)
                     return False
 
+            #  COMMIT STATE
             self.state = temp_state
-self.chain.append(block)
+            self.chain.append(block)
 
-self.difficulty = self.difficulty_adjuster.adjust(self.difficulty)
-print(f"⚙ Difficulty adjusted to: {self.difficulty}")
+            #  ADJUST DIFFICULTY
+            self.difficulty = self.difficulty_adjuster.adjust(self.difficulty)
+            print(f"⚙ Difficulty adjusted to: {self.difficulty}")
 
-return True
+            return True
