@@ -1,4 +1,10 @@
+import logging
+import threading
+from minichain.state import State
+from minichain.pow import calculate_hash
 from minichain.consensus.difficulty import PIDDifficultyAdjuster
+
+logger = logging.getLogger(__name__)
 class Blockchain:
     """
     Manages the blockchain, validates blocks, and commits state transitions.
