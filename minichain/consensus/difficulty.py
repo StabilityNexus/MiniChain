@@ -10,10 +10,10 @@ class PIDDifficultyAdjuster:
 
         self.integral = 0
         self.previous_error = 0
-        self.last_block_time = time.time()
+        self.last_block_time = time.monotonic()
 
     def adjust(self, current_difficulty):
-        now = time.time()
+        now = time.monotonic()
         actual_block_time = now - self.last_block_time
         self.last_block_time = now
 
