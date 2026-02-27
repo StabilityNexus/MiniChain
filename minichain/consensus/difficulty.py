@@ -29,7 +29,7 @@ class PIDDifficultyAdjuster:
 
         self.previous_error = error
 
-       new_difficulty = current_difficulty + round(adjustment)
+        new_difficulty = current_difficulty + round(adjustment)
 
         if new_difficulty < 1:
             new_difficulty = 1
