@@ -10,7 +10,7 @@ class PIDDifficultyAdjuster:
 
         self.integral = 0
         self.previous_error = 0
-        self.last_block_time = time.time()
+        self.last_block_time = time.monotonic()
         
         # Limit the integral to prevent "Windup"
         # This stops the difficulty from tanking if the network goes offline
@@ -28,7 +28,7 @@ class PIDDifficultyAdjuster:
             current_difficulty = 1000  # Default starting difficulty
             
         if actual_block_time is None:
-            now = time.time()
+            now = time.monotonic()
             actual_block_time = now - self.last_block_time
             self.last_block_time = now
 
@@ -51,10 +51,13 @@ class PIDDifficultyAdjuster:
 
         # Apply adjustment with a cap to maintain stability
         # Now current_difficulty is guaranteed to be a number
-        max_delta = current_difficulty * self.max_change_factor
+        max_delta = max(1, int(round(current_difficulty * self.max_change_factor)))
         clamped_adjustment = max(min(adjustment, max_delta), -max_delta)
 
-        new_difficulty = current_difficulty + int(clamped_adjustment)
+        delta = int(round(clamped_adjustment))
+         if delta == 0 and clamped_adjustment != 0:
+             delta = 1 if clamped_adjustment > 0 else -1
+         new_difficulty = current_difficulty + delta
 
         # Safety: Difficulty must never drop below 1
         return max(1, new_difficulty)
