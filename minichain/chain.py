@@ -1,6 +1,7 @@
 from .block import Block
 from .state import State
 from .pow import calculate_hash
+from minichain.consensus.difficulty import PIDDifficultyAdjuster
 import logging
 import threading
 
@@ -13,6 +14,8 @@ class Blockchain:
     """
 
     def __init__(self):
+        self.difficulty = 3
+        self.difficulty_adjuster = PIDDifficultyAdjuster(target_block_time=5)
         self.chain = []
         self.state = State()
         self._lock = threading.RLock()
@@ -74,4 +77,6 @@ class Blockchain:
             # All transactions valid → commit state and append block
             self.state = temp_state
             self.chain.append(block)
+            self.difficulty = self.difficulty_adjuster.adjust(self.difficulty)
+            print("New difficulty: ", self.difficulty)
             return True
