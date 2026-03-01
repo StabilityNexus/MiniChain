@@ -63,6 +63,17 @@ class Blockchain:
                 logger.warning("Block %s rejected: Invalid hash %s", block.index, block.hash)
                 return False
 
+            # Enforce PoW difficulty
+            if block.difficulty != self.difficulty:
+                logger.warning(
+                    "Block %s rejected: Invalid difficulty %s != %s",
+                    block.index, block.difficulty, self.difficulty
+                )
+                return False
+            if not block.hash.startswith("0" * self.difficulty):
+                logger.warning("Block %s rejected: Hash does not meet difficulty target", block.index)
+                return False
+
             # Validate transactions on a temporary state copy
             temp_state = self.state.copy()
 
@@ -78,5 +89,5 @@ class Blockchain:
             self.state = temp_state
             self.chain.append(block)
             self.difficulty = self.difficulty_adjuster.adjust(self.difficulty)
-            print("New difficulty: ", self.difficulty)
+           logger.info("New difficulty: %s", self.difficulty)
             return True
