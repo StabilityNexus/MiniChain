@@ -3,10 +3,10 @@ from fastapi import FastAPI, HTTPException, Query
 from pydantic import BaseModel
 from typing import List, Optional, Union, Dict
 
-from core import Blockchain, Block, State, Transaction
-from core.merkle import MerkleTree
-from node import Mempool
-from core.mining import mine_and_process_block
+from minichain import Blockchain, Block, State, Transaction
+from minichain.merkle import MerkleTree
+from minichain.mempool import Mempool
+from minichain.mining import mine_and_process_block
 
 
 blockchain: Optional[Blockchain] = None

@@ -46,6 +46,9 @@ def mine_and_process_block(chain, mempool, pending_nonce_map):
 
         for tx in mined_block.transactions:
             sync_nonce(chain.state, pending_nonce_map, tx.sender)
+            if tx.receiver is None:
+                contract_address = chain.state.derive_contract_address(tx.sender, tx.nonce)
+                deployed_contracts.append(contract_address)
 
         return mined_block, deployed_contracts
     else:

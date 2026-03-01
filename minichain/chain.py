@@ -101,7 +101,7 @@ class Blockchain:
             else:
                 if data.get("state"):
                     self.state = State.from_dict(data["state"])
-                logger.info(f"Loaded chain with {len(self.chain)} blocks from {self._chain_file}")
+                logger.info("Loaded chain with %s blocks from %s", len(self.chain), self._chain_file)
                 return
 
             if not self.chain:
