@@ -151,7 +151,7 @@ async def _run_node(network, chain, mempool, pending_nonce_map, get_next_nonce):
     await network.start()
 
     alice_sk, alice_pk = create_wallet()
-    bob_sk, bob_pk = create_wallet()
+    _bob_sk, bob_pk = create_wallet()
 
     # Initial funding
     chain.state.credit_mining_reward(alice_pk, reward=100)
