@@ -34,13 +34,11 @@ def mine_and_process_block(chain, mempool, pending_nonce_map):
         transactions=pending_txs,
     )
 
-    # PID Difficulty Adjustment (handled internally)
-    block.difficulty = chain.difficulty_adjuster.adjust(
-        chain.last_block.difficulty
-    )
+   # Mine using current consensus difficulty; chain updates next difficulty after acceptance
+    block.difficulty = chain.difficulty
 
     start_time = time.time()
-    mined_block = mine_block(block)
+    mined_block = mine_block(block, difficulty=block.difficulty)
     mining_time = time.time() - start_time
 
     # Attach mining time to block (optional but useful)
@@ -133,8 +131,8 @@ async def node_loop():
 
                 chain.add_block(block)
 
-        except Exception as e:
-            logger.error(f"Network error: {e}")
+       except Exception:
++            logger.exception("Network error while handling incoming data")
 
     network.register_handler(_handle_network_data)
 
