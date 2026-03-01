@@ -55,8 +55,8 @@ def mine_block(
         header_dict["nonce"] = local_nonce
         block_hash = calculate_hash(header_dict)
 
-        #check difficulty target 
-        target = "0" * difficulty
+         # Check difficulty target
+         if block_hash.startswith(target):
 
         # Check difficulty target
         if block_hash.startswith(target):
