@@ -2,7 +2,7 @@ import unittest
 from nacl.signing import SigningKey
 from nacl.encoding import HexEncoder
 
-from core import Transaction, Blockchain, State # Removed unused imports
+from minichain import Transaction, Blockchain, State # Removed unused imports
 
 class TestCore(unittest.TestCase):
     def setUp(self):

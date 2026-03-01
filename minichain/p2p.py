@@ -19,15 +19,41 @@ class P2PNetwork:
         }
     """
 
-    def __init__(self, handler_callback):
+    def __init__(self, handler_callback=None):
+        self._handler_callback = None
+        if handler_callback is not None:
+            self.register_handler(handler_callback)
+        self.pubsub = None  # Will be set in real implementation
+
+    def register_handler(self, handler_callback):
         if not callable(handler_callback):
             raise ValueError("handler_callback must be callable")
-        self.handler_callback = handler_callback
-        self.pubsub = None  # Will be set in real implementation
+        self._handler_callback = handler_callback
 
     async def start(self):
         logger.info("Network: Listening on /ip4/0.0.0.0/tcp/0")
         # In real libp2p, we would await host.start() here
+
+    async def stop(self):
+        """Clean up network resources cleanly upon shutdown."""
+        logger.info("Network: Shutting down")
+        if self.pubsub:
+            try:
+                shutdown_meth = None
+                for method_name in ('close', 'stop', 'aclose', 'shutdown'):
+                    if hasattr(self.pubsub, method_name):
+                        shutdown_meth = getattr(self.pubsub, method_name)
+                        break
+                
+                if shutdown_meth:
+                    import asyncio
+                    res = shutdown_meth()
+                    if asyncio.iscoroutine(res):
+                        await res
+            except Exception as e:
+                logger.error("Network: Error shutting down pubsub: %s", e)
+            finally:
+                self.pubsub = None
 
     async def _broadcast_message(self, topic, msg_type, payload):
         msg = json.dumps({"type": msg_type, "data": payload})
@@ -84,6 +110,9 @@ class P2PNetwork:
             return
 
         try:
-            await self.handler_callback(data)
+            if self._handler_callback:
+                await self._handler_callback(data)
+            else:
+                logger.warning("Network Error: No handler_callback registered")
         except Exception:
             logger.exception("Error in network handler callback for data: %s", data)

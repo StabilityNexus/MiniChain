@@ -1,7 +1,7 @@
-from core.block import Block
-from core.state import State
-from core.transaction import Transaction
-from consensus import calculate_hash
+from .block import Block
+from .state import State
+from .transaction import Transaction
+from .pow import calculate_hash
 import logging
 import threading
 import json
@@ -64,7 +64,7 @@ class Blockchain:
                 block.hash = block_data.get("hash")
                 self.chain.append(block)
 
-if len(self.chain) == 0:
+            if len(self.chain) == 0:
                 self._create_genesis_block()
                 logger.info("Chain file %s contained no blocks; created genesis block", self._chain_file)
                 return
@@ -87,7 +87,7 @@ if len(self.chain) == 0:
                     break
                 
                 if curr_block.hash != calculate_hash(curr_block.to_header_dict()):
-                    logger.warning(f"Loaded chain has invalid hash at block {i}. Rejecting loaded chain.")
+                    logger.warning(f"Loaded chain block {i}. has invalid hash at Rejecting loaded chain.")
                     self.chain = []
                     break
                 
@@ -104,7 +104,7 @@ if len(self.chain) == 0:
                 logger.info(f"Loaded chain with {len(self.chain)} blocks from {self._chain_file}")
                 return
 
-if not self.chain:
+            if not self.chain:
                 self._create_genesis_block()
                 logger.info("Created new genesis block after rejecting invalid chain")
 
@@ -130,7 +130,7 @@ if not self.chain:
             "state": self.state.to_dict() if hasattr(self.state, 'to_dict') else {}
         }
 
-def _save_to_file_unlocked(self, data, block_count):
+    def _save_to_file_unlocked(self, data, block_count):
         temp_file = None
         try:
             temp_file = self._chain_file + ".tmp"
@@ -145,7 +145,7 @@ def _save_to_file_unlocked(self, data, block_count):
             if temp_file is not None and os.path.exists(temp_file):
                 os.remove(temp_file)
 
-def save_to_file(self):
+    def save_to_file(self):
         with self._lock:
             data = self._serialize_chain_data()
             block_count = len(self.chain)
@@ -188,7 +188,7 @@ def save_to_file(self):
                     logger.warning("Block %s rejected: Transaction failed validation", block.index)
                     return False
 
-self.state = temp_state
+            self.state = temp_state
             self.chain.append(block)
             
             data = self._serialize_chain_data()

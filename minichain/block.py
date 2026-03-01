@@ -1,9 +1,10 @@
 import time
 import json
+import hashlib
 from typing import List, Optional
-from core.transaction import Transaction
-from core.merkle import MerkleTree
-from core.utils import _sha256
+from .transaction import Transaction
+from .merkle import MerkleTree
+from .utils import _sha256
 
 
 class Block:

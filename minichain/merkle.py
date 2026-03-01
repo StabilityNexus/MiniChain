@@ -1,5 +1,5 @@
 import json
-from core.utils import _sha256
+from minichain.utils import _sha256
 
 
 class MerkleTree:

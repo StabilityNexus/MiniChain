@@ -2,7 +2,7 @@ import unittest
 import sys
 import os
 
-from core import State, Transaction
+from minichain import State, Transaction
 from nacl.signing import SigningKey
 from nacl.encoding import HexEncoder
 

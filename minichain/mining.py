@@ -1,7 +1,7 @@
 import logging
 import re
-from core import Transaction, Block
-from consensus import mine_block, MiningExceededError
+from minichain import Transaction, Block
+from minichain.pow import mine_block, MiningExceededError
 
 
 logger = logging.getLogger(__name__)
@@ -22,7 +22,7 @@ def mine_and_process_block(chain, mempool, pending_nonce_map):
 
     try:
         mined_block = mine_block(block)
-except MiningExceededError:
+    except MiningExceededError:
         mempool.return_transactions(pending_txs)
         logger.warning("Mining failed, transactions returned to mempool")
         return None, []
@@ -44,11 +44,11 @@ except MiningExceededError:
 
         chain.state.credit_mining_reward(miner_address)
 
-for tx in mined_block.transactions:
+        for tx in mined_block.transactions:
             sync_nonce(chain.state, pending_nonce_map, tx.sender)
 
         return mined_block, deployed_contracts
-else:
+    else:
         mempool.return_transactions(pending_txs)
         logger.error("Block rejected by chain, transactions returned to mempool")
         return None, []
