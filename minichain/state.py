@@ -161,3 +161,16 @@ class State:
         reward = reward if reward is not None else self.DEFAULT_MINING_REWARD
         account = self.get_account(miner_address)
         account['balance'] += reward
+
+    def to_dict(self):
+        return {
+            "accounts": self.accounts,
+            "default_mining_reward": self.DEFAULT_MINING_REWARD
+        }
+
+    @classmethod
+    def from_dict(cls, data):
+        new_state = cls()
+        new_state.accounts = data.get("accounts", {})
+        new_state.DEFAULT_MINING_REWARD = data.get("default_mining_reward", 50)
+        return new_state
