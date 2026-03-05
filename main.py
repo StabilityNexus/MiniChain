@@ -138,8 +138,9 @@ def make_network_handler(chain, mempool, network):
                 miner = payload.get("miner", BURN_ADDRESS)
                 chain.state.credit_mining_reward(miner)
 
-                # Drain matching txs from mempool so they aren't re-mined
-                mempool.get_transactions_for_block()
+                # Remove only the transactions present in this block
+                tx_ids = [mempool.get_tx_id_from_dict(t) for t in txs_raw]
+                mempool.remove_transactions_by_ids(tx_ids)
             else:
                 logger.warning("📥 Received Block #%s — rejected", block.index)
 
@@ -183,6 +184,7 @@ async def cli_loop(sk, pk, chain, mempool, network, nonce_counter, mining_enable
         """Background task for automatic mining."""
         while running:
             if mining_enabled[0]:
+                pending_preview = mempool.get_pending_transactions()
                 # Create coinbase transaction for mining reward
                 coinbase_tx = Transaction(
                     sender=State.COINBASE_ADDRESS,
@@ -192,8 +194,10 @@ async def cli_loop(sk, pk, chain, mempool, network, nonce_counter, mining_enable
                     data=None,
                     signature=None,
                 )
-                
-                pending_txs = mempool.get_transactions_for_block()
+                if pending_preview:
+                    pending_txs = mempool.get_transactions_for_block()
+                else:
+                    pending_txs = []
                 all_txs = [coinbase_tx] + pending_txs
                 
                 block = Block(
@@ -209,8 +213,10 @@ async def cli_loop(sk, pk, chain, mempool, network, nonce_counter, mining_enable
                         await network.broadcast_block(mined_block)
                 except Exception:
                     # Mining timeout or error - return transactions to mempool
-                    for tx in pending_txs:
-                        mempool.add_transaction(tx)
+                    if pending_txs:
+                        result = mempool.restore_transactions(pending_txs)
+                        if result.get("dropped"):
+                            logger.warning("Mempool restore dropped %d txs", result["dropped"])
             
             await asyncio.sleep(mine_interval)
 
@@ -392,7 +398,6 @@ async def run_node(port: int, connect_to: str | None, fund: int, auto_mine: bool
             connected = await network.connect_to_peer(host, int(peer_port))
             if connected:
                 # Request chain sync from the peer we just connected to
-                await asyncio.sleep(0.5)  # Brief delay to allow connection to stabilize
                 await network.request_chain()
         except ValueError:
             logger.error("Invalid --connect format. Use host:port")

@@ -95,7 +95,7 @@ class Blockchain:
             self.chain.append(block)
             return True
 
-    def validate_chain(self, chain_data: list) -> bool:
+    def validate_chain(self, chain_data: list):
         """
         Validate a chain received from a peer.
         
@@ -109,20 +109,24 @@ class Blockchain:
             chain_data: List of block dictionaries
             
         Returns:
-            True if chain is valid, False otherwise
+            Tuple (is_valid, validated_state)
         """
         if not chain_data:
-            return False
+            return False, None
 
         # Validate genesis block
         genesis = chain_data[0]
         if genesis.get("hash") != self.GENESIS_HASH:
             logger.warning("Chain validation failed: Invalid genesis hash")
-            return False
+            return False, None
 
         if genesis.get("index") != 0:
             logger.warning("Chain validation failed: Genesis index not 0")
-            return False
+            return False, None
+
+        if genesis.get("previous_hash") != "0":
+            logger.warning("Chain validation failed: Genesis previous_hash not '0'")
+            return False, None
 
         # Validate each subsequent block
         temp_state = State()  # Fresh state for validation
@@ -157,7 +161,7 @@ class Blockchain:
                 computed_hash = calculate_hash(block.to_header_dict())
                 if block_data.get("hash") != computed_hash:
                     logger.warning("Chain validation failed: Invalid hash at block %d", i)
-                    return False
+                    return False, None
 
                 # Verify proof-of-work meets difficulty target
                 difficulty = block_data.get("difficulty", 0) or 0
@@ -165,19 +169,19 @@ class Blockchain:
                     required_prefix = "0" * difficulty
                     if not computed_hash.startswith(required_prefix):
                         logger.warning("Chain validation failed: Hash does not meet difficulty %d at block %d", difficulty, i)
-                        return False
+                        return False, None
 
                 # Validate and apply transactions
                 for tx in transactions:
                     if not temp_state.validate_and_apply(tx):
                         logger.warning("Chain validation failed: Invalid tx in block %d", i)
-                        return False
+                        return False, None
 
             except Exception as e:
                 logger.warning("Chain validation failed at block %d: %s", i, e)
-                return False
+                return False, None
 
-        return True
+        return True, temp_state
 
     def replace_chain(self, chain_data: list) -> bool:
         """
@@ -189,7 +193,7 @@ class Blockchain:
             chain_data: List of block dictionaries from peer
             
         Returns:
-            True if chain was replaced, False otherwise
+            True if chain was replaced, False if not replaced
         """
         with self._lock:
             # Only replace if longer (or equal during initial sync)
@@ -198,16 +202,16 @@ class Blockchain:
                            len(chain_data), len(self.chain))
                 return False
             
-            # If equal length, only replace if it validates (essentially a no-op for same chain)
+            # If equal length, validate but do not replace
             if len(chain_data) == len(self.chain):
-                # Validate but don't bother replacing if identical
-                if self.validate_chain(chain_data):
+                is_valid, _ = self.validate_chain(chain_data)
+                if is_valid:
                     logger.debug("Received chain same length as ours and valid")
-                    return True  # Consider it a successful sync
                 return False
 
             # Validate the received chain
-            if not self.validate_chain(chain_data):
+            is_valid, validated_state = self.validate_chain(chain_data)
+            if not is_valid or validated_state is None:
                 logger.warning("Received chain failed validation")
                 return False
 
@@ -215,7 +219,7 @@ class Blockchain:
             logger.info("Replacing chain: %d -> %d blocks", len(self.chain), len(chain_data))
             
             new_chain = []
-            new_state = State()
+            new_state = validated_state
             
             # Add genesis
             genesis_block = Block(
@@ -240,12 +244,6 @@ class Blockchain:
                 )
                 block.nonce = block_data.get("nonce", 0)
                 block.hash = block_data.get("hash")
-
-                # Apply transactions to new state
-                for tx in transactions:
-                    if not new_state.validate_and_apply(tx):
-                        logger.warning("Chain rebuild failed: Invalid tx in block %d", i)
-                        return False
 
                 new_chain.append(block)
 

@@ -31,6 +31,7 @@ class P2PNetwork:
         self._port: int = 0
         self._listen_tasks: list[asyncio.Task] = []
         self._on_peer_connected = None  # callback(writer) called when a new peer connects
+        self._ready_events: dict[str, asyncio.Event] = {}
 
     def register_handler(self, handler_callback):
         if not callable(handler_callback):
@@ -75,8 +76,25 @@ class P2PNetwork:
         try:
             reader, writer = await asyncio.open_connection(host, port)
             self._peers.append((reader, writer))
-            task = asyncio.create_task(self._listen_to_peer(reader, writer, f"{host}:{port}"))
+            addr = f"{host}:{port}"
+            ready_event = asyncio.Event()
+            self._ready_events[addr] = ready_event
+            task = asyncio.create_task(self._listen_to_peer(reader, writer, addr))
             self._listen_tasks.append(task)
+            await self.send_to_peer(writer, {"type": "ready"})
+            try:
+                await asyncio.wait_for(ready_event.wait(), timeout=5.0)
+            except asyncio.TimeoutError:
+                logger.error("Network: Ready handshake timeout for %s", addr)
+                self._ready_events.pop(addr, None)
+                try:
+                    writer.close()
+                    await writer.wait_closed()
+                except Exception:
+                    pass
+                if (reader, writer) in self._peers:
+                    self._peers.remove((reader, writer))
+                return False
             logger.info("Network: Connected to peer %s:%d", host, port)
             return True
         except Exception as e:
@@ -109,6 +127,16 @@ class P2PNetwork:
                     data = json.loads(line.decode().strip())
                 except (json.JSONDecodeError, UnicodeDecodeError):
                     logger.warning("Network: Malformed message from %s", addr)
+                    continue
+
+                msg_type = data.get("type")
+                if msg_type == "ready":
+                    await self.send_to_peer(writer, {"type": "ready_ack"})
+                    continue
+                if msg_type == "ready_ack":
+                    event = self._ready_events.pop(addr, None)
+                    if event:
+                        event.set()
                     continue
 
                 if self._handler_callback:
@@ -177,7 +205,7 @@ class P2PNetwork:
             await writer.drain()
             logger.info("Network: Sent chain (%d blocks) to peer", len(chain_data))
         except Exception as e:
-            logger.error("Network: Failed to send chain: %s", e)
+            logger.exception("Network: Failed to send chain: %s", e)
 
     async def send_to_peer(self, writer: asyncio.StreamWriter, payload: dict):
         """Send a message to a specific peer."""
@@ -186,7 +214,7 @@ class P2PNetwork:
             writer.write(line)
             await writer.drain()
         except Exception as e:
-            logger.error("Network: Failed to send to peer: %s", e)
+            logger.exception("Network: Failed to send to peer: %s", e)
 
     @property
     def peer_count(self) -> int:

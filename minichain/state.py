@@ -172,16 +172,3 @@ class State:
         reward = reward if reward is not None else self.DEFAULT_MINING_REWARD
         account = self.get_account(miner_address)
         account['balance'] += reward
-
-    def update_contract_storage_partial(self, address, updates):
-        if address not in self.accounts:
-            raise KeyError(f"Contract address not found: {address}")
-        if isinstance(updates, dict):
-            self.accounts[address]['storage'].update(updates)
-        else:
-            raise ValueError("Updates must be a dictionary")
-
-    def credit_mining_reward(self, miner_address, reward=None):
-        reward = reward if reward is not None else self.DEFAULT_MINING_REWARD
-        account = self.get_account(miner_address)
-        account['balance'] += reward
