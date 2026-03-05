@@ -31,6 +31,7 @@ class P2PNetwork:
         self._port: int = 0
         self._listen_tasks: list[asyncio.Task] = []
         self._on_peer_connected = None  # callback(writer) called when a new peer connects
+        self._ready_events: dict[str, asyncio.Event] = {}
 
     def register_handler(self, handler_callback):
         if not callable(handler_callback):
@@ -75,8 +76,25 @@ class P2PNetwork:
         try:
             reader, writer = await asyncio.open_connection(host, port)
             self._peers.append((reader, writer))
-            task = asyncio.create_task(self._listen_to_peer(reader, writer, f"{host}:{port}"))
+            addr = f"{host}:{port}"
+            ready_event = asyncio.Event()
+            self._ready_events[addr] = ready_event
+            task = asyncio.create_task(self._listen_to_peer(reader, writer, addr))
             self._listen_tasks.append(task)
+            await self.send_to_peer(writer, {"type": "ready"})
+            try:
+                await asyncio.wait_for(ready_event.wait(), timeout=5.0)
+            except asyncio.TimeoutError:
+                logger.error("Network: Ready handshake timeout for %s", addr)
+                self._ready_events.pop(addr, None)
+                try:
+                    writer.close()
+                    await writer.wait_closed()
+                except Exception:
+                    pass
+                if (reader, writer) in self._peers:
+                    self._peers.remove((reader, writer))
+                return False
             logger.info("Network: Connected to peer %s:%d", host, port)
             return True
         except Exception as e:
@@ -111,9 +129,20 @@ class P2PNetwork:
                     logger.warning("Network: Malformed message from %s", addr)
                     continue
 
+                msg_type = data.get("type")
+                if msg_type == "ready":
+                    await self.send_to_peer(writer, {"type": "ready_ack"})
+                    continue
+                if msg_type == "ready_ack":
+                    event = self._ready_events.pop(addr, None)
+                    if event:
+                        event.set()
+                    continue
+
                 if self._handler_callback:
                     try:
-                        await self._handler_callback(data)
+                        # Pass writer so handler can respond directly to sender
+                        await self._handler_callback(data, writer)
                     except Exception:
                         logger.exception("Network: Handler error for message from %s", addr)
         except asyncio.CancelledError:
@@ -161,6 +190,31 @@ class P2PNetwork:
     async def broadcast_block(self, block):
         logger.info("Network: Broadcasting Block #%d", block.index)
         await self._broadcast_raw({"type": "block", "data": block.to_dict()})
+
+    async def request_chain(self):
+        """Request the full chain from all connected peers."""
+        logger.info("Network: Requesting chain from %d peer(s)...", len(self._peers))
+        await self._broadcast_raw({"type": "get_chain", "data": {}})
+
+    async def send_chain(self, writer: asyncio.StreamWriter, chain_data: list):
+        """Send the full chain to a specific peer."""
+        try:
+            payload = {"type": "chain", "data": chain_data}
+            line = (json.dumps(payload) + "\n").encode()
+            writer.write(line)
+            await writer.drain()
+            logger.info("Network: Sent chain (%d blocks) to peer", len(chain_data))
+        except Exception as e:
+            logger.exception("Network: Failed to send chain: %s", e)
+
+    async def send_to_peer(self, writer: asyncio.StreamWriter, payload: dict):
+        """Send a message to a specific peer."""
+        try:
+            line = (json.dumps(payload) + "\n").encode()
+            writer.write(line)
+            await writer.drain()
+        except Exception as e:
+            logger.exception("Network: Failed to send to peer: %s", e)
 
     @property
     def peer_count(self) -> int:

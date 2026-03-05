@@ -18,6 +18,10 @@ class Mempool:
         """
         return calculate_hash(tx.to_dict())
 
+    def get_tx_id_from_dict(self, tx_dict):
+        """Compute deterministic tx id from a transaction dictionary."""
+        return calculate_hash(tx_dict)
+
     def add_transaction(self, tx):
         """
         Adds a transaction to the pool if:
@@ -60,3 +64,51 @@ class Mempool:
             self._seen_tx_ids.difference_update(confirmed_ids)
 
             return txs
+
+    def get_pending_transactions(self):
+        """
+        Returns a copy of pending transactions without clearing the pool.
+        Used for inspection/display purposes.
+        """
+        with self._lock:
+            return self._pending_txs[:]
+
+    def restore_transactions(self, transactions):
+        """
+        Restore transactions to the pool without duplicate/seen checks.
+        Returns a dict with counts for restored and dropped.
+        """
+        restored = 0
+        dropped = 0
+        with self._lock:
+            for tx in transactions:
+                if len(self._pending_txs) >= self.max_size:
+                    dropped += 1
+                    continue
+                self._pending_txs.append(tx)
+                self._seen_tx_ids.add(self._get_tx_id(tx))
+                restored += 1
+        return {"restored": restored, "dropped": dropped}
+
+    def remove_transactions_by_ids(self, tx_ids):
+        """Remove transactions matching the provided tx_ids from the pool."""
+        ids = set(tx_ids)
+        if not ids:
+            return 0
+        with self._lock:
+            kept = []
+            removed_ids = set()
+            for tx in self._pending_txs:
+                tx_id = self._get_tx_id(tx)
+                if tx_id in ids:
+                    removed_ids.add(tx_id)
+                    continue
+                kept.append(tx)
+            self._pending_txs = kept
+            self._seen_tx_ids.difference_update(removed_ids)
+            return len(removed_ids)
+
+    def size(self):
+        """Returns the number of pending transactions."""
+        with self._lock:
+            return len(self._pending_txs)

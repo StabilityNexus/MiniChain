@@ -14,6 +14,7 @@ class State:
         self.contract_machine = ContractMachine(self)
 
     DEFAULT_MINING_REWARD = 50
+    COINBASE_ADDRESS = "0" * 40  # Special address for coinbase transactions
 
     def get_account(self, address):
         if address not in self.accounts:
@@ -26,6 +27,10 @@ class State:
         return self.accounts[address]
 
     def verify_transaction_logic(self, tx):
+        # Coinbase transactions don't need signature/balance/nonce validation
+        if tx.sender == self.COINBASE_ADDRESS:
+            return True
+
         if not tx.verify():
             logger.error(f"Error: Invalid signature for tx from {tx.sender[:8]}...")
             return False
@@ -73,6 +78,12 @@ class State:
         """
         if not self.verify_transaction_logic(tx):
             return False
+
+        # Coinbase transactions only credit the receiver, no deduction from sender
+        if tx.sender == self.COINBASE_ADDRESS:
+            receiver = self.get_account(tx.receiver)
+            receiver['balance'] += tx.amount
+            return True
 
         sender = self.accounts[tx.sender]
 
