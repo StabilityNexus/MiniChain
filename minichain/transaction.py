@@ -12,7 +12,12 @@ class Transaction:
         self.amount = amount
         self.nonce = nonce
         self.data = data            # Preserve None (do NOT normalize to "")
-        self.timestamp = round(timestamp * 1000) if timestamp is not None else round(time.time() * 1000) # Integer milliseconds for determinism
+        if timestamp is None:
+            self.timestamp = round(time.time() * 1000)  # New tx: seconds → ms
+        elif timestamp > 1e12:
+            self.timestamp = int(timestamp)              # Already in ms (from network)
+        else:
+            self.timestamp = round(timestamp * 1000)     # Seconds → ms
         self.signature = signature  # Hex str
 
     def to_dict(self):
