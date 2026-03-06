@@ -37,23 +37,31 @@ class P2PNetwork:
             raise ValueError("handler_callback must be callable")
         self._handler_callback = handler_callback
 
+    def set_on_peer_connected(self, callback):
+        if callback is not None and not asyncio.iscoroutinefunction(callback):
+            raise ValueError("on_peer_connected callback must be an async callable")
+        self._on_peer_connected = callback
+
     # ------------------------------------------------------------------
     # Server lifecycle
     # ------------------------------------------------------------------
 
-    async def start(self, port: int = 9000):
+    async def start(self, port: int = 9000, host: str = "127.0.0.1"):
         """Start listening for incoming peer connections on the given port."""
         self._port = port
         self._server = await asyncio.start_server(
-            self._handle_incoming, "0.0.0.0", port
+            self._handle_incoming, host, port
         )
-        logger.info("Network: Listening on 0.0.0.0:%d", port)
+        logger.info("Network: Listening on %s:%d", host, port)
 
     async def stop(self):
         """Gracefully shut down the server and disconnect all peers."""
         logger.info("Network: Shutting down")
         for task in self._listen_tasks:
             task.cancel()
+        if self._listen_tasks:
+            await asyncio.gather(*self._listen_tasks, return_exceptions=True)
+        self._listen_tasks.clear()
         for _, writer in self._peers:
             try:
                 writer.close()
@@ -75,6 +83,11 @@ class P2PNetwork:
         try:
             reader, writer = await asyncio.open_connection(host, port)
             self._peers.append((reader, writer))
+            if self._on_peer_connected:
+                try:
+                    await self._on_peer_connected(writer)
+                except Exception:
+                    logger.exception("Network: Error during peer sync")
             task = asyncio.create_task(self._listen_to_peer(reader, writer, f"{host}:{port}"))
             self._listen_tasks.append(task)
             logger.info("Network: Connected to peer %s:%d", host, port)
@@ -110,6 +123,8 @@ class P2PNetwork:
                 except (json.JSONDecodeError, UnicodeDecodeError):
                     logger.warning("Network: Malformed message from %s", addr)
                     continue
+                if isinstance(data, dict):
+                    data["_peer_addr"] = addr
 
                 if self._handler_callback:
                     try:
@@ -144,7 +159,13 @@ class P2PNetwork:
                 await writer.drain()
             except Exception:
                 disconnected.append((reader, writer))
-        for pair in disconnected:
+        for reader, writer in disconnected:
+            try:
+                writer.close()
+                await writer.wait_closed()
+            except Exception:
+                pass
+            pair = (reader, writer)
             if pair in self._peers:
                 self._peers.remove(pair)
 
