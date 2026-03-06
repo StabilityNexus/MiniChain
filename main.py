@@ -100,8 +100,15 @@ def make_network_handler(chain, mempool):
                 return
 
             # Merge remote state into local state (for accounts we don't have yet)
-            remote_accounts = payload.get("accounts", {}) if isinstance(payload, dict) else {}
+            remote_accounts = payload.get("accounts") if isinstance(payload, dict) else None
+            if not isinstance(remote_accounts, dict):
+                logger.warning("🔒 Rejected sync from %s with invalid accounts payload", peer_addr)
+                return
+
             for addr, acc in remote_accounts.items():
+                if not isinstance(acc, dict):
+                    logger.warning("🔒 Skipping malformed account %r from %s", addr, peer_addr)
+                    continue
                 if addr not in chain.state.accounts:
                     chain.state.accounts[addr] = acc
                     logger.info("🔄 Synced account %s... (balance=%d)", addr[:12], acc.get("balance", 0))
@@ -154,7 +161,7 @@ HELP_TEXT = """
 ║  send <to> <amount>   - send coins             ║
 ║  mine                 - mine a block           ║
 ║  peers                - show connected peers   ║
-║  connect <host:port>  - connect to a peer      ║
+║  connect <host>:<port> - connect to a peer      ║
 ║  address              - show your public key   ║
 ║  chain                - show chain summary     ║
 ║  help                 - show this help         ║
@@ -295,11 +302,6 @@ async def run_node(port: int, connect_to: str | None, fund: int, host: str = "12
 
     await network.start(port=port, host=host)
 
-    # Fund this node's wallet so it can transact in the demo
-    if fund > 0:
-        chain.state.credit_mining_reward(pk, reward=fund)
-        logger.info("💰 Funded %s... with %d coins", pk[:12], fund)
-
     # Connect to a seed peer if requested
     if connect_to:
         try:
@@ -307,6 +309,11 @@ async def run_node(port: int, connect_to: str | None, fund: int, host: str = "12
             await network.connect_to_peer(host, int(peer_port))
         except ValueError:
             logger.error("Invalid --connect format. Use host:port")
+
+    # Fund this node's wallet so it can transact in the demo
+    if fund > 0:
+        chain.state.credit_mining_reward(pk, reward=fund)
+        logger.info("💰 Funded %s... with %d coins", pk[:12], fund)
 
     # Nonce counter kept as a mutable list so the CLI closure can mutate it
     nonce_counter = [0]
