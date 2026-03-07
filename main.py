@@ -1,3 +1,22 @@
+"""
+MiniChain interactive node — testnet demo entry point.
+
+Usage:
+    python main.py --port 9000
+    python main.py --port 9001 --connect 127.0.0.1:9000
+
+Commands (type in the terminal while the node is running):
+    balance                 — show all account balances
+    send <to> <amount>      — send coins to another address
+    mine                    — mine a block from the mempool
+    peers                   — show connected peers
+    connect <host>:<port>   — connect to another node
+    address                 — show this node's public key
+    help                    — show available commands
+    quit                    — shut down the node
+"""
+
+import argparse
 import asyncio
 import logging
 import re
@@ -27,6 +46,9 @@ def create_wallet():
 # -------------------------
 def mine_and_process_block(chain, mempool, pending_nonce_map):
     pending_txs = mempool.get_transactions_for_block()
+    if not pending_txs:
+        logger.info("Mempool is empty — nothing to mine.")
+        return None
 
     block = Block(
         index=chain.last_block.index + 1,
@@ -73,9 +95,182 @@ def mine_and_process_block(chain, mempool, pending_nonce_map):
         return mined_block, deployed_contracts
 
     else:
-        logger.error("Block rejected by chain")
-        return None, []
+        logger.error("❌ Block rejected by chain")
+        return None
 
+
+# ──────────────────────────────────────────────
+# Network message handler
+# ──────────────────────────────────────────────
+
+def make_network_handler(chain, mempool):
+    """Return an async callback that processes incoming P2P messages."""
+
+    async def handler(data):
+        msg_type = data.get("type")
+        payload = data.get("data")
+
+        if msg_type == "sync":
+            # Merge remote state into local state (for accounts we don't have yet)
+            remote_accounts = payload.get("accounts", {})
+            for addr, acc in remote_accounts.items():
+                if addr not in chain.state.accounts:
+                    chain.state.accounts[addr] = acc
+                    logger.info("🔄 Synced account %s... (balance=%d)", addr[:12], acc.get("balance", 0))
+            logger.info("🔄 State sync complete — %d accounts", len(chain.state.accounts))
+
+        elif msg_type == "tx":
+            tx = Transaction(**payload)
+            if mempool.add_transaction(tx):
+                logger.info("📥 Received tx from %s... (amount=%s)", tx.sender[:8], tx.amount)
+
+        elif msg_type == "block":
+            txs_raw = payload.pop("transactions", [])
+            block_hash = payload.pop("hash", None)
+            transactions = [Transaction(**t) for t in txs_raw]
+
+            block = Block(
+                index=payload["index"],
+                previous_hash=payload["previous_hash"],
+                transactions=transactions,
+                timestamp=payload.get("timestamp"),
+                difficulty=payload.get("difficulty"),
+            )
+            block.nonce = payload.get("nonce", 0)
+            block.hash = block_hash
+
+            if chain.add_block(block):
+                logger.info("📥 Received Block #%d — added to chain", block.index)
+
+                # Apply mining reward for the remote miner (burn address as placeholder)
+                miner = payload.get("miner", BURN_ADDRESS)
+                chain.state.credit_mining_reward(miner)
+
+                # Drain matching txs from mempool so they aren't re-mined
+                mempool.get_transactions_for_block()
+            else:
+                logger.warning("📥 Received Block #%s — rejected", block.index)
+
+    return handler
+
+
+# ──────────────────────────────────────────────
+# Interactive CLI
+# ──────────────────────────────────────────────
+
+HELP_TEXT = """
+╔════════════════════════════════════════════════╗
+║              MiniChain Commands                ║
+╠════════════════════════════════════════════════╣
+║  balance              — show all balances      ║
+║  send <to> <amount>   — send coins             ║
+║  mine                 — mine a block           ║
+║  peers                — show connected peers   ║
+║  connect <host:port>  — connect to a peer      ║
+║  address              — show your public key   ║
+║  chain                — show chain summary     ║
+║  help                 — show this help          ║
+║  quit                 — shut down               ║
+╚════════════════════════════════════════════════╝
+"""
+
+
+async def cli_loop(sk, pk, chain, mempool, network, nonce_counter):
+    """Read commands from stdin asynchronously."""
+    loop = asyncio.get_event_loop()
+    print(HELP_TEXT)
+    print(f"Your address: {pk}\n")
+
+    while True:
+        try:
+            raw = await loop.run_in_executor(None, lambda: input("minichain> "))
+        except (EOFError, KeyboardInterrupt):
+            break
+
+        parts = raw.strip().split()
+        if not parts:
+            continue
+        cmd = parts[0].lower()
+
+        # ── balance ──
+        if cmd == "balance":
+            accounts = chain.state.accounts
+            if not accounts:
+                print("  (no accounts yet)")
+            for addr, acc in accounts.items():
+                tag = " (you)" if addr == pk else ""
+                print(f"  {addr[:12]}...  balance={acc['balance']}  nonce={acc['nonce']}{tag}")
+
+        # ── send ──
+        elif cmd == "send":
+            if len(parts) < 3:
+                print("  Usage: send <receiver_address> <amount>")
+                continue
+            receiver = parts[1]
+            try:
+                amount = int(parts[2])
+            except ValueError:
+                print("  Amount must be an integer.")
+                continue
+
+            nonce = nonce_counter[0]
+            tx = Transaction(sender=pk, receiver=receiver, amount=amount, nonce=nonce)
+            tx.sign(sk)
+
+            if mempool.add_transaction(tx):
+                nonce_counter[0] += 1
+                await network.broadcast_transaction(tx)
+                print(f"  ✅ Tx sent: {amount} coins → {receiver[:12]}...")
+            else:
+                print("  ❌ Transaction rejected (invalid sig, duplicate, or mempool full).")
+
+        # ── mine ──
+        elif cmd == "mine":
+            mined = mine_and_process_block(chain, mempool, pk)
+            if mined:
+                await network.broadcast_block(mined)
+                # Sync local nonce from chain state
+                acc = chain.state.get_account(pk)
+                nonce_counter[0] = acc.get("nonce", 0)
+
+        # ── peers ──
+        elif cmd == "peers":
+            print(f"  Connected peers: {network.peer_count}")
+
+        # ── connect ──
+        elif cmd == "connect":
+            if len(parts) < 2:
+                print("  Usage: connect <host>:<port>")
+                continue
+            try:
+                host, port_str = parts[1].rsplit(":", 1)
+                port = int(port_str)
+            except ValueError:
+                print("  Invalid format. Use host:port")
+                continue
+            await network.connect_to_peer(host, port)
+
+        # ── address ──
+        elif cmd == "address":
+            print(f"  {pk}")
+
+        # ── chain ──
+        elif cmd == "chain":
+            print(f"  Chain length: {len(chain.chain)} blocks")
+            for b in chain.chain:
+                tx_count = len(b.transactions) if b.transactions else 0
+                print(f"    Block #{b.index}  hash={b.hash[:16]}...  txs={tx_count}")
+
+        # ── help ──
+        elif cmd == "help":
+            print(HELP_TEXT)
+
+        # ── quit ──
+        elif cmd in ("quit", "exit", "q"):
+            break
+
+        else:
+            print(f"  Unknown command: {cmd}. Type 'help' for available commands.")
 
 # -------------------------
 # Nonce Sync
@@ -84,6 +279,9 @@ def sync_nonce(state, pending_nonce_map, address):
     account = state.get_account(address)
     pending_nonce_map[address] = account.get("nonce", 0) if account else 0
 
+# ──────────────────────────────────────────────
+# Main entry point
+# ──────────────────────────────────────────────
 
 # -------------------------
 # Node Logic
@@ -126,15 +324,15 @@ async def node_loop():
                     difficulty=block_data.get("difficulty"),
                 )
 
-                block.nonce = block_data.get("nonce", 0)
-                block.hash = block_data.get("hash")
+    await network.start(port=port)
 
                 chain.add_block(block)
 
        except Exception:
 +            logger.exception("Network error while handling incoming data")
 
-    network.register_handler(_handle_network_data)
+    # Nonce counter kept as a mutable list so the CLI closure can mutate it
+    nonce_counter = [0]
 
     try:
         await _run_node(network, chain, mempool, pending_nonce_map, get_next_nonce)
@@ -164,10 +362,6 @@ async def _run_node(network, chain, mempool, pending_nonce_map, get_next_nonce):
         amount=10,
         nonce=get_next_nonce(alice_pk),
     )
-    tx_payment.sign(alice_sk)
-
-    if mempool.add_transaction(tx_payment):
-        await network.broadcast_transaction(tx_payment)
 
     # -------------------------------
     # PID Demo: Mining 5 Blocks

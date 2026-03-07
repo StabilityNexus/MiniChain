@@ -1,118 +1,167 @@
+"""
+Minimal TCP-based P2P network layer for MiniChain testnet demo.
+
+Each node runs an asyncio TCP server and can connect to peers.
+Messages are newline-delimited JSON.
+"""
+
+import asyncio
 import json
 import logging
 
 logger = logging.getLogger(__name__)
 
+TOPIC = "minichain-global"
+
 
 class P2PNetwork:
     """
-    A minimal abstraction for Peer-to-Peer networking.
+    Lightweight peer-to-peer networking using asyncio TCP streams.
 
-    Expected incoming message interface for handle_message():
-        msg must have attribute:
-            - data: bytes (JSON-encoded payload)
-
-    JSON structure:
-        {
-            "type": "tx" | "block",
-            "data": {...}
-        }
+    JSON wire format (one JSON object per line):
+        {"type": "tx" | "block", "data": {...}}
     """
 
     def __init__(self, handler_callback=None):
         self._handler_callback = None
         if handler_callback is not None:
             self.register_handler(handler_callback)
-        self.pubsub = None  # Will be set in real implementation
+        self._peers: list[tuple[asyncio.StreamReader, asyncio.StreamWriter]] = []
+        self._server: asyncio.Server | None = None
+        self._port: int = 0
+        self._listen_tasks: list[asyncio.Task] = []
+        self._on_peer_connected = None  # callback(writer) called when a new peer connects
 
     def register_handler(self, handler_callback):
         if not callable(handler_callback):
             raise ValueError("handler_callback must be callable")
         self._handler_callback = handler_callback
 
-    async def start(self):
-        logger.info("Network: Listening on /ip4/0.0.0.0/tcp/0")
-        # In real libp2p, we would await host.start() here
+    # ------------------------------------------------------------------
+    # Server lifecycle
+    # ------------------------------------------------------------------
+
+    async def start(self, port: int = 9000):
+        """Start listening for incoming peer connections on the given port."""
+        self._port = port
+        self._server = await asyncio.start_server(
+            self._handle_incoming, "0.0.0.0", port
+        )
+        logger.info("Network: Listening on 0.0.0.0:%d", port)
 
     async def stop(self):
-        """Clean up network resources cleanly upon shutdown."""
+        """Gracefully shut down the server and disconnect all peers."""
         logger.info("Network: Shutting down")
-        if self.pubsub:
+        for task in self._listen_tasks:
+            task.cancel()
+        for _, writer in self._peers:
             try:
-                shutdown_meth = None
-                for method_name in ('close', 'stop', 'aclose', 'shutdown'):
-                    if hasattr(self.pubsub, method_name):
-                        shutdown_meth = getattr(self.pubsub, method_name)
-                        break
-                
-                if shutdown_meth:
-                    import asyncio
-                    res = shutdown_meth()
-                    if asyncio.iscoroutine(res):
-                        await res
-            except Exception as e:
-                logger.error("Network: Error shutting down pubsub: %s", e)
-            finally:
-                self.pubsub = None
+                writer.close()
+                await writer.wait_closed()
+            except Exception:
+                pass
+        self._peers.clear()
+        if self._server:
+            self._server.close()
+            await self._server.wait_closed()
+            self._server = None
 
-    async def _broadcast_message(self, topic, msg_type, payload):
-        msg = json.dumps({"type": msg_type, "data": payload})
-        if self.pubsub:
+    # ------------------------------------------------------------------
+    # Peer connections
+    # ------------------------------------------------------------------
+
+    async def connect_to_peer(self, host: str, port: int) -> bool:
+        """Actively connect to another MiniChain node."""
+        try:
+            reader, writer = await asyncio.open_connection(host, port)
+            self._peers.append((reader, writer))
+            task = asyncio.create_task(self._listen_to_peer(reader, writer, f"{host}:{port}"))
+            self._listen_tasks.append(task)
+            logger.info("Network: Connected to peer %s:%d", host, port)
+            return True
+        except Exception as e:
+            logger.error("Network: Failed to connect to %s:%d — %s", host, port, e)
+            return False
+
+    async def _handle_incoming(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
+        """Accept an incoming peer connection."""
+        peername = writer.get_extra_info("peername")
+        addr = f"{peername[0]}:{peername[1]}" if peername else "unknown"
+        logger.info("Network: Incoming peer connection from %s", addr)
+        self._peers.append((reader, writer))
+        task = asyncio.create_task(self._listen_to_peer(reader, writer, addr))
+        self._listen_tasks.append(task)
+        # Send current state to the new peer
+        if self._on_peer_connected:
             try:
-                await self.pubsub.publish(topic, msg.encode())
-            except Exception as e:
-                logger.error("Network: Publish failed: %s", e)
-        else:
-            logger.debug("Network: pubsub not initialized (mock mode)")
+                await self._on_peer_connected(writer)
+            except Exception:
+                logger.exception("Network: Error during peer sync")
+
+    async def _listen_to_peer(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter, addr: str):
+        """Read newline-delimited JSON messages from a peer."""
+        try:
+            while True:
+                line = await reader.readline()
+                if not line:
+                    break
+                try:
+                    data = json.loads(line.decode().strip())
+                except (json.JSONDecodeError, UnicodeDecodeError):
+                    logger.warning("Network: Malformed message from %s", addr)
+                    continue
+
+                if self._handler_callback:
+                    try:
+                        await self._handler_callback(data)
+                    except Exception:
+                        logger.exception("Network: Handler error for message from %s", addr)
+        except asyncio.CancelledError:
+            pass
+        except ConnectionResetError:
+            pass
+        finally:
+            logger.info("Network: Peer %s disconnected", addr)
+            try:
+                writer.close()
+                await writer.wait_closed()
+            except Exception:
+                pass
+            if (reader, writer) in self._peers:
+                self._peers.remove((reader, writer))
+
+    # ------------------------------------------------------------------
+    # Broadcasting
+    # ------------------------------------------------------------------
+
+    async def _broadcast_raw(self, payload: dict):
+        """Send a JSON message to every connected peer."""
+        line = (json.dumps(payload) + "\n").encode()
+        disconnected = []
+        for reader, writer in self._peers:
+            try:
+                writer.write(line)
+                await writer.drain()
+            except Exception:
+                disconnected.append((reader, writer))
+        for pair in disconnected:
+            if pair in self._peers:
+                self._peers.remove(pair)
 
     async def broadcast_transaction(self, tx):
         sender = getattr(tx, "sender", "<unknown>")
-        logger.info("Network: Broadcasting Tx from %s...", sender[:5])
+        logger.info("Network: Broadcasting Tx from %s...", sender[:8])
         try:
-            payload = tx.to_dict()
+            payload = {"type": "tx", "data": tx.to_dict()}
         except (TypeError, ValueError) as e:
             logger.error("Network: Failed to serialize tx: %s", e)
             return
-        await self._broadcast_message("minichain-global", "tx", payload)
+        await self._broadcast_raw(payload)
 
     async def broadcast_block(self, block):
         logger.info("Network: Broadcasting Block #%d", block.index)
-        await self._broadcast_message("minichain-global", "block", block.to_dict())
+        await self._broadcast_raw({"type": "block", "data": block.to_dict()})
 
-    async def handle_message(self, msg):
-        """
-        Callback when a p2p message is received.
-        """
-
-        try:
-            if not hasattr(msg, "data"):
-                raise TypeError("Incoming message missing 'data' attribute")
-
-            if not isinstance(msg.data, (bytes, bytearray)):
-                raise TypeError("msg.data must be bytes")
-
-            if len(msg.data) > 1024 * 1024:  # 1MB limit
-                logger.warning("Network: Message too large")
-                return
-
-            try:
-                decoded = msg.data.decode('utf-8')
-            except UnicodeDecodeError as e:
-                logger.warning("Network Error: UnicodeDecodeError during message decode: %s", e)
-                return
-            data = json.loads(decoded)
-
-            if not isinstance(data, dict) or "type" not in data or "data" not in data:
-                raise ValueError("Invalid message format")
-
-        except (TypeError, ValueError, json.JSONDecodeError) as e:
-            logger.warning("Network Error parsing message: %s", e)
-            return
-
-        try:
-            if self._handler_callback:
-                await self._handler_callback(data)
-            else:
-                logger.warning("Network Error: No handler_callback registered")
-        except Exception:
-            logger.exception("Error in network handler callback for data: %s", data)
+    @property
+    def peer_count(self) -> int:
+        return len(self._peers)

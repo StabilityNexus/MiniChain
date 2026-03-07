@@ -330,3 +330,5 @@ __pycache__/
 *.py[cod]
 *$py.class
 *.so
+*bore.zip
+*bore_bin
