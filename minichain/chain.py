@@ -89,5 +89,6 @@ class Blockchain:
             self.state = temp_state
             self.chain.append(block)
             self.difficulty = self.difficulty_adjuster.adjust(self.difficulty)
-           logger.info("New difficulty: %s", self.difficulty)
+            logger.info("New difficulty: %s", self.difficulty)
+            return True
             return True
