@@ -324,12 +324,9 @@ async def node_loop():
                     difficulty=block_data.get("difficulty"),
                 )
 
-    await network.start(port=port)
-
-                chain.add_block(block)
-
-       except Exception:
-+            logger.exception("Network error while handling incoming data")
+   chain.add_block(block)
+         except Exception:
+             logger.exception("Network error while handling incoming data")
 
     # Nonce counter kept as a mutable list so the CLI closure can mutate it
     nonce_counter = [0]
@@ -362,7 +359,8 @@ async def _run_node(network, chain, mempool, pending_nonce_map, get_next_nonce):
         amount=10,
         nonce=get_next_nonce(alice_pk),
     )
-
+     tx_payment.sign(alice_sk)
+     mempool.add_transaction(tx_payment)
     # -------------------------------
     # PID Demo: Mining 5 Blocks
     # -------------------------------
@@ -373,16 +371,19 @@ async def _run_node(network, chain, mempool, pending_nonce_map, get_next_nonce):
 
         logger.info(f"\nMining Block {i+1}")
 
-        mined_block, _ = mine_and_process_block(
-            chain, mempool, pending_nonce_map
-        )
+        mined = mine_and_process_block(chain, mempool, pending_nonce_map)
+         if not mined:
+             logger.info("No pending transactions to mine in this iteration")
+             continue
+         mined_block, _ = mined
+        
 
         if mined_block:
             logger.info("Block mined in %.2f seconds",
                         mined_block.mining_time)
 
             logger.info("New difficulty: %s",
-                        chain.last_block.difficulty)
+                        chain.difficulty)
 
     # Final balances
     alice_acc = chain.state.get_account(alice_pk)
