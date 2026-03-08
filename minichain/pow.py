@@ -55,12 +55,16 @@ def mine_block(
         header_dict["nonce"] = local_nonce
         block_hash = calculate_hash(header_dict)
 
+         # Check difficulty target
+         if block_hash.startswith(target):
+
         # Check difficulty target
         if block_hash.startswith(target):
             block.nonce = local_nonce  # Assign only on success
             block.hash = block_hash
             if logger:
-                logger.info("Success! Hash: %s", block_hash)
+                elapsed_time = time.monotonic() - start_time
+                logger.info("Success! Hash: %s (%.3fs)", block_hash, elapsed_time)
             return block
 
         # Allow cancellation via progress callback (pass nonce explicitly)
