@@ -91,9 +91,8 @@ class Blockchain:
             self.chain.append(block)
             actual_block_time = max(0, (block.timestamp - previous_timestamp) / 1000)
             self.difficulty = self.difficulty_adjuster.adjust(
-                 self.difficulty,
-                 actual_block_time=actual_block_time,
-             )            
-             logger.info("New difficulty: %s", self.difficulty)
-             return True
-             return True
+                self.difficulty,
+                actual_block_time=actual_block_time,
+            )
+            logger.info("New difficulty: %s", self.difficulty)
+            return True
