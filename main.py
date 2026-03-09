@@ -323,8 +323,11 @@ async def node_loop():
                     timestamp=block_data.get("timestamp"),
                     difficulty=block_data.get("difficulty"),
                 )
+                 block.nonce = block_data.get("nonce", 0)
+                 block.hash = block_data.get("hash")
+                 block.miner = block_data.get("miner", BURN_ADDRESS)
 
-   chain.add_block(block)
+      chain.add_block(block)
          except Exception:
              logger.exception("Network error while handling incoming data")
 
