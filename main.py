@@ -402,14 +402,67 @@ async def _run_node(network, chain, mempool, pending_nonce_map, get_next_nonce):
 # -------------------------
 # Entry Point
 # -------------------------
-def main():
-    logging.basicConfig(
-        level=logging.INFO,
-        format='%(message)s'
-    )
+
+async def start_interactive_node(port=None, connect=None):
+    chain = Blockchain()
+    mempool = Mempool()
+    network = P2PNetwork()
+    pending_nonce_map = {}
+
+    sk, pk = create_wallet()
+
+    nonce_counter = [0]
+
+    await network.start(port=port)
+
+    if connect:
+        host, port_str = connect.rsplit(":", 1)
+        await network.connect_to_peer(host, int(port_str))
 
     try:
-        asyncio.run(node_loop())
+        await cli_loop(sk, pk, chain, mempool, network, nonce_counter)
+    finally:
+        await network.stop()
+
+
+async def run_demo():
+    chain = Blockchain()
+    mempool = Mempool()
+    network = P2PNetwork()
+    pending_nonce_map = {}
+
+    await network.start()
+
+    def get_next_nonce(address):
+        account = chain.state.get_account(address)
+        account_nonce = account.get("nonce", 0) if account else 0
+        local_nonce = pending_nonce_map.get(address, account_nonce)
+        next_nonce = max(account_nonce, local_nonce)
+        pending_nonce_map[address] = next_nonce + 1
+        return next_nonce
+
+    try:
+        await _run_node(network, chain, mempool, pending_nonce_map, get_next_nonce)
+    finally:
+        await network.stop()
+
+
+def main():
+    parser = argparse.ArgumentParser(description="MiniChain Node")
+
+    parser.add_argument("--port", type=int, help="Port to run node")
+    parser.add_argument("--connect", help="Peer to connect to host:port")
+    parser.add_argument("--demo", action="store_true", help="Run Alice/Bob demo")
+
+    args = parser.parse_args()
+
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
+
+    try:
+        if args.demo:
+            asyncio.run(run_demo())
+        else:
+            asyncio.run(start_interactive_node(args.port, args.connect))
     except KeyboardInterrupt:
         pass
 
