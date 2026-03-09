@@ -353,14 +353,6 @@ async def _run_node(network, chain, mempool, pending_nonce_map, get_next_nonce):
     # Alice sends Bob 10 coins
     logger.info("[2] Alice sending 10 coins to Bob")
 
-    tx_payment = Transaction(
-        sender=alice_pk,
-        receiver=bob_pk,
-        amount=10,
-        nonce=get_next_nonce(alice_pk),
-    )
-     tx_payment.sign(alice_sk)
-     mempool.add_transaction(tx_payment)
     # -------------------------------
     # PID Demo: Mining 5 Blocks
     # -------------------------------
@@ -368,6 +360,14 @@ async def _run_node(network, chain, mempool, pending_nonce_map, get_next_nonce):
 
     for i in range(5):
         await asyncio.sleep(1)
+        tx_payment = Transaction(
+             sender=alice_pk,
+             receiver=bob_pk,
+             amount=10,
+             nonce=get_next_nonce(alice_pk),
+         )
+         tx_payment.sign(alice_sk)
+         mempool.add_transaction(tx_payment)
 
         logger.info(f"\nMining Block {i+1}")
 
