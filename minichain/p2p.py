@@ -133,6 +133,20 @@ class P2PNetwork:
             if not isinstance(payload.get(field), expected_type):
                 return False
 
+        if payload["amount"] <= 0:
+            return False
+
+        receiver = payload.get("receiver")
+        if receiver is not None:
+            if not isinstance(receiver, str):
+                return False
+            if not receiver:
+                return False
+            if len(receiver) != 64:
+                return False
+            if any(ch not in "0123456789abcdefABCDEF" for ch in receiver):
+                return False
+
         return True
 
     def _validate_sync_payload(self, payload):
@@ -264,15 +278,19 @@ class P2PNetwork:
                 if self._is_duplicate(msg_type, payload):
                     logger.info("Network: Duplicate %s ignored from %s", msg_type, addr)
                     continue
-                self._mark_seen(msg_type, payload)
 
+                accepted = False
                 if self._handler_callback:
                     try:
-                        await self._handler_callback(data)
+                        accepted = bool(await self._handler_callback(data))
                     except Exception:
                         logger.exception(
                             "Network: Handler error for message from %s", addr
                         )
+                        accepted = False
+
+                if accepted:
+                    self._mark_seen(msg_type, payload)
         except asyncio.CancelledError:
             pass
         except ConnectionResetError:
@@ -312,12 +330,9 @@ class P2PNetwork:
         self._mark_seen("tx", payload["data"])
         await self._broadcast_raw(payload)
 
-    async def broadcast_block(self, block, miner=None):
+    async def broadcast_block(self, block):
         logger.info("Network: Broadcasting Block #%d", block.index)
-        block_payload = block.to_dict()
-        if miner is not None:
-            block_payload["miner"] = miner
-        payload = {"type": "block", "data": block_payload}
+        payload = {"type": "block", "data": block.to_dict()}
         self._mark_seen("block", payload["data"])
         await self._broadcast_raw(payload)
 

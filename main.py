@@ -30,7 +30,6 @@ from minichain import Transaction, Blockchain, Block, State, Mempool, P2PNetwork
 
 logger = logging.getLogger(__name__)
 
-BURN_ADDRESS = "0" * 40
 MAX_TRANSACTIONS_PER_BLOCK = 100
 
 
@@ -61,11 +60,13 @@ def mine_and_process_block(chain, mempool, miner_pk):
         index=chain.last_block.index + 1,
         previous_hash=chain.last_block.hash,
         transactions=pending_txs,
+        miner=miner_pk,
     )
 
     mined_block = mine_block(block)
 
     if chain.add_block(mined_block):
+        mempool.remove_transactions(pending_txs)
         logger.info("✅ Block #%d mined and added (%d txs)", mined_block.index, len(pending_txs))
         chain.state.credit_mining_reward(miner_pk)
         return mined_block
@@ -88,7 +89,7 @@ def make_network_handler(chain, mempool):
         if msg_type == "sync":
             if not isinstance(payload, dict):
                 logger.warning("Received malformed sync payload")
-                return
+                return False
             # Merge remote state into local state (for accounts we don't have yet)
             remote_accounts = payload.get("accounts", {})
             for addr, acc in remote_accounts.items():
@@ -96,19 +97,22 @@ def make_network_handler(chain, mempool):
                     chain.state.accounts[addr] = acc
                     logger.info("🔄 Synced account %s... (balance=%d)", addr[:12], acc.get("balance", 0))
             logger.info("🔄 State sync complete — %d accounts", len(chain.state.accounts))
+            return True
 
         elif msg_type == "tx":
             if not isinstance(payload, dict):
                 logger.warning("Received malformed tx payload")
-                return
+                return False
             tx = Transaction(**payload)
             if mempool.add_transaction(tx):
                 logger.info("📥 Received tx from %s... (amount=%s)", tx.sender[:8], tx.amount)
+                return True
+            return False
 
         elif msg_type == "block":
             if not isinstance(payload, dict):
                 logger.warning("Received malformed block payload")
-                return
+                return False
             payload_data = dict(payload)
 
             txs_raw = payload_data.get("transactions", [])
@@ -121,6 +125,7 @@ def make_network_handler(chain, mempool):
                 transactions=transactions,
                 timestamp=payload_data.get("timestamp"),
                 difficulty=payload_data.get("difficulty"),
+                miner=payload_data.get("miner"),
             )
             block.nonce = payload_data.get("nonce", 0)
             block.hash = block_hash
@@ -128,14 +133,20 @@ def make_network_handler(chain, mempool):
             if chain.add_block(block):
                 logger.info("📥 Received Block #%d — added to chain", block.index)
 
-                # Apply mining reward for the remote miner (burn address as placeholder)
-                miner = payload_data.get("miner", BURN_ADDRESS)
-                chain.state.credit_mining_reward(miner)
+                # Reward only when miner is authenticated as part of hashed block data.
+                if block.miner:
+                    chain.state.credit_mining_reward(block.miner)
+                else:
+                    logger.warning("Received block without authenticated miner; reward not credited")
 
                 # Drop only confirmed transactions so higher nonces can remain queued.
                 mempool.remove_transactions(block.transactions)
+                return True
             else:
                 logger.warning("📥 Received Block #%s — rejected", block.index)
+                return False
+
+        return False
 
     return handler
 
@@ -219,7 +230,7 @@ async def cli_loop(sk, pk, chain, mempool, network):
         elif cmd == "mine":
             mined = mine_and_process_block(chain, mempool, pk)
             if mined:
-                await network.broadcast_block(mined, miner=pk)
+                await network.broadcast_block(mined)
 
         # ── peers ──
         elif cmd == "peers":

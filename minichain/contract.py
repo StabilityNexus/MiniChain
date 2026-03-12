@@ -1,9 +1,15 @@
 import logging
 import multiprocessing
 import ast
+import os
 
 import json # Moved to module-level import
 logger = logging.getLogger(__name__)
+
+
+def _allow_unrestricted_contracts() -> bool:
+    value = os.getenv("MINICHAIN_ALLOW_UNRESTRICTED_CONTRACTS", "")
+    return value.lower() in {"1", "true", "yes", "on"}
 
 def _safe_exec_worker(code, globals_dict, context_dict, result_queue):
     """
@@ -19,7 +25,16 @@ def _safe_exec_worker(code, globals_dict, context_dict, result_queue):
         except ImportError:
             logger.warning("Resource module not available. Contract will run without OS-level resource limits.")
         except (OSError, ValueError) as e:
-            logger.warning("Failed to set resource limits: %s", e)
+            if _allow_unrestricted_contracts():
+                logger.warning(
+                    "Failed to set resource limits but unsafe mode is enabled: %s",
+                    e,
+                )
+            else:
+                raise RuntimeError(
+                    "Failed to set contract resource limits; refusing to execute "
+                    "without explicit MINICHAIN_ALLOW_UNRESTRICTED_CONTRACTS=1"
+                ) from e
 
         exec(code, globals_dict, context_dict)
         # Return the updated storage

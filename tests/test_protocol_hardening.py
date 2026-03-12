@@ -31,7 +31,7 @@ class TestMempoolNonceQueues(unittest.TestCase):
         self.receiver_pk = SigningKey.generate().verify_key.encode(encoder=HexEncoder).decode()
         self.state.credit_mining_reward(self.sender_pk, 100)
 
-    def _signed_tx(self, nonce, amount=1, timestamp=None):
+    def _signed_tx(self, nonce, amount=1, timestamp=None) -> Transaction:
         tx = Transaction(
             sender=self.sender_pk,
             receiver=self.receiver_pk,
@@ -53,6 +53,8 @@ class TestMempoolNonceQueues(unittest.TestCase):
         selected = mempool.get_transactions_for_block(self.state)
 
         self.assertEqual([tx.nonce for tx in selected], [0, 1])
+        self.assertEqual(len(mempool), 2)
+        mempool.remove_transactions(selected)
         self.assertEqual(len(mempool), 0)
 
     def test_gap_transactions_stay_waiting(self):
@@ -66,6 +68,7 @@ class TestMempoolNonceQueues(unittest.TestCase):
         selected = mempool.get_transactions_for_block(self.state)
 
         self.assertEqual([tx.nonce for tx in selected], [0])
+        mempool.remove_transactions(selected)
         self.assertEqual(len(mempool), 1)
 
         self.state.apply_transaction(ready_tx)
@@ -85,6 +88,33 @@ class TestMempoolNonceQueues(unittest.TestCase):
         mempool.remove_transactions([tx0])
 
         self.assertEqual(len(mempool), 1)
+        self.assertFalse(mempool.add_transaction(self._signed_tx(1, timestamp=3000)))
+
+        self.assertEqual(mempool.get_transactions_for_block(self.state), [])
+        self.state.apply_transaction(tx0)
+        selected = mempool.get_transactions_for_block(self.state)
+        self.assertEqual([tx.nonce for tx in selected], [1])
+        self.assertEqual(selected[0].tx_id, tx1.tx_id)
+
+    def test_selection_respects_per_block_cap(self):
+        mempool = Mempool()
+        txs = [self._signed_tx(nonce=i, timestamp=1000 + i) for i in range(4)]
+        for tx in txs:
+            self.assertTrue(mempool.add_transaction(tx))
+
+        cap = 2
+        selected = mempool.get_transactions_for_block(self.state, max_count=cap)
+        self.assertEqual(len(selected), cap)
+        self.assertEqual([tx.nonce for tx in selected], [0, 1])
+        self.assertEqual(len(mempool), 4)
+
+        mempool.remove_transactions(selected)
+        self.assertEqual(len(mempool), 2)
+        self.state.apply_transaction(txs[0])
+        self.state.apply_transaction(txs[1])
+
+        remaining = mempool.get_transactions_for_block(self.state)
+        self.assertEqual([tx.nonce for tx in remaining], [2, 3])
 
 
 class TestP2PValidationAndDedup(unittest.IsolatedAsyncioTestCase):
@@ -141,8 +171,11 @@ class TestP2PValidationAndDedup(unittest.IsolatedAsyncioTestCase):
 
         self.assertFalse(network._is_duplicate("tx", tx_message["data"]))
         network._mark_seen("tx", tx_message["data"])
-        self.assertTrue(network._is_duplicate("tx", tx_message["data"]))
+        tx_equivalent = dict(tx_message["data"])
+        self.assertTrue(network._is_duplicate("tx", tx_equivalent))
 
         self.assertFalse(network._is_duplicate("block", block_message["data"]))
         network._mark_seen("block", block_message["data"])
-        self.assertTrue(network._is_duplicate("block", block_message["data"]))
+        block_equivalent = dict(block_message["data"])
+        block_equivalent["transactions"] = [dict(tx_message["data"])]
+        self.assertTrue(network._is_duplicate("block", block_equivalent))

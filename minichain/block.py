@@ -1,5 +1,6 @@
 import time
 import hashlib
+import json
 from typing import List, Optional
 from .transaction import Transaction
 from .serialization import canonical_json_hash
@@ -12,11 +13,8 @@ def _calculate_merkle_root(transactions: List[Transaction]) -> Optional[str]:
     if not transactions:
         return None
 
-    # Hash each transaction deterministically
-    tx_hashes = [
-        tx.tx_id
-        for tx in transactions
-    ]
+    # Keep legacy leaf format for compatibility with existing blocks.
+    tx_hashes = [_transaction_leaf(tx) for tx in transactions]
 
     # Build Merkle tree
     while len(tx_hashes) > 1:
@@ -33,6 +31,26 @@ def _calculate_merkle_root(transactions: List[Transaction]) -> Optional[str]:
     return tx_hashes[0]
 
 
+def _transaction_leaf(tx: Transaction) -> str:
+    """Return a deterministic transaction leaf hash with compatibility fallback."""
+    # Prefer an explicit legacy-compatible leaf method if present.
+    if hasattr(tx, "get_leaf_digest") and callable(getattr(tx, "get_leaf_digest")):
+        value = tx.get_leaf_digest()
+        if isinstance(value, str):
+            return value
+    if hasattr(tx, "digest"):
+        value = getattr(tx, "digest")
+        if isinstance(value, str):
+            return value
+
+    # Legacy default used in prior versions.
+    if hasattr(tx, "to_dict") and callable(getattr(tx, "to_dict")):
+        return _sha256(json.dumps(tx.to_dict(), sort_keys=True))
+
+    # Final fallback for newer transaction shapes.
+    return tx.tx_id
+
+
 class Block:
     def __init__(
         self,
@@ -41,6 +59,7 @@ class Block:
         transactions: Optional[List[Transaction]] = None,
         timestamp: Optional[float] = None,
         difficulty: Optional[int] = None,
+        miner: Optional[str] = None,
     ):
         self.index = index
         self.previous_hash = previous_hash
@@ -54,6 +73,7 @@ class Block:
         )
 
         self.difficulty: Optional[int] = difficulty
+        self.miner: Optional[str] = miner
         self.nonce: int = 0
         self.hash: Optional[str] = None
 
@@ -64,7 +84,7 @@ class Block:
     # HEADER (used for mining)
     # -------------------------
     def to_header_dict(self):
-        return {
+        header = {
             "index": self.index,
             "previous_hash": self.previous_hash,
             "merkle_root": self.merkle_root,
@@ -72,6 +92,10 @@ class Block:
             "difficulty": self.difficulty,
             "nonce": self.nonce,
         }
+        # Include miner only when present so old-format headers stay valid.
+        if self.miner is not None:
+            header["miner"] = self.miner
+        return header
 
     # -------------------------
     # BODY (transactions only)

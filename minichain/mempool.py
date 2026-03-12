@@ -84,7 +84,6 @@ class Mempool:
                 if not isinstance(max_count, int) or max_count <= 0:
                     return []
                 selected = selected[:max_count]
-            self._remove_transactions_unlocked(selected)
             return selected
 
     def remove_transactions(self, transactions):
