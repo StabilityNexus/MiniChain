@@ -18,14 +18,9 @@ class Mempool:
     def _count_transactions_unlocked(self):
         return sum(len(sender_queue) for sender_queue in self._pending_by_sender.values())
 
-    def _expected_nonce_for_sender(self, sender, state):
-        if state is not None:
-            return state.get_account(sender)["nonce"]
-
-        sender_queue = self._pending_by_sender.get(sender, {})
-        if not sender_queue:
-            return 0
-        return min(sender_queue)
+    def _expected_nonce_for_sender(self, sender: str, state) -> int:
+        """Return the sender nonce from required chain state."""
+        return state.get_account(sender)["nonce"]
 
     def add_transaction(self, tx):
         """
@@ -62,7 +57,7 @@ class Mempool:
             self._seen_tx_ids.add(tx_id)
             return True
 
-    def get_transactions_for_block(self, state=None, max_count=None):
+    def get_transactions_for_block(self, state, max_count=None):
         """
         Returns ready transactions only.
 
