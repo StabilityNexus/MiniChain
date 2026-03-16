@@ -212,5 +212,7 @@ def _deserialize_block(data: dict) -> Block:
     )
     block.nonce = data["nonce"]
     block.hash = data["hash"]
-    block.merkle_root = data.get("merkle_root")
+    # Only overwrite merkle_root if explicitly saved; otherwise keep computed value
+    if "merkle_root" in data:
+        block.merkle_root = data["merkle_root"]
     return block
