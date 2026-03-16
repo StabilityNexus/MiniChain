@@ -12,6 +12,7 @@
 *.cb2
 .*.lb
 
+
 ## Intermediate documents:
 *.dvi
 *.xdv
@@ -332,3 +333,4 @@ __pycache__/
 *.so
 *bore.zip
 *bore_bin
+node_data/

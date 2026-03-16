@@ -19,6 +19,7 @@ Commands (type in the terminal while the node is running):
 import argparse
 import asyncio
 import logging
+import os
 import re
 import sys
 
@@ -26,11 +27,13 @@ from nacl.signing import SigningKey
 from nacl.encoding import HexEncoder
 
 from minichain import Transaction, Blockchain, Block, State, Mempool, P2PNetwork, mine_block
+from minichain.persistence import save, load
 
 
 logger = logging.getLogger(__name__)
 
 BURN_ADDRESS = "0" * 40
+DATA_DIR = "node_data"
 
 
 # ──────────────────────────────────────────────
@@ -63,11 +66,11 @@ def mine_and_process_block(chain, mempool, miner_pk):
     mined_block = mine_block(block)
 
     if chain.add_block(mined_block):
-        logger.info("✅ Block #%d mined and added (%d txs)", mined_block.index, len(pending_txs))
+        logger.info("Block #%d mined and added (%d txs)", mined_block.index, len(pending_txs))
         chain.state.credit_mining_reward(miner_pk)
         return mined_block
     else:
-        logger.error("❌ Block rejected by chain")
+        logger.error("Block rejected by chain")
         return None
 
 
@@ -88,13 +91,13 @@ def make_network_handler(chain, mempool):
             for addr, acc in remote_accounts.items():
                 if addr not in chain.state.accounts:
                     chain.state.accounts[addr] = acc
-                    logger.info("🔄 Synced account %s... (balance=%d)", addr[:12], acc.get("balance", 0))
-            logger.info("🔄 State sync complete — %d accounts", len(chain.state.accounts))
+                    logger.info("Synced account %s... (balance=%d)", addr[:12], acc.get("balance", 0))
+            logger.info("State sync complete — %d accounts", len(chain.state.accounts))
 
         elif msg_type == "tx":
             tx = Transaction(**payload)
             if mempool.add_transaction(tx):
-                logger.info("📥 Received tx from %s... (amount=%s)", tx.sender[:8], tx.amount)
+                logger.info("Received tx from %s... (amount=%s)", tx.sender[:8], tx.amount)
 
         elif msg_type == "block":
             txs_raw = payload.pop("transactions", [])
@@ -112,7 +115,7 @@ def make_network_handler(chain, mempool):
             block.hash = block_hash
 
             if chain.add_block(block):
-                logger.info("📥 Received Block #%d — added to chain", block.index)
+                logger.info("Received Block #%d — added to chain", block.index)
 
                 # Apply mining reward for the remote miner (burn address as placeholder)
                 miner = payload.get("miner", BURN_ADDRESS)
@@ -121,7 +124,7 @@ def make_network_handler(chain, mempool):
                 # Drain matching txs from mempool so they aren't re-mined
                 mempool.get_transactions_for_block()
             else:
-                logger.warning("📥 Received Block #%s — rejected", block.index)
+                logger.warning("Received Block #%s — rejected", block.index)
 
     return handler
 
@@ -192,9 +195,9 @@ async def cli_loop(sk, pk, chain, mempool, network, nonce_counter):
             if mempool.add_transaction(tx):
                 nonce_counter[0] += 1
                 await network.broadcast_transaction(tx)
-                print(f"  ✅ Tx sent: {amount} coins → {receiver[:12]}...")
+                print(f"  Tx sent: {amount} coins -> {receiver[:12]}...")
             else:
-                print("  ❌ Transaction rejected (invalid sig, duplicate, or mempool full).")
+                print("  Transaction rejected (invalid sig, duplicate, or mempool full).")
 
         # ── mine ──
         elif cmd == "mine":
@@ -253,7 +256,19 @@ async def run_node(port: int, connect_to: str | None, fund: int):
     """Boot the node, optionally connect to a peer, then enter the CLI."""
     sk, pk = create_wallet()
 
-    chain = Blockchain()
+    # ── Load existing chain or start fresh ──────────────────────────────────
+    chain_file = os.path.join(DATA_DIR, "blockchain.json")
+    if os.path.exists(chain_file):
+        try:
+            chain = load(path=DATA_DIR)
+            logger.info("Loaded existing chain (%d blocks) from '%s'", len(chain.chain), DATA_DIR)
+        except Exception as e:
+            logger.warning("Could not load chain: %s — starting fresh.", e)
+            chain = Blockchain()
+    else:
+        chain = Blockchain()
+        logger.info("No saved chain found — starting fresh.")
+
     mempool = Mempool()
     network = P2PNetwork()
 
@@ -269,7 +284,7 @@ async def run_node(port: int, connect_to: str | None, fund: int):
         }) + "\n"
         writer.write(sync_msg.encode())
         await writer.drain()
-        logger.info("🔄 Sent state sync to new peer")
+        logger.info("Sent state sync to new peer")
 
     network._on_peer_connected = on_peer_connected
 
@@ -278,7 +293,7 @@ async def run_node(port: int, connect_to: str | None, fund: int):
     # Fund this node's wallet so it can transact in the demo
     if fund > 0:
         chain.state.credit_mining_reward(pk, reward=fund)
-        logger.info("💰 Funded %s... with %d coins", pk[:12], fund)
+        logger.info("Funded %s... with %d coins", pk[:12], fund)
 
     # Connect to a seed peer if requested
     if connect_to:
@@ -294,6 +309,12 @@ async def run_node(port: int, connect_to: str | None, fund: int):
     try:
         await cli_loop(sk, pk, chain, mempool, network, nonce_counter)
     finally:
+        try:
+            os.makedirs(DATA_DIR, exist_ok=True)
+            save(chain, path=DATA_DIR)
+            logger.info("Chain saved to '%s' (%d blocks)", DATA_DIR, len(chain.chain))
+        except Exception as e:
+            logger.error("Failed to save chain: %s", e)
         await network.stop()
 
 

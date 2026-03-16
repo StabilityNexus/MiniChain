@@ -75,6 +75,10 @@ def load(path: str = ".") -> Blockchain:
     if not isinstance(raw_blocks, list) or not raw_blocks:
         raise ValueError(f"Invalid or empty chain data in '{chain_path}'")
 
+    # FIX: validate raw_accounts is a dict before use
+    if not isinstance(raw_accounts, dict):
+        raise ValueError(f"Invalid accounts data in '{state_path}'")
+
     blockchain = Blockchain.__new__(Blockchain)   # skip __init__ (no genesis)
     import threading
     from .state import State
@@ -138,3 +142,4 @@ def _deserialize_block(data: dict) -> Block:
     # any future change in the hash algorithm.
     block.merkle_root = data.get("merkle_root")
     return block
+    
