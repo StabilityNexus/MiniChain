@@ -1,8 +1,8 @@
-import json
 import time
 from nacl.signing import SigningKey, VerifyKey
 from nacl.encoding import HexEncoder
 from nacl.exceptions import BadSignatureError, CryptoError
+from .serialization import canonical_json_bytes, canonical_json_hash
 
 
 class Transaction:
@@ -31,18 +31,25 @@ class Transaction:
             "signature": self.signature,
         }
 
-    @property
-    def hash_payload(self):
-        """Returns the bytes to be signed."""
-        payload = {
+    def to_signing_dict(self):
+        return {
             "sender": self.sender,
             "receiver": self.receiver,
             "amount": self.amount,
             "nonce": self.nonce,
             "data": self.data,
-            "timestamp": self.timestamp, # Already integer milliseconds
+            "timestamp": self.timestamp,
         }
-        return json.dumps(payload, sort_keys=True).encode("utf-8")
+
+    @property
+    def hash_payload(self):
+        """Returns the bytes to be signed."""
+        return canonical_json_bytes(self.to_signing_dict())
+
+    @property
+    def tx_id(self):
+        """Deterministic identifier for the signed transaction."""
+        return canonical_json_hash(self.to_dict())
 
     def sign(self, signing_key: SigningKey):
         # Validate that the signing key matches the sender

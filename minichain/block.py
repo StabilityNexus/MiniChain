@@ -1,8 +1,8 @@
 import time
 import hashlib
-import json
 from typing import List, Optional
 from .transaction import Transaction
+from .serialization import canonical_json_hash
 
 def _sha256(data: str) -> str:
     return hashlib.sha256(data.encode()).hexdigest()
@@ -14,7 +14,7 @@ def _calculate_merkle_root(transactions: List[Transaction]) -> Optional[str]:
 
     # Hash each transaction deterministically
     tx_hashes = [
-        _sha256(json.dumps(tx.to_dict(), sort_keys=True))
+        tx.tx_id
         for tx in transactions
     ]
 
@@ -97,8 +97,4 @@ class Block:
     # HASH CALCULATION
     # -------------------------
     def compute_hash(self) -> str:
-        header_string = json.dumps(
-            self.to_header_dict(),
-            sort_keys=True
-        )
-        return _sha256(header_string)
+        return canonical_json_hash(self.to_header_dict())

@@ -1,6 +1,5 @@
-import json
 import time
-import hashlib
+from .serialization import canonical_json_hash
 
 
 class MiningExceededError(Exception):
@@ -9,8 +8,7 @@ class MiningExceededError(Exception):
 
 def calculate_hash(block_dict):
     """Calculates SHA256 hash of a block header."""
-    block_string = json.dumps(block_dict, sort_keys=True).encode("utf-8")
-    return hashlib.sha256(block_string).hexdigest()
+    return canonical_json_hash(block_dict)
 
 
 def mine_block(

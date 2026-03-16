@@ -19,8 +19,7 @@ def _safe_exec_worker(code, globals_dict, context_dict, result_queue):
         except ImportError:
             logger.warning("Resource module not available. Contract will run without OS-level resource limits.")
         except (OSError, ValueError) as e:
-            logger.error(f"Failed to set resource limits: {e}")
-            raise RuntimeError(f"Failed to set resource limits: {e}")
+            logger.warning("Failed to set resource limits: %s", e)
 
         exec(code, globals_dict, context_dict)
         # Return the updated storage
