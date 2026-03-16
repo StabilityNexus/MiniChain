@@ -86,8 +86,9 @@ def mine_and_process_block(chain, mempool, miner_pk):
     mined_block = mine_block(block)
 
     if chain.add_block(mined_block):
-        logger.info("Block #%d mined and added (%d txs)", mined_block.index, len(pending_txs))
-        logger.info("✅ Block #%d mined and added (%d txs)", mined_block.index, len(mineable_txs))
+     if chain.add_block(mined_block):
+         logger.info("✅ Block #%d mined and added (%d txs)", mined_block.index, len(mineable_txs))
+         mempool.remove_transactions(mineable_txs)
         mempool.remove_transactions(mineable_txs)
         chain.state.credit_mining_reward(miner_pk)
         return mined_block
