@@ -6,6 +6,7 @@ from .state import State
 from .contract import ContractMachine
 from .p2p import P2PNetwork
 from .mempool import Mempool
+from .persistence import save, load
 
 __all__ = [
     "mine_block",
@@ -18,4 +19,6 @@ __all__ = [
     "ContractMachine",
     "P2PNetwork",
     "Mempool",
+    "save",
+    "load",
 ]
