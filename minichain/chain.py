@@ -7,6 +7,22 @@ import threading
 logger = logging.getLogger(__name__)
 
 
+def validate_block_link_and_hash(previous_block, block):
+    if block.previous_hash != previous_block.hash:
+        raise ValueError(
+            f"invalid previous hash {block.previous_hash} != {previous_block.hash}"
+        )
+
+    if block.index != previous_block.index + 1:
+        raise ValueError(
+            f"invalid index {block.index} != {previous_block.index + 1}"
+        )
+
+    expected_hash = calculate_hash(block.to_header_dict())
+    if block.hash != expected_hash:
+        raise ValueError(f"invalid hash {block.hash}")
+
+
 class Blockchain:
     """
     Manages the blockchain, validates blocks, and commits state transitions.
@@ -45,19 +61,10 @@ class Blockchain:
         """
 
         with self._lock:
-            # Check previous hash linkage
-            if block.previous_hash != self.last_block.hash:
-                logger.warning("Block %s rejected: Invalid previous hash %s != %s", block.index, block.previous_hash, self.last_block.hash)
-                return False
-
-            # Check index linkage
-            if block.index != self.last_block.index + 1:
-                logger.warning("Block %s rejected: Invalid index %s != %s", block.index, block.index, self.last_block.index + 1)
-                return False
-
-            # Verify block hash
-            if block.hash != calculate_hash(block.to_header_dict()):
-                logger.warning("Block %s rejected: Invalid hash %s", block.index, block.hash)
+            try:
+                validate_block_link_and_hash(self.last_block, block)
+            except ValueError as exc:
+                logger.warning("Block %s rejected: %s", block.index, exc)
                 return False
 
             # Validate transactions on a temporary state copy

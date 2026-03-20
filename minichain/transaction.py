@@ -41,6 +41,18 @@ class Transaction:
             "timestamp": self.timestamp,
         }
 
+    @classmethod
+    def from_dict(cls, payload: dict):
+        return cls(
+            sender=payload["sender"],
+            receiver=payload.get("receiver"),
+            amount=payload["amount"],
+            nonce=payload["nonce"],
+            data=payload.get("data"),
+            signature=payload.get("signature"),
+            timestamp=payload.get("timestamp"),
+        )
+
     @property
     def hash_payload(self):
         """Returns the bytes to be signed."""

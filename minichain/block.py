@@ -98,3 +98,22 @@ class Block:
     # -------------------------
     def compute_hash(self) -> str:
         return canonical_json_hash(self.to_header_dict())
+
+    @classmethod
+    def from_dict(cls, payload: dict):
+        transactions = [
+            Transaction.from_dict(tx_payload)
+            for tx_payload in payload.get("transactions", [])
+        ]
+        block = cls(
+            index=payload["index"],
+            previous_hash=payload["previous_hash"],
+            transactions=transactions,
+            timestamp=payload.get("timestamp"),
+            difficulty=payload.get("difficulty"),
+        )
+        block.nonce = payload.get("nonce", 0)
+        block.hash = payload.get("hash")
+        if "merkle_root" in payload:
+            block.merkle_root = payload["merkle_root"]
+        return block

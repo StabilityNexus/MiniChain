@@ -137,24 +137,12 @@ def make_network_handler(chain, mempool):
             logger.info("🔄 Accepted state sync from %s — %d accounts", peer_addr, len(chain.state.accounts))
 
         elif msg_type == "tx":
-            tx = Transaction(**payload)
+            tx = Transaction.from_dict(payload)
             if mempool.add_transaction(tx):
                 logger.info("📥 Received tx from %s... (amount=%s)", tx.sender[:8], tx.amount)
 
         elif msg_type == "block":
-            txs_raw = payload.get("transactions", [])
-            block_hash = payload.get("hash")
-            transactions = [Transaction(**t) for t in txs_raw]
-
-            block = Block(
-                index=payload["index"],
-                previous_hash=payload["previous_hash"],
-                transactions=transactions,
-                timestamp=payload.get("timestamp"),
-                difficulty=payload.get("difficulty"),
-            )
-            block.nonce = payload.get("nonce", 0)
-            block.hash = block_hash
+            block = Block.from_dict(payload)
 
             if chain.add_block(block):
                 logger.info("📥 Received Block #%d — added to chain", block.index)
@@ -354,9 +342,6 @@ async def run_node(port: int, connect_to: str | None, fund: int, datadir: str | 
     if fund > 0:
         chain.state.credit_mining_reward(pk, reward=fund)
         logger.info("💰 Funded %s... with %d coins", pk[:12], fund)
-
-    # Nonce counter kept as a mutable list so the CLI closure can mutate it
-    nonce_counter = [0]
 
     try:
         await cli_loop(sk, pk, chain, mempool, network)

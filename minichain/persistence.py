@@ -22,10 +22,7 @@ import logging
 import copy
 
 from .block import Block
-from .transaction import Transaction
-from .chain import Blockchain
-from .state import State
-from .pow import calculate_hash
+from .chain import Blockchain, validate_block_link_and_hash
 
 logger = logging.getLogger(__name__)
 
@@ -128,23 +125,10 @@ def _verify_chain_integrity(blocks: list) -> None:
     for i in range(1, len(blocks)):
         block = blocks[i]
         prev = blocks[i - 1]
-
-        if block.index != prev.index + 1:
-            raise ValueError(
-                f"Block #{block.index}: index gap (expected {prev.index + 1})"
-            )
-
-        if block.previous_hash != prev.hash:
-            raise ValueError(
-                f"Block #{block.index}: previous_hash mismatch"
-            )
-
-        expected_hash = calculate_hash(block.to_header_dict())
-        if block.hash != expected_hash:
-            raise ValueError(
-                f"Block #{block.index}: hash mismatch "
-                f"(stored={block.hash[:16]}..., computed={expected_hash[:16]}...)"
-            )
+        try:
+            validate_block_link_and_hash(prev, block)
+        except ValueError as exc:
+            raise ValueError(f"Block #{block.index}: {exc}") from exc
 
 
 # ---------------------------------------------------------------------------
@@ -190,29 +174,4 @@ def _read_json(filepath: str):
 
 def _deserialize_block(data: dict) -> Block:
     """Reconstruct a Block (including its transactions) from a plain dict."""
-    transactions = [
-        Transaction(
-            sender=tx["sender"],
-            receiver=tx["receiver"],
-            amount=tx["amount"],
-            nonce=tx["nonce"],
-            data=tx.get("data"),
-            signature=tx.get("signature"),
-            timestamp=tx["timestamp"],
-        )
-        for tx in data.get("transactions", [])
-    ]
-
-    block = Block(
-        index=data["index"],
-        previous_hash=data["previous_hash"],
-        transactions=transactions,
-        timestamp=data["timestamp"],
-        difficulty=data.get("difficulty"),
-    )
-    block.nonce = data["nonce"]
-    block.hash = data["hash"]
-    # Only overwrite merkle_root if explicitly saved; otherwise keep computed value
-    if "merkle_root" in data:
-        block.merkle_root = data["merkle_root"]
-    return block
+    return Block.from_dict(data)
