@@ -363,8 +363,8 @@ class TestIntegrationScenarios(unittest.TestCase):
         difficulty = 1000
         changes = []
         
-        for time in times:
-            new_diff = adjuster.adjust(difficulty, time)
+        for block_time in times:
+            new_diff = adjuster.adjust(difficulty, block_time)
             changes.append(abs(new_diff - difficulty))
             difficulty = new_diff
         
