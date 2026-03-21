@@ -59,6 +59,10 @@ def mine_block(
             block.hash = block_hash
             if logger:
                 logger.info("Success! Hash: %s", block_hash)
+
+            block.mining_time = time.monotonic() - start_time
+            if logger:
+                logger.info("Success! Hash: %s, Mining time: %.2fs", block_hash, block.mining_time)
             return block
 
         # Allow cancellation via progress callback (pass nonce explicitly)
