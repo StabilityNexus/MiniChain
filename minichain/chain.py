@@ -35,7 +35,9 @@ class Blockchain:
         self.difficulty_adjuster = PIDDifficultyAdjuster(target_block_time=10)
         self.current_difficulty = 1000  # Initial difficulty
         
-        self._create_genesis_block()
+        self.difficulty_adjuster = PIDDifficultyAdjuster(target_block_time=10)
+        self.current_difficulty = 1000  # Initial difficulty
+        
         self._create_genesis_block()
 
     def _create_genesis_block(self):
