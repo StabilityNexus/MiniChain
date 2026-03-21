@@ -118,9 +118,7 @@ class PIDDifficultyAdjuster:
         )
         
         # Ensure we move at least ±1 if adjustment is non-zero
-        delta = int(clamped_adjustment)
-        if delta == 0 and clamped_adjustment != 0:
-            delta = 1 if clamped_adjustment > 0 else -1
+        delta = clamped_adjustment
         
         # Calculate and return new difficulty
         new_difficulty = current_difficulty + delta
