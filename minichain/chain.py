@@ -106,8 +106,21 @@ class Blockchain:
                 if not result:
                     logger.warning("Block %s rejected: Transaction failed validation", block.index)
                     return False
-                
-                self.current_difficulty = self.difficulty_adjuster.adjust(
+            for tx in block.transactions:
+                result = temp_state.validate_and_apply(tx)
+
+                # Reject block if any transaction fails
+                if not result:
+                    logger.warning("Block %s rejected: Transaction failed validation", block.index)
+                    return False
+
+            # All transactions valid → commit state and append block
+            self.state = temp_state
+            self.chain.append(block)
+            
+            # Adjust difficulty for next block (single adjustment per block)
+            old_difficulty = self.current_difficulty
+            self.current_difficulty = self.difficulty_adjuster.adjust(
                 self.current_difficulty,
                 block.mining_time if hasattr(block, 'mining_time') else None
             )
@@ -115,9 +128,10 @@ class Blockchain:
             logger.info(
                 "Block %s accepted. Difficulty: %d → %d",
                 block.index,
-                block.difficulty,
+                old_difficulty,
                 self.current_difficulty
             )
+            return True
 
             # All transactions valid → commit state and append block
             self.state = temp_state
