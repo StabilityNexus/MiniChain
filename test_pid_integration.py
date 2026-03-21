@@ -74,10 +74,10 @@ def test_pid_integration():
     
     if mined_block1.mining_time < 10:
         print(f"   (Block mined {10 - mined_block1.mining_time:.1f}s faster than target)")
-        print(f"   Expected: Difficulty should DECREASE ↓")
+        print(f"   Expected: Difficulty should INCREASE ↑")
     else:
         print(f"   (Block mined {mined_block1.mining_time - 10:.1f}s slower than target)")
-        print(f"   Expected: Difficulty should INCREASE ↑")
+        print(f"   Expected: Difficulty should DECREASE ↓")
     
     # Test Block 2
     print("\n5️⃣  Mining Block 2 (testing second adjustment)...")
