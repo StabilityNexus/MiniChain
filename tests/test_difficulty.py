@@ -313,13 +313,12 @@ class TestEdgeCases(unittest.TestCase):
         difficulty = 1000
         
         # Rapid adjustments with explicit times (not auto-timing)
-        for i in range(100):
+        for _ in range(100):
             difficulty = adjuster.adjust(difficulty, 5.0)
         
         # Should stabilize despite rapid adjustments
         self.assertGreater(difficulty, 1)
         self.assertLess(difficulty, 10000)
-
 
 class TestIntegrationScenarios(unittest.TestCase):
     """Test realistic blockchain scenarios."""
