@@ -34,10 +34,6 @@ class Blockchain:
         self._lock = threading.RLock()
         self.difficulty_adjuster = PIDDifficultyAdjuster(target_block_time=10)
         self.current_difficulty = 1000  # Initial difficulty
-        
-        self.difficulty_adjuster = PIDDifficultyAdjuster(target_block_time=10)
-        self.current_difficulty = 1000  # Initial difficulty
-        
         self._create_genesis_block()
 
     def _create_genesis_block(self):
@@ -87,14 +83,8 @@ class Blockchain:
                 )
                 return False
 
-            # Only adjust PID state AFTER block passes PoW validation
-            if hasattr(block, 'mining_time') and block.mining_time:
-                block.difficulty = self.difficulty_adjuster.adjust(
-                    self.current_difficulty,
-                    block.mining_time
-                )
-            else:
-                block.difficulty = self.current_difficulty
+           # Block difficulty validation passed; block.difficulty remains as-is
+           # (reflects the difficulty at which it was actually mined)
 
             # Validate transactions on a temporary state copy
             temp_state = self.state.copy()
