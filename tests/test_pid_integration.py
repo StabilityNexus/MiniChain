@@ -91,13 +91,13 @@ def test_pid_integration():
     
     print(f"   Mining with difficulty: {blockchain.current_difficulty}")
     try:
-        start_time = time.time()
+        start_time = time.monotonic()
         mined_block2 = mine_block(
             block2, 
             difficulty=blockchain.current_difficulty, 
             timeout_seconds=5
         )
-        mining_time2 = time.time() - start_time
+        mining_time2 = time.monotonic() - start_time
         print(f"   ✅ Block mined in {mining_time2:.2f}s")
     except Exception as e:
         print(f"   ⚠️  Mining timeout (expected for higher difficulty): {e}")
