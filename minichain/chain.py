@@ -72,7 +72,15 @@ class Blockchain:
             
              # Verify block meets difficulty target BEFORE mutating PID state
             # Use same formula as pow.py: target = "0" * difficulty
-            expected_difficulty = block.difficulty if block.difficulty else self.current_difficulty
+            expected_difficulty = self.current_difficulty
+             if getattr(block, "difficulty", None) != expected_difficulty:
+                 logger.warning(
+                     "Block %s rejected: unexpected difficulty %r != %d",
+                     block.index,
+                     getattr(block, "difficulty", None),
+                     expected_difficulty,
+                 )
+                 return False
             target_prefix = '0' * expected_difficulty
             
             if not block.hash or not block.hash.startswith(target_prefix):
