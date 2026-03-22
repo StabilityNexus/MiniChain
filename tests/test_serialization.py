@@ -18,36 +18,34 @@ def test_raw_data_determinism():
 
 def test_transaction_id_stability():
     print("--- Testing Transaction ID Stability ---")
-    # Create a transaction
-    tx = Transaction(sender="Alice_PK", receiver="Bob_PK", amount=50, nonce=1)
+    # FIX: Add a fixed timestamp so tx1 and tx2 are identical
+    tx_params = {"sender": "Alice", "receiver": "Bob", "amount": 50, "nonce": 1, "timestamp": 123456789}
     
-    first_id = tx.tx_id
-    # Re-triggering the ID calculation
-    second_id = tx.tx_id
+    tx1 = Transaction(**tx_params)
+    tx2 = Transaction(**tx_params)
 
-    print(f"TX ID: {first_id}")
-    assert first_id == second_id
-    print("Success: Transaction ID is stable and deterministic!\n")
+    print(f"TX ID: {tx1.tx_id}")
+    assert tx1.tx_id == tx2.tx_id, "Cross-instance TX IDs must match with same timestamp"
+    print("✅ Success: Transaction ID is stable!\n")
 
 def test_block_serialization_determinism():
     print("--- Testing Block Serialization & Cross-Instance Determinism ---")
-    tx_params = {"sender": "A", "receiver": "B", "amount": 10, "nonce": 5}
+    # FIX: Use fixed timestamps for both transaction and block
+    tx = Transaction(sender="A", receiver="B", amount=10, nonce=5, timestamp=1000)
     
-    # Create two SEPARATE block instances with the exact same data
-    tx1 = Transaction(**tx_params)
-    block1 = Block(index=1, previous_hash="0"*64, transactions=[tx1], difficulty=2)
+    block_params = {
+        "index": 1, 
+        "previous_hash": "0"*64, 
+        "transactions": [tx], 
+        "difficulty": 2, 
+        "timestamp": 999999
+    }
     
-    tx2 = Transaction(**tx_params)
-    block2 = Block(index=1, previous_hash="0"*64, transactions=[tx2], difficulty=2)
+    block1 = Block(**block_params)
+    block2 = Block(**block_params)
 
-    # 1. Test stable bytes on one instance (same object, twice)
-    assert block1.canonical_payload == block1.canonical_payload
-    
-    # 2. Test cross-instance determinism (different objects, same data)
     assert block1.canonical_payload == block2.canonical_payload, "Identical blocks must have identical payloads"
-    
-    # 3. Test hash consistency
-    assert block1.compute_hash() == block2.compute_hash()
+    assert block1.compute_hash() == block2.compute_hash(), "Identical blocks must have identical hashes"
     
     print("✅ Success: Block serialization is cross-instance deterministic!\n")
 

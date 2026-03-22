@@ -202,7 +202,12 @@ class P2PNetwork:
         )
 
     def _validate_message(self, message):
-        if not {"type", "data"}.issubset(set(message)):
+        # FIX: Check if message is a dictionary first to prevent crashes
+        if not isinstance(message, dict):
+            logger.warning("Network: Received non-dict message")
+            return False
+
+        if not {"type", "data"}.issubset(message):
             return False
 
         msg_type = message.get("type")
@@ -331,14 +336,16 @@ class P2PNetwork:
     async def broadcast_block(self, block, miner=None):
         logger.info("Network: Broadcasting Block #%d", block.index)
         
-        # 1. Convert block to a dict (deterministic via serialization.py)
+        # 1. Convert block to a dict (deterministic)
         block_data = json.loads(block.canonical_payload.decode('utf-8'))
         
-        # 2. Wrap it in an envelope where 'miner' is OUTSIDE the 'data'
+        # 2. FIX: Put miner INSIDE block_data so main.py can still find it
+        if miner:
+            block_data["miner"] = miner
+            
         payload = {
             "type": "block",
-            "data": block_data,
-            "miner": miner
+            "data": block_data
         }
         self._mark_seen("block", payload["data"])
         await self._broadcast_raw(payload)
