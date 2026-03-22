@@ -43,11 +43,11 @@ class P2PNetwork:
             raise ValueError("handler_callback must be callable")
         self._handler_callback = handler_callback
 
-    async def start(self, port: int = 9000):
-        """Start listening for incoming peer connections on the given port."""
+    async def start(self, port: int = 9000, host: str = "127.0.0.1"):
+        """Start listening for incoming peer connections."""
         self._port = port
-        self._server = await asyncio.start_server(self._handle_incoming, "0.0.0.0", port)
-        logger.info("Network: Listening on 0.0.0.0:%d", port)
+        self._server = await asyncio.start_server(self._handle_incoming, host, port)
+        logger.info("Network: Listening on %s:%d", host, port)
 
     async def stop(self):
         """Gracefully shut down the server and disconnect all peers."""
@@ -333,19 +333,12 @@ class P2PNetwork:
         self._mark_seen("tx", payload["data"])
         await self._broadcast_raw(payload)
 
-    async def broadcast_block(self, block, miner=None):
+    async def broadcast_block(self, block):
         logger.info("Network: Broadcasting Block #%d", block.index)
-        
-        # 1. Convert block to a dict (deterministic)
-        block_data = json.loads(block.canonical_payload.decode('utf-8'))
-        
-        # 2. FIX: Put miner INSIDE block_data so main.py can still find it
-        if miner:
-            block_data["miner"] = miner
-            
         payload = {
             "type": "block",
-            "data": block_data
+            "data": json.loads(block.canonical_payload.decode('utf-8')),
+            "miner": block.miner
         }
         self._mark_seen("block", payload["data"])
         await self._broadcast_raw(payload)

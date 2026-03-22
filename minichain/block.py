@@ -41,10 +41,12 @@ class Block:
         transactions: Optional[List[Transaction]] = None,
         timestamp: Optional[float] = None,
         difficulty: Optional[int] = None,
+        miner=None
     ):
         self.index = index
         self.previous_hash = previous_hash
         self.transactions: List[Transaction] = transactions or []
+        self.miner = miner
 
         # Deterministic timestamp (ms)
         self.timestamp: int = (
@@ -71,6 +73,7 @@ class Block:
             "timestamp": self.timestamp,
             "difficulty": self.difficulty,
             "nonce": self.nonce,
+            "miner": self.miner,
         }
 
     # -------------------------
@@ -111,6 +114,7 @@ class Block:
             transactions=transactions,
             timestamp=payload.get("timestamp"),
             difficulty=payload.get("difficulty"),
+            miner=payload.get("miner"),
         )
         block.nonce = payload.get("nonce", 0)
         block.hash = payload.get("hash")
