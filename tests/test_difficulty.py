@@ -11,6 +11,7 @@ Comprehensive tests covering:
 
 import time
 import unittest
+import sys
 from minichain.pid import PIDDifficultyAdjuster
 
 class TestPIDBasicFunctionality(unittest.TestCase):
@@ -407,7 +408,6 @@ def run_tests():
     return result.wasSuccessful()
 
 
-import sys
 
 if __name__ == "__main__":
     success = run_tests()
