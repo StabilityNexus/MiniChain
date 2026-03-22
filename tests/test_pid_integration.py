@@ -23,9 +23,9 @@ def test_pid_integration():
     print("\n1️⃣  Creating blockchain with PID adjuster...")
     blockchain = Blockchain()
     
-    print(f"   ✅ Blockchain created")
+    print("   ✅ Blockchain created")
     print(f"   Initial difficulty: {blockchain.current_difficulty}")
-    print(f"   Target block time: 10 seconds")
+    print("   Target block time: 10 seconds")
     
     # Test Block 1: Mine with low difficulty (to keep it fast for testing)
     print("\n2️⃣  Mining Block 1 (low difficulty for testing)...")
