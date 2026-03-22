@@ -343,6 +343,9 @@ class P2PNetwork:
             "type": "block",
             "data": json.loads(block.canonical_payload.decode('utf-8'))
         }
+
+        payload["miner"] = block.miner
+        
         self._mark_seen("block", payload["data"])
         await self._broadcast_raw(payload)
 
