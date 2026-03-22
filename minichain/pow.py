@@ -57,9 +57,6 @@ def mine_block(
         if block_hash.startswith(target):
             block.nonce = local_nonce  # Assign only on success
             block.hash = block_hash
-            if logger:
-                logger.info("Success! Hash: %s", block_hash)
-
             block.mining_time = time.monotonic() - start_time
             if logger:
                 logger.info("Success! Hash: %s, Mining time: %.2fs", block_hash, block.mining_time)

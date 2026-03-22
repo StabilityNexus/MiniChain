@@ -35,7 +35,9 @@ class Blockchain:
         self.difficulty_adjuster = PIDDifficultyAdjuster(target_block_time=10)
         self.current_difficulty = 1000  # Initial difficulty
         
-        self._create_genesis_block()
+        self.difficulty_adjuster = PIDDifficultyAdjuster(target_block_time=10)
+        self.current_difficulty = 1000  # Initial difficulty
+        
         self._create_genesis_block()
 
     def _create_genesis_block(self):
@@ -72,7 +74,20 @@ class Blockchain:
                 logger.warning("Block %s rejected: %s", block.index, exc)
                 return False
             
-             # Calculate block difficulty based on mining time
+             # Verify block meets difficulty target BEFORE mutating PID state
+            # Use same formula as pow.py: target = "0" * difficulty
+            expected_difficulty = block.difficulty if block.difficulty else self.current_difficulty
+            target_prefix = '0' * expected_difficulty
+            
+            if not block.hash or not block.hash.startswith(target_prefix):
+                logger.warning(
+                    "Block %s rejected: PoW check failed (difficulty: %d)",
+                    block.index,
+                    expected_difficulty
+                )
+                return False
+
+            # Only adjust PID state AFTER block passes PoW validation
             if hasattr(block, 'mining_time') and block.mining_time:
                 block.difficulty = self.difficulty_adjuster.adjust(
                     self.current_difficulty,
@@ -80,19 +95,6 @@ class Blockchain:
                 )
             else:
                 block.difficulty = self.current_difficulty
- 
-            # Verify block meets its difficulty target
-            if hasattr(block, 'hash') and hasattr(block, 'difficulty'):
-                difficulty = block.difficulty
-                target_prefix = '0' * (difficulty // 256 + 1)  # Rough difficulty check
-                
-                if not block.hash.startswith(target_prefix):
-                    logger.warning(
-                        "Block %s rejected: PoW check failed (difficulty: %d)",
-                        block.index,
-                        difficulty
-                    )
-                    return False
 
             # Validate transactions on a temporary state copy
             temp_state = self.state.copy()
@@ -104,8 +106,21 @@ class Blockchain:
                 if not result:
                     logger.warning("Block %s rejected: Transaction failed validation", block.index)
                     return False
-                
-                self.current_difficulty = self.difficulty_adjuster.adjust(
+            for tx in block.transactions:
+                result = temp_state.validate_and_apply(tx)
+
+                # Reject block if any transaction fails
+                if not result:
+                    logger.warning("Block %s rejected: Transaction failed validation", block.index)
+                    return False
+
+            # All transactions valid → commit state and append block
+            self.state = temp_state
+            self.chain.append(block)
+            
+            # Adjust difficulty for next block (single adjustment per block)
+            old_difficulty = self.current_difficulty
+            self.current_difficulty = self.difficulty_adjuster.adjust(
                 self.current_difficulty,
                 block.mining_time if hasattr(block, 'mining_time') else None
             )
@@ -113,9 +128,10 @@ class Blockchain:
             logger.info(
                 "Block %s accepted. Difficulty: %d → %d",
                 block.index,
-                block.difficulty,
+                old_difficulty,
                 self.current_difficulty
             )
+            return True
 
             # All transactions valid → commit state and append block
             self.state = temp_state

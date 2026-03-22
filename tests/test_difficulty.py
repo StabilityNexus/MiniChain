@@ -363,8 +363,8 @@ class TestIntegrationScenarios(unittest.TestCase):
         difficulty = 1000
         changes = []
         
-        for time in times:
-            new_diff = adjuster.adjust(difficulty, time)
+        for block_time in times:
+            new_diff = adjuster.adjust(difficulty, block_time)
             changes.append(abs(new_diff - difficulty))
             difficulty = new_diff
         
@@ -407,6 +407,8 @@ def run_tests():
     return result.wasSuccessful()
 
 
+import sys
+
 if __name__ == "__main__":
     success = run_tests()
-    exit(0 if success else 1)
+    sys.exit(0 if success else 1)
