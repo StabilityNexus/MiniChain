@@ -12,7 +12,7 @@ from minichain.chain import Blockchain
 from minichain.block import Block
 from minichain.pow import mine_block
 import time
-
+import sys
 def test_pid_integration():
     """Test basic PID integration."""
     print("=" * 60)
