@@ -29,24 +29,31 @@ def test_transaction_id_stability():
     assert first_id == second_id
     print("Success: Transaction ID is stable and deterministic!\n")
 
-def test_block_hash_consistency():
-    print("--- Testing Block Hash Consistency ---")
-    # Create a block with one transaction
-    tx = Transaction(sender="A", receiver="B", amount=10, nonce=5)
-    block = Block(index=1, previous_hash="0"*64, transactions=[tx], difficulty=2)
+def test_block_serialization_determinism():
+    print("--- Testing Block Serialization & Cross-Instance Determinism ---")
+    tx_params = {"sender": "A", "receiver": "B", "amount": 10, "nonce": 5}
     
-    initial_hash = block.compute_hash()
-    print(f"Initial Block Hash: {initial_hash}")
+    # Create two SEPARATE block instances with the exact same data
+    tx1 = Transaction(**tx_params)
+    block1 = Block(index=1, previous_hash="0"*64, transactions=[tx1], difficulty=2)
     
-    # Manually re-computing to ensure it's identical
-    assert block.compute_hash() == initial_hash
-    print("Success: Block hash is consistent!\n")
+    tx2 = Transaction(**tx_params)
+    block2 = Block(index=1, previous_hash="0"*64, transactions=[tx2], difficulty=2)
+
+    # 1. Test stable bytes on one instance (same object, twice)
+    assert block1.canonical_payload == block1.canonical_payload
+    
+    # 2. Test cross-instance determinism (different objects, same data)
+    assert block1.canonical_payload == block2.canonical_payload, "Identical blocks must have identical payloads"
+    
+    # 3. Test hash consistency
+    assert block1.compute_hash() == block2.compute_hash()
+    
+    print("✅ Success: Block serialization is cross-instance deterministic!\n")
 
 if __name__ == "__main__":
-    try:
-        test_raw_data_determinism()
-        test_transaction_id_stability()
-        test_block_hash_consistency()
-        print("ALL CANONICAL TESTS PASSED!")
-    except AssertionError as e:
-        print("TEST FAILED: Serialization is not deterministic!")
+    # Removed try/except so that AssertionErrors 'bubble up' to the test runner
+    test_raw_data_determinism()
+    test_transaction_id_stability()
+    test_block_serialization_determinism()
+    print("🚀 ALL CANONICAL TESTS PASSED!")

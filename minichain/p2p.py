@@ -9,7 +9,7 @@ import asyncio
 import json
 import logging
 
-from .serialization import canonical_json_hash
+from .serialization import canonical_json_hash, canonical_json_dumps
 from .validators import is_valid_receiver
 
 logger = logging.getLogger(__name__)
@@ -46,10 +46,8 @@ class P2PNetwork:
     async def start(self, port: int = 9000):
         """Start listening for incoming peer connections on the given port."""
         self._port = port
-        self._server = await asyncio.start_server(
-            self._handle_incoming, host, port
-        )
-        logger.info("Network: Listening on %s:%d", host, port)
+        self._server = await asyncio.start_server(self._handle_incoming, "0.0.0.0", port)
+        logger.info("Network: Listening on 0.0.0.0:%d", port)
 
     async def stop(self):
         """Gracefully shut down the server and disconnect all peers."""
@@ -204,9 +202,7 @@ class P2PNetwork:
         )
 
     def _validate_message(self, message):
-        if not isinstance(message, dict):
-            return False
-        if set(message) != {"type", "data"}:
+        if not {"type", "data"}.issubset(set(message)):
             return False
 
         msg_type = message.get("type")
@@ -303,6 +299,7 @@ class P2PNetwork:
     async def _broadcast_raw(self, payload: dict):
         """Send a JSON message to every connected peer."""
         line = (json.dumps(payload) + "\n").encode()
+        line = (canonical_json_dumps(payload) + "\n").encode()
         disconnected = []
         for reader, writer in self._peers:
             try:
@@ -333,10 +330,16 @@ class P2PNetwork:
 
     async def broadcast_block(self, block, miner=None):
         logger.info("Network: Broadcasting Block #%d", block.index)
-        block_payload = block.to_dict()
-        if miner is not None:
-            block_payload["miner"] = miner
-        payload = {"type": "block", "data": block_payload}
+        
+        # 1. Convert block to a dict (deterministic via serialization.py)
+        block_data = json.loads(block.canonical_payload.decode('utf-8'))
+        
+        # 2. Wrap it in an envelope where 'miner' is OUTSIDE the 'data'
+        payload = {
+            "type": "block",
+            "data": block_data,
+            "miner": miner
+        }
         self._mark_seen("block", payload["data"])
         await self._broadcast_raw(payload)
 
