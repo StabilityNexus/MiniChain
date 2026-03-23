@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+ #!/usr/bin/env python3
 """
 Test PID difficulty adjuster integration with blockchain.
 
@@ -112,7 +112,6 @@ def test_pid_integration():
         print(f"  • Mining time tracked: {mined_block1.mining_time:.2f}s ✅")
         print(f"  • Difficulty adjusted by PID ✅")
         print(f"  • Integration complete ✅")
-        print("\nReady for PR! 🚀")
         return True
     
     # Add block 2
@@ -138,7 +137,6 @@ def test_pid_integration():
     print(f"  • Mining times tracked ✅")
     print(f"  • Difficulty adjusted by PID ✅")
     print(f"  • Integration complete ✅")
-    print("\nReady for PR! 🚀")
     
     return True
 
