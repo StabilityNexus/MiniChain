@@ -6,3 +6,4 @@ Tasks to be done in order from top to bottom, paralellizing execution when the r
 - [ ] Clean up scattered transaction validation ( @SK )
 - [ ] Find out how the current prototype can be made more minimal/clean ( @Mpampeis + everyone )
 - [ ] Switch to SQL storage for blockchain state ( @Tukan003 )
+- [ ] Replace raw TCP by libp2p ( @Anurag )
