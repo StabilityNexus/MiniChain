@@ -326,7 +326,7 @@ async def run_node(port: int, host: str, connect_to: str | None, fund: int, data
         await writer.drain()
         logger.info("🔄 Sent state sync to new peer")
 
-    network._on_peer_connected = on_peer_connected
+    network.register_on_peer_connected(on_peer_connected)
 
     await network.start(port=port, host=host)
 
