@@ -29,21 +29,19 @@ def test_pid_integration():
     
     # Test Block 1: Mine with low difficulty (to keep it fast for testing)
     print("\n2️⃣  Mining Block 1 (low difficulty for testing)...")
-    
-    # Use low difficulty for quick testing (not realistic, but proves integration)
-    low_difficulty = 1  # Very easy to mine
+  
     
     block1 = Block(
         index=1,
         previous_hash=blockchain.last_block.hash,
         transactions=[],
-        difficulty=low_difficulty
+        difficulty=blockchain.current_difficulty
     )
     
-    print(f"   Mining with difficulty: {low_difficulty}")
+   print(f"   Mining with difficulty: {blockchain.current_difficulty}")
     try:
         start_time = time.monotonic()
-        mined_block1 = mine_block(block1, difficulty=low_difficulty, timeout_seconds=5)
+        mined_block1 = mine_block(block1, difficulty=blockchain.current_difficulty, timeout_seconds=5)
         mining_time1 = time.monotonic() - start_time
         print(f"   ✅ Block mined in {mining_time1:.2f}s")
         print(f"   Mining time: {mined_block1.mining_time:.2f}s")
