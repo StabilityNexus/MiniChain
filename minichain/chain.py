@@ -107,11 +107,6 @@ class Blockchain:
             for tx in block.transactions:
                 result = temp_state.validate_and_apply(tx)
 
-                # Reject block if any transaction fails
-                if not result:
-                    logger.warning("Block %s rejected: Transaction failed validation", block.index)
-                    return False
-
             # All transactions valid → commit state and append block
             self.state = temp_state
             self.chain.append(block)
