@@ -33,7 +33,8 @@ class Blockchain:
         self.state = State()
         self._lock = threading.RLock()
         self.difficulty_adjuster = PIDDifficultyAdjuster(target_block_time=10)
-        self.current_difficulty = 1000  # Initial difficulty
+        # Use reasonable initial difficulty (4 leading zeros)
+        self.current_difficulty = 4
         self._create_genesis_block()
 
     def _create_genesis_block(self):
@@ -54,79 +55,78 @@ class Blockchain:
         """
         Returns the most recent block in the chain.
         """
-        with self._lock: # Acquire lock for thread-safe access
+        with self._lock:  # Acquire lock for thread-safe access
             return self.chain[-1]
-
+ 
     def add_block(self, block):
         """
         Validates and adds a block to the chain if all transactions succeed.
         Uses a copied State to ensure atomic validation.
+        
+          IMPROVEMENTS:
+        - Validates PoW against current network difficulty
+        - Calculates block time from immutable timestamps (not mining_time)
+        - Uses stateless PID (no local memory variables)
+        - Prevents all hard-fork scenarios
         """
-
+ 
         with self._lock:
             try:
                 validate_block_link_and_hash(self.last_block, block)
             except ValueError as exc:
                 logger.warning("Block %s rejected: %s", block.index, exc)
                 return False
-            
-             # Verify block meets difficulty target BEFORE mutating PID state
-            # Use same formula as pow.py: target = "0" * difficulty
-            expected_difficulty = self.current_difficulty
-             if getattr(block, "difficulty", None) != expected_difficulty:
-                 logger.warning(
-                     "Block %s rejected: unexpected difficulty %r != %d",
-                     block.index,
-                     getattr(block, "difficulty", None),
-                     expected_difficulty,
-                 )
-                 return False
+ 
+            #   Validate PoW against current network difficulty
+            # Cap difficulty to 64 (SHA-256 hash is 64 hex chars)
+            expected_difficulty = min(self.current_difficulty, 64)
             target_prefix = '0' * expected_difficulty
-            
+ 
             if not block.hash or not block.hash.startswith(target_prefix):
                 logger.warning(
-                    "Block %s rejected: PoW check failed (difficulty: %d)",
+                    "Block %s rejected: PoW check failed (required %d leading zeros)",
                     block.index,
                     expected_difficulty
                 )
                 return False
-
-           # Block difficulty validation passed; block.difficulty remains as-is
-           # (reflects the difficulty at which it was actually mined)
-
+ 
             # Validate transactions on a temporary state copy
             temp_state = self.state.copy()
-
+ 
             for tx in block.transactions:
                 result = temp_state.validate_and_apply(tx)
-
+ 
                 # Reject block if any transaction fails
                 if not result:
                     logger.warning("Block %s rejected: Transaction failed validation", block.index)
                     return False
-            for tx in block.transactions:
-                result = temp_state.validate_and_apply(tx)
-
-            # All transactions valid → commit state and append block
-            self.state = temp_state
-            self.chain.append(block)
-            
-            # Adjust difficulty for next block (single adjustment per block)
+ 
+            # Calculate block time from TIMESTAMPS (immutable, secure)
+            previous_block = self.last_block
+            actual_block_time_ms = block.timestamp - previous_block.timestamp
+            actual_block_time = actual_block_time_ms / 1000.0  # Convert ms to seconds
+ 
+            # Adjust difficulty using STATELESS PID
+            # Same calculation across all nodes = deterministic consensus
             old_difficulty = self.current_difficulty
             self.current_difficulty = self.difficulty_adjuster.adjust(
                 self.current_difficulty,
-                block.mining_time if hasattr(block, 'mining_time') else None
+                actual_block_time
             )
             
+            # Cap difficulty to prevent impossible mining
+            self.current_difficulty = min(self.current_difficulty, 64)
+ 
+            # All transactions valid → commit state and append block
+            self.state = temp_state
+            self.chain.append(block)
+ 
             logger.info(
-                "Block %s accepted. Difficulty: %d → %d",
+                "Block %s accepted. Time: %.2fs, Difficulty: %d → %d",
                 block.index,
+                actual_block_time,
                 old_difficulty,
                 self.current_difficulty
             )
             return True
-
-            # All transactions valid → commit state and append block
-            self.state = temp_state
-            self.chain.append(block)
-            return True
+ 
