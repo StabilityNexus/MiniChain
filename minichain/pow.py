@@ -19,7 +19,11 @@ def mine_block(
     logger=None,
     progress_callback=None
 ):
-    """Mines a block using Proof-of-Work without mutating input block until success."""
+    """Mines a block using Proof-of-Work without mutating input block until success.
+    NOTE: Mining time is NOT tracked here.
+    Block time is calculated from immutable blockchain timestamps:
+        actual_time = block.timestamp - previous_block.timestamp
+    This prevents miners from lying about how long mining took."""
 
     if not isinstance(difficulty, int) or difficulty <= 0:
         raise ValueError("Difficulty must be a positive integer.")
@@ -57,11 +61,18 @@ def mine_block(
         if block_hash.startswith(target):
             block.nonce = local_nonce  # Assign only on success
             block.hash = block_hash
-            block.mining_time = time.monotonic() - start_time
+            # DO NOT TRACK MINING TIME HERE
+            # Miners could lie about it (e.g., set to any value they want)
+            # Block time is calculated from immutable timestamps instead:
+            # actual_time = block.timestamp - previous_block.timestamp
+            # This is done in chain.py when the block is added
+            
+            mining_time = time.monotonic() - start_time
             if logger:
-                logger.info("Success! Hash: %s, Mining time: %.2fs", block_hash, block.mining_time)
+                logger.info("Success! Hash: %s, Mining time: %.2fs (local only)", 
+                           block_hash, mining_time)
             return block
-
+            
         # Allow cancellation via progress callback (pass nonce explicitly)
         if progress_callback:
             should_continue = progress_callback(local_nonce, block_hash)
