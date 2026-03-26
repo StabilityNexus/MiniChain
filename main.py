@@ -330,6 +330,11 @@ async def run_node(port: int, connect_to: str | None, fund: int, datadir: str | 
 
     await network.start(port=port, host=host)
 
+    # Fund this node's wallet so it can transact in the demo
+    if fund > 0:
+        chain.state.credit_mining_reward(pk, reward=fund)
+        logger.info("💰 Funded %s... with %d coins", pk[:12], fund)
+
     # Connect to a seed peer if requested
     if connect_to:
         try:
@@ -337,11 +342,6 @@ async def run_node(port: int, connect_to: str | None, fund: int, datadir: str | 
             await network.connect_to_peer(host, int(peer_port))
         except ValueError:
             logger.error("Invalid --connect format. Use host:port")
-
-    # Fund this node's wallet so it can transact in the demo
-    if fund > 0:
-        chain.state.credit_mining_reward(pk, reward=fund)
-        logger.info("💰 Funded %s... with %d coins", pk[:12], fund)
 
     try:
         await cli_loop(sk, pk, chain, mempool, network)
