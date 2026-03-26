@@ -63,7 +63,7 @@ class Blockchain:
         Validates and adds a block to the chain if all transactions succeed.
         Uses a copied State to ensure atomic validation.
         
-          IMPROVEMENTS:
+    
         - Validates PoW against current network difficulty
         - Calculates block time from immutable timestamps (not mining_time)
         - Uses stateless PID (no local memory variables)
