@@ -15,6 +15,7 @@ def _safe_exec_worker(code, globals_dict, context_dict, result_queue):
 class ContractMachine:
     """
     A minimal execution environment for Python-based smart contracts.
+    WARNING: Still not production-safe. For educational use only.
     """
     def __init__(self, state):
         self.state = state
