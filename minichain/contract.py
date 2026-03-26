@@ -13,6 +13,9 @@ def _safe_exec_worker(code, globals_dict, context_dict, result_queue):
         result_queue.put({"status": "error", "error": str(e)})
 
 class ContractMachine:
+    """
+    A minimal execution environment for Python-based smart contracts.
+    """
     def __init__(self, state):
         self.state = state
 
@@ -58,7 +61,7 @@ class ContractMachine:
             if result["status"] != "success":
                 return False
 
-            json.dumps(result["storage"]) # Validate JSON serializability
+            json.dumps(result["storage"], allow_nan=False) # Validate JSON serializability
             self.state.update_contract_storage(contract_address, result["storage"])
             return True
 
@@ -74,6 +77,7 @@ class ContractMachine:
                 if isinstance(node, ast.Name) and node.id.startswith("__"): return False
                 if isinstance(node, ast.Call) and getattr(node.func, "id", "") in {"type", "getattr", "setattr", "delattr"}: return False
                 if isinstance(node, ast.Constant) and isinstance(node.value, str) and "__" in node.value: return False
+                if isinstance(node, ast.Constant) and isinstance(node.value, (float, complex)): return False
                 if isinstance(node, ast.JoinedStr): return False
             return True
         except SyntaxError:
