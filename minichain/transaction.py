@@ -1,4 +1,5 @@
 import time
+import re
 from nacl.signing import SigningKey, VerifyKey
 from nacl.encoding import HexEncoder
 from nacl.exceptions import BadSignatureError, CryptoError
@@ -43,7 +44,6 @@ class Transaction:
 
     @staticmethod
     def is_valid_address(address):
-        import re
         return bool(re.fullmatch(r"[0-9a-fA-F]{40}|[0-9a-fA-F]{64}", address))
 
     @classmethod
@@ -69,9 +69,8 @@ class Transaction:
             return False
         if not isinstance(self.sender, str) or not self.is_valid_address(self.sender):
             return False
-        if self.receiver is not None:
-            if not isinstance(self.receiver, str) or not self.is_valid_address(self.receiver):
-                return False
+        if self.receiver is not None and (not isinstance(self.receiver, str) or not self.is_valid_address(self.receiver)):
+            return False
         if self.data is not None and not isinstance(self.data, str):
             return False
         if not isinstance(self.timestamp, int) or self.timestamp <= 0:
