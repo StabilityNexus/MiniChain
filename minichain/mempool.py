@@ -12,8 +12,8 @@ class Mempool:
         self.transactions_per_block = transactions_per_block
 
     def add_transaction(self, tx):
-        if not tx.verify():
-            logger.warning("Mempool: Invalid signature rejected")
+        if not tx.is_valid():
+            logger.warning("Mempool: Invalid transaction rejected")
             return False
 
         with self._lock:

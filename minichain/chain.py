@@ -71,7 +71,7 @@ class Blockchain:
             temp_state = self.state.copy()
 
             for tx in block.transactions:
-                result = temp_state.validate_and_apply(tx)
+                result = temp_state.apply_transaction(tx)
 
                 # Reject block if any transaction fails
                 if not result:
