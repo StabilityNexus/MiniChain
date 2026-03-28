@@ -83,12 +83,26 @@ def load(path: str = ".") -> Blockchain:
     if not isinstance(raw_accounts, dict):
         raise ValueError(f"Invalid accounts data in '{path}'")
 
-    blocks = [_deserialize_block(b) for b in raw_blocks]
+    blocks = []
+    for raw_block in raw_blocks:
+        if not isinstance(raw_block, dict):
+            raise ValueError(f"Invalid chain data in '{path}'")
+        try:
+            blocks.append(_deserialize_block(raw_block))
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError(f"Invalid chain data in '{path}'") from exc
+
+    normalized_accounts = {}
+    for address, account in raw_accounts.items():
+        if not isinstance(address, str) or not isinstance(account, dict):
+            raise ValueError(f"Invalid accounts data in '{path}'")
+        normalized_accounts[address] = account
+
     _verify_chain_integrity(blocks)
 
     blockchain = Blockchain()
     blockchain.chain = blocks
-    blockchain.state.accounts = raw_accounts
+    blockchain.state.accounts = normalized_accounts
 
     logger.info(
         "Loaded %d blocks and %d accounts from '%s'",

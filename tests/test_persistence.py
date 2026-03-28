@@ -143,6 +143,45 @@ class TestPersistence(unittest.TestCase):
         with self.assertRaises(ValueError):
             load(path=self.tmpdir)
 
+    def test_malformed_block_row_raises_value_error(self):
+        bc = Blockchain()
+        save(bc, path=self.tmpdir)
+        db_path = os.path.join(self.tmpdir, DB_FILE)
+        with sqlite3.connect(db_path) as conn:
+            conn.execute(
+                "UPDATE blocks SET block_json = ? WHERE height = 0",
+                (json.dumps(["not-a-block-dict"]),),
+            )
+        with self.assertRaises(ValueError):
+            load(path=self.tmpdir)
+
+    def test_block_missing_required_field_raises_value_error(self):
+        bc = Blockchain()
+        save(bc, path=self.tmpdir)
+        db_path = os.path.join(self.tmpdir, DB_FILE)
+        with sqlite3.connect(db_path) as conn:
+            row = conn.execute("SELECT block_json FROM blocks WHERE height = 0").fetchone()
+            payload = json.loads(row[0])
+            payload.pop("hash", None)
+            conn.execute(
+                "UPDATE blocks SET block_json = ? WHERE height = 0",
+                (json.dumps(payload),),
+            )
+        with self.assertRaises(ValueError):
+            load(path=self.tmpdir)
+
+    def test_malformed_account_row_raises_value_error(self):
+        bc, _, _ = self._chain_with_tx()
+        save(bc, path=self.tmpdir)
+        db_path = os.path.join(self.tmpdir, DB_FILE)
+        with sqlite3.connect(db_path) as conn:
+            conn.execute(
+                "UPDATE accounts SET account_json = ? WHERE address = ?",
+                (json.dumps(["not-an-account-dict"]), next(iter(bc.state.accounts))),
+            )
+        with self.assertRaises(ValueError):
+            load(path=self.tmpdir)
+
     def test_missing_file_raises(self):
         with self.assertRaises(FileNotFoundError):
             load(path=self.tmpdir)
