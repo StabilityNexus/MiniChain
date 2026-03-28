@@ -152,6 +152,15 @@ class TestPersistence(unittest.TestCase):
         with self.assertRaises(ValueError):
             load(path=self.tmpdir)
 
+    def test_truncated_chain_rows_raises_value_error(self):
+        bc, _, _ = self._chain_with_tx()
+        save(bc, path=self.tmpdir)
+        db_path = os.path.join(self.tmpdir, DB_FILE)
+        with sqlite3.connect(db_path) as conn:
+            conn.execute("DELETE FROM blocks WHERE height = 1")
+        with self.assertRaises(ValueError):
+            load(path=self.tmpdir)
+
     def test_malformed_block_row_raises_value_error(self):
         bc = Blockchain()
         save(bc, path=self.tmpdir)

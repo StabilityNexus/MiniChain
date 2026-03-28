@@ -219,10 +219,23 @@ def _load_snapshot_from_sqlite(db_path: str) -> dict[str, Any]:
         account_rows = conn.execute(
             "SELECT address, account_json FROM accounts ORDER BY address ASC"
         ).fetchall()
+        chain_length_row = conn.execute(
+            "SELECT value FROM metadata WHERE key = ?",
+            ("chain_length",),
+        ).fetchone()
     except sqlite3.DatabaseError as exc:
         raise ValueError(f"Invalid SQLite persistence data in '{db_path}'") from exc
     finally:
         conn.close()
+
+    if chain_length_row is None:
+        raise ValueError(f"Invalid SQLite persistence data in '{db_path}'")
+    try:
+        expected_chain_length = int(chain_length_row["value"])
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"Invalid SQLite persistence data in '{db_path}'") from exc
+    if expected_chain_length != len(block_rows):
+        raise ValueError(f"Invalid SQLite persistence data in '{db_path}'")
 
     try:
         chain = [json.loads(row["block_json"]) for row in block_rows]
