@@ -1,6 +1,0 @@
-#!/home/moksha/MiniChain/venv/bin/python3
-import sys
-from examples.circuit_relay.relay_example import main
-if __name__ == '__main__':
-    sys.argv[0] = sys.argv[0].removesuffix('.exe')
-    sys.exit(main())

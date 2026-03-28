@@ -326,6 +326,8 @@ TSWLatexianTemp*
 #*Notes.bib
 
 # Python
+venv/
+.venv/
 __pycache__/
 *.py[cod]
 *$py.class
