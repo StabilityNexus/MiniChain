@@ -37,8 +37,13 @@ def test_block_serialization_determinism():
     tx1 = Transaction(**tx_params)
     tx2 = Transaction(**tx_params)
     
-    block1 = Block(index=1, previous_hash="0"*64, transactions=[tx1], difficulty=2, timestamp=999999)
-    block2 = Block(index=1, previous_hash="0"*64, transactions=[tx2], difficulty=2, timestamp=999999)
+   # Add the miner field
+    block1 = Block(index=1, previous_hash="0"*64, transactions=[tx1], difficulty=2, timestamp=999999, miner="a" * 40)
+    block2 = Block(index=1, previous_hash="0"*64, transactions=[tx2], difficulty=2, timestamp=999999, miner="a" * 40)
+
+    # Pre-compute the hashes before asserting
+    block1.hash = block1.compute_hash()
+    block2.hash = block2.compute_hash()
 
     assert block1.canonical_payload == block2.canonical_payload, "Identical blocks must have identical payloads"
     assert block1.compute_hash() == block2.compute_hash(), "Identical blocks must have identical hashes"

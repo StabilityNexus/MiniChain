@@ -73,6 +73,7 @@ class Block:
             "timestamp": self.timestamp,
             "difficulty": self.difficulty,
             "nonce": self.nonce,
+            "miner": self.miner,
         }
 
     # -------------------------
@@ -117,10 +118,12 @@ class Block:
         )
         block.nonce = payload.get("nonce", 0)
         block.hash = payload.get("hash")
-        if "merkle_root" in payload:
-            block.merkle_root = payload["merkle_root"]
+        
+        # Recalculate and verify the Merkle root!
+        if "merkle_root" in payload and payload["merkle_root"] != block.merkle_root:
+            raise ValueError("merkle_root does not match transactions")
+            
         return block
-
     @property
     def canonical_payload(self) -> bytes:
         """Returns the full block (header + body) as canonical bytes for networking."""
