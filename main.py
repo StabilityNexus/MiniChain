@@ -23,12 +23,12 @@ import os
 import re
 import sys
 
-from nacl.signing import SigningKey
 from nacl.encoding import HexEncoder
+from nacl.signing import SigningKey
 
-from minichain import Transaction, Blockchain, Block, State, Mempool, P2PNetwork, mine_block
+from minichain import (Block, Blockchain, Mempool, P2PNetwork, State,
+                       Transaction, mine_block)
 from minichain.validators import is_valid_receiver
-
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +41,7 @@ LOCALHOST_PEERS = {"127.0.0.1", "::1", "localhost", "0:0:0:0:0:0:0:1"}
 # Wallet helpers
 # ──────────────────────────────────────────────
 
+
 def create_wallet():
     sk = SigningKey.generate()
     pk = sk.verify_key.encode(encoder=HexEncoder).decode()
@@ -50,6 +51,7 @@ def create_wallet():
 # ──────────────────────────────────────────────
 # Block mining
 # ──────────────────────────────────────────────
+
 
 def mine_and_process_block(chain, mempool, miner_pk):
     """Mine pending transactions into a new block."""
@@ -86,7 +88,11 @@ def mine_and_process_block(chain, mempool, miner_pk):
     mined_block = mine_block(block)
 
     if chain.add_block(mined_block):
-        logger.info("✅ Block #%d mined and added (%d txs)", mined_block.index, len(mineable_txs))
+        logger.info(
+            "✅ Block #%d mined and added (%d txs)",
+            mined_block.index,
+            len(mineable_txs),
+        )
         mempool.remove_transactions(mineable_txs)
         chain.state.credit_mining_reward(miner_pk)
         return mined_block
@@ -96,13 +102,16 @@ def mine_and_process_block(chain, mempool, miner_pk):
         for tx in pending_txs:
             if mempool.add_transaction(tx):
                 restored += 1
-        logger.info("Mempool: Restored %d/%d txs after rejection", restored, len(pending_txs))
+        logger.info(
+            "Mempool: Restored %d/%d txs after rejection", restored, len(pending_txs)
+        )
         return None
 
 
 # ──────────────────────────────────────────────
 # Network message handler
 # ──────────────────────────────────────────────
+
 
 def make_network_handler(chain, mempool):
     """Return an async callback that processes incoming P2P messages."""
@@ -122,24 +131,40 @@ def make_network_handler(chain, mempool):
                 return
 
             # Merge remote state into local state (for accounts we don't have yet)
-            remote_accounts = payload.get("accounts") if isinstance(payload, dict) else None
+            remote_accounts = (
+                payload.get("accounts") if isinstance(payload, dict) else None
+            )
             if not isinstance(remote_accounts, dict):
-                logger.warning("🔒 Rejected sync from %s with invalid accounts payload", peer_addr)
+                logger.warning(
+                    "🔒 Rejected sync from %s with invalid accounts payload", peer_addr
+                )
                 return
 
             for addr, acc in remote_accounts.items():
                 if not isinstance(acc, dict):
-                    logger.warning("🔒 Skipping malformed account %r from %s", addr, peer_addr)
+                    logger.warning(
+                        "🔒 Skipping malformed account %r from %s", addr, peer_addr
+                    )
                     continue
                 if addr not in chain.state.accounts:
                     chain.state.accounts[addr] = acc
-                    logger.info("🔄 Synced account %s... (balance=%d)", addr[:12], acc.get("balance", 0))
-            logger.info("🔄 Accepted state sync from %s — %d accounts", peer_addr, len(chain.state.accounts))
+                    logger.info(
+                        "🔄 Synced account %s... (balance=%d)",
+                        addr[:12],
+                        acc.get("balance", 0),
+                    )
+            logger.info(
+                "🔄 Accepted state sync from %s — %d accounts",
+                peer_addr,
+                len(chain.state.accounts),
+            )
 
         elif msg_type == "tx":
             tx = Transaction.from_dict(payload)
             if mempool.add_transaction(tx):
-                logger.info("📥 Received tx from %s... (amount=%s)", tx.sender[:8], tx.amount)
+                logger.info(
+                    "📥 Received tx from %s... (amount=%s)", tx.sender[:8], tx.amount
+                )
 
         elif msg_type == "block":
             block = Block.from_dict(payload)
@@ -204,7 +229,9 @@ async def cli_loop(sk, pk, chain, mempool, network):
                 print("  (no accounts yet)")
             for addr, acc in accounts.items():
                 tag = " (you)" if addr == pk else ""
-                print(f"  {addr[:12]}...  balance={acc['balance']}  nonce={acc['nonce']}{tag}")
+                print(
+                    f"  {addr[:12]}...  balance={acc['balance']}  nonce={acc['nonce']}{tag}"
+                )
 
         # ── send ──
         elif cmd == "send":
@@ -232,7 +259,9 @@ async def cli_loop(sk, pk, chain, mempool, network):
                 await network.broadcast_transaction(tx)
                 print(f"  ✅ Tx sent: {amount} coins → {receiver[:12]}...")
             else:
-                print("  ❌ Transaction rejected (invalid sig, duplicate, or mempool full).")
+                print(
+                    "  ❌ Transaction rejected (invalid sig, duplicate, or mempool full)."
+                )
 
         # ── mine ──
         elif cmd == "mine":
@@ -288,7 +317,10 @@ async def cli_loop(sk, pk, chain, mempool, network):
 # Main entry point
 # ──────────────────────────────────────────────
 
-async def run_node(port: int, host: str, connect_to: str | None, fund: int, datadir: str | None):
+
+async def run_node(
+    port: int, host: str, connect_to: str | None, fund: int, datadir: str | None
+):
     """Boot the node, optionally connect to a peer, then enter the CLI."""
     sk, pk = create_wallet()
 
@@ -297,6 +329,7 @@ async def run_node(port: int, host: str, connect_to: str | None, fund: int, data
     if datadir and os.path.exists(os.path.join(datadir, "data.json")):
         try:
             from minichain.persistence import load
+
             chain = load(datadir)
             logger.info("Restored chain from '%s'", datadir)
         except FileNotFoundError as e:
@@ -318,10 +351,11 @@ async def run_node(port: int, host: str, connect_to: str | None, fund: int, data
     # When a new peer connects, send our state so they can sync
     async def on_peer_connected(writer):
         import json as _json
-        sync_msg = _json.dumps({
-            "type": "sync",
-            "data": {"accounts": chain.state.accounts}
-        }) + "\n"
+
+        sync_msg = (
+            _json.dumps({"type": "sync", "data": {"accounts": chain.state.accounts}})
+            + "\n"
+        )
         writer.write(sync_msg.encode())
         await writer.drain()
         logger.info("🔄 Sent state sync to new peer")
@@ -350,6 +384,7 @@ async def run_node(port: int, host: str, connect_to: str | None, fund: int, data
         if datadir:
             try:
                 from minichain.persistence import save
+
                 save(chain, datadir)
                 logger.info("Chain saved to '%s'", datadir)
             except Exception as e:
@@ -359,11 +394,33 @@ async def run_node(port: int, host: str, connect_to: str | None, fund: int, data
 
 def main():
     parser = argparse.ArgumentParser(description="MiniChain Node — Testnet Demo")
-    parser.add_argument("--host", type=str, default="127.0.0.1", help="Host/IP to bind the P2P server (default: 127.0.0.1)")
-    parser.add_argument("--port", type=int, default=9000, help="TCP port to listen on (default: 9000)")
-    parser.add_argument("--connect", type=str, default=None, help="Peer address to connect to (host:port)")
-    parser.add_argument("--fund", type=int, default=100, help="Initial coins to fund this wallet (default: 100)")
-    parser.add_argument("--datadir", type=str, default=None, help="Directory to save/load blockchain state (enables persistence)")
+    parser.add_argument(
+        "--host",
+        type=str,
+        default="127.0.0.1",
+        help="Host/IP to bind the P2P server (default: 127.0.0.1)",
+    )
+    parser.add_argument(
+        "--port", type=int, default=9000, help="TCP port to listen on (default: 9000)"
+    )
+    parser.add_argument(
+        "--connect",
+        type=str,
+        default=None,
+        help="Peer address to connect to (host:port)",
+    )
+    parser.add_argument(
+        "--fund",
+        type=int,
+        default=100,
+        help="Initial coins to fund this wallet (default: 100)",
+    )
+    parser.add_argument(
+        "--datadir",
+        type=str,
+        default=None,
+        help="Directory to save/load blockchain state (enables persistence)",
+    )
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -373,7 +430,9 @@ def main():
     )
 
     try:
-        asyncio.run(run_node(args.port, args.host, args.connect, args.fund, args.datadir))
+        asyncio.run(
+            run_node(args.port, args.host, args.connect, args.fund, args.datadir)
+        )
     except KeyboardInterrupt:
         print("\nNode shut down.")
 

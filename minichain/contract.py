@@ -1,9 +1,10 @@
+import ast
+import json  # Moved to module-level import
 import logging
 import multiprocessing
-import ast
 
-import json # Moved to module-level import
 logger = logging.getLogger(__name__)
+
 
 def _safe_exec_worker(code, globals_dict, context_dict, result_queue):
     """
@@ -13,11 +14,18 @@ def _safe_exec_worker(code, globals_dict, context_dict, result_queue):
         # Attempt to set resource limits (Unix only)
         try:
             import resource
+
             # Limit CPU time (seconds) and memory (bytes) - example values
-            resource.setrlimit(resource.RLIMIT_CPU, (2, 2)) # Align with p.join timeout (2 seconds)
-            resource.setrlimit(resource.RLIMIT_AS, (100 * 1024 * 1024, 100 * 1024 * 1024))
+            resource.setrlimit(
+                resource.RLIMIT_CPU, (2, 2)
+            )  # Align with p.join timeout (2 seconds)
+            resource.setrlimit(
+                resource.RLIMIT_AS, (100 * 1024 * 1024, 100 * 1024 * 1024)
+            )
         except ImportError:
-            logger.warning("Resource module not available. Contract will run without OS-level resource limits.")
+            logger.warning(
+                "Resource module not available. Contract will run without OS-level resource limits."
+            )
         except (OSError, ValueError) as e:
             logger.warning("Failed to set resource limits: %s", e)
 
@@ -26,6 +34,7 @@ def _safe_exec_worker(code, globals_dict, context_dict, result_queue):
         result_queue.put({"status": "success", "storage": context_dict.get("storage")})
     except Exception as e:
         result_queue.put({"status": "error", "error": str(e)})
+
 
 class ContractMachine:
     """
@@ -67,19 +76,17 @@ class ContractMachine:
             "min": min,
             "max": max,
             "abs": abs,
-                "str": str, # Keeping str for basic functionality, relying on AST checks for safety
+            "str": str,  # Keeping str for basic functionality, relying on AST checks for safety
             "bool": bool,
             "float": float,
             "list": list,
             "dict": dict,
             "tuple": tuple,
             "sum": sum,
-            "Exception": Exception, # Added to allow contracts to raise exceptions
+            "Exception": Exception,  # Added to allow contracts to raise exceptions
         }
 
-        globals_for_exec = {
-            "__builtins__": safe_builtins
-        }
+        globals_for_exec = {"__builtins__": safe_builtins}
 
         # Execution context (locals)
         context = {
@@ -96,8 +103,7 @@ class ContractMachine:
             # Execute in a subprocess with timeout
             queue = multiprocessing.Queue()
             p = multiprocessing.Process(
-                target=_safe_exec_worker,
-                args=(code, globals_for_exec, context, queue)
+                target=_safe_exec_worker, args=(code, globals_for_exec, context, queue)
             )
             p.start()
             p.join(timeout=2)  # 2 second timeout
@@ -125,10 +131,7 @@ class ContractMachine:
                 return False
 
             # Commit updated storage only after successful execution
-            self.state.update_contract_storage(
-                contract_address,
-                result["storage"]
-            )
+            self.state.update_contract_storage(contract_address, result["storage"])
 
             return True
 
@@ -142,26 +145,36 @@ class ContractMachine:
             tree = ast.parse(code)
             for node in ast.walk(tree):
                 if isinstance(node, ast.Attribute) and node.attr.startswith("__"):
-                    logger.warning("Rejected contract code with double-underscore attribute access.")
+                    logger.warning(
+                        "Rejected contract code with double-underscore attribute access."
+                    )
                     return False
                 if isinstance(node, ast.Name) and node.id.startswith("__"):
-                    logger.warning("Rejected contract code with double-underscore name.")
+                    logger.warning(
+                        "Rejected contract code with double-underscore name."
+                    )
                     return False
                 if isinstance(node, (ast.Import, ast.ImportFrom)):
                     logger.warning("Rejected contract code with import statement.")
                     return False
                 if isinstance(node, ast.Call):
-                    if isinstance(node.func, ast.Name) and node.func.id == 'type':
+                    if isinstance(node.func, ast.Name) and node.func.id == "type":
                         logger.warning("Rejected type() call.")
                         return False
-                if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id in {"getattr", "setattr", "delattr"}:
+                if (
+                    isinstance(node, ast.Call)
+                    and isinstance(node.func, ast.Name)
+                    and node.func.id in {"getattr", "setattr", "delattr"}
+                ):
                     logger.warning(f"Rejected direct call to {node.func.id}.")
                     return False
                 if isinstance(node, ast.Constant) and isinstance(node.value, str):
                     if "__" in node.value:
-                        logger.warning("Rejected string literal with double-underscore.")
+                        logger.warning(
+                            "Rejected string literal with double-underscore."
+                        )
                         return False
-                if isinstance(node, ast.JoinedStr): # f-strings
+                if isinstance(node, ast.JoinedStr):  # f-strings
                     logger.warning("Rejected f-string usage.")
                     return False
             return True

@@ -1,9 +1,10 @@
-from .block import Block
-from .state import State
-from .pow import calculate_hash
 import logging
 import threading
 import time
+
+from .block import Block
+from .pow import calculate_hash
+from .state import State
 
 logger = logging.getLogger(__name__)
 
@@ -15,9 +16,7 @@ def validate_block_link_and_hash(previous_block, block):
         )
 
     if block.index != previous_block.index + 1:
-        raise ValueError(
-            f"invalid index {block.index} != {previous_block.index + 1}"
-        )
+        raise ValueError(f"invalid index {block.index} != {previous_block.index + 1}")
 
     expected_hash = calculate_hash(block.to_header_dict())
     if block.hash != expected_hash:
@@ -39,11 +38,7 @@ class Blockchain:
         """
         Creates the genesis block with a fixed hash.
         """
-        genesis_block = Block(
-            index=0,
-            previous_hash="0",
-            transactions=[]
-        )
+        genesis_block = Block(index=0, previous_hash="0", transactions=[])
         genesis_block.hash = "0" * 64
         self.chain.append(genesis_block)
 

@@ -3,7 +3,8 @@ import unittest
 from nacl.encoding import HexEncoder
 from nacl.signing import SigningKey
 
-from minichain import Block, Mempool, P2PNetwork, State, Transaction, calculate_hash
+from minichain import (Block, Mempool, P2PNetwork, State, Transaction,
+                       calculate_hash)
 from minichain.serialization import canonical_json_dumps
 
 
@@ -16,7 +17,9 @@ class TestDeterministicConsensus(unittest.TestCase):
         self.assertEqual(calculate_hash(left), calculate_hash(right))
 
     def test_block_hash_matches_compute_hash(self):
-        block = Block(index=1, previous_hash="abc", transactions=[], timestamp=1234567890)
+        block = Block(
+            index=1, previous_hash="abc", transactions=[], timestamp=1234567890
+        )
         block.difficulty = 2
         block.nonce = 7
 
@@ -28,7 +31,9 @@ class TestMempoolQueue(unittest.TestCase):
         self.state = State()
         self.sender_sk = SigningKey.generate()
         self.sender_pk = self.sender_sk.verify_key.encode(encoder=HexEncoder).decode()
-        self.receiver_pk = SigningKey.generate().verify_key.encode(encoder=HexEncoder).decode()
+        self.receiver_pk = (
+            SigningKey.generate().verify_key.encode(encoder=HexEncoder).decode()
+        )
         self.state.credit_mining_reward(self.sender_pk, 100)
 
     def _signed_tx(self, nonce, amount=1, timestamp=None) -> Transaction:
@@ -45,7 +50,9 @@ class TestMempoolQueue(unittest.TestCase):
     def test_transactions_for_block_are_sorted_and_capped(self):
         mempool = Mempool()
         for nonce in range(mempool.transactions_per_block + 5):
-            self.assertTrue(mempool.add_transaction(self._signed_tx(nonce, timestamp=5000 + nonce)))
+            self.assertTrue(
+                mempool.add_transaction(self._signed_tx(nonce, timestamp=5000 + nonce))
+            )
 
         selected = mempool.get_transactions_for_block()
 
@@ -103,12 +110,20 @@ class TestP2PValidationAndDedup(unittest.IsolatedAsyncioTestCase):
     async def test_block_schema_accepts_current_block_wire_format(self):
         sender_sk = SigningKey.generate()
         sender_pk = sender_sk.verify_key.encode(encoder=HexEncoder).decode()
-        receiver_pk = SigningKey.generate().verify_key.encode(encoder=HexEncoder).decode()
+        receiver_pk = (
+            SigningKey.generate().verify_key.encode(encoder=HexEncoder).decode()
+        )
 
         tx = Transaction(sender_pk, receiver_pk, 1, 0, timestamp=123)
         tx.sign(sender_sk)
 
-        block = Block(index=1, previous_hash="0" * 64, transactions=[tx], timestamp=456, difficulty=2)
+        block = Block(
+            index=1,
+            previous_hash="0" * 64,
+            transactions=[tx],
+            timestamp=456,
+            difficulty=2,
+        )
         block.nonce = 9
         block.hash = block.compute_hash()
 
