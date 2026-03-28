@@ -81,6 +81,7 @@ def mine_and_process_block(chain, mempool, miner_pk):
         index=chain.last_block.index + 1,
         previous_hash=chain.last_block.hash,
         transactions=mineable_txs,
+        miner=miner_pk,
     )
 
     mined_block = mine_block(block)
@@ -238,7 +239,6 @@ async def cli_loop(sk, pk, chain, mempool, network):
         elif cmd == "mine":
             mined = mine_and_process_block(chain, mempool, pk)
             if mined:
-                mined.miner = pk
                 await network.broadcast_block(mined)
 
         # ── peers ──
