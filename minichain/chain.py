@@ -67,7 +67,7 @@ class Blockchain:
 
             # Timestamp Validation
 
-            if block.timestamp <= previous_block.timestamp:
+            if block.timestamp < previous_block.timestamp:
                 logger.warning(
                     "Block %s rejected: timestamp older than previous block",
                     block.index,
