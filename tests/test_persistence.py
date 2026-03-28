@@ -1,18 +1,21 @@
-"""
-Tests for chain persistence (save / load round-trip).
-"""
+"""Tests for chain persistence (save / load round-trip)."""
 
 import json
 import os
 import shutil
+import sqlite3
 import tempfile
 import unittest
 
-from nacl.signing import SigningKey
 from nacl.encoding import HexEncoder
+from nacl.signing import SigningKey
 
-from minichain import Blockchain, Transaction, Block, mine_block
-from minichain.persistence import save, load
+from minichain import Block, Blockchain, Transaction, mine_block
+from minichain.persistence import load, persistence_exists, save
+
+
+DB_FILE = "data.db"
+LEGACY_FILE = "data.json"
 
 
 def _make_keypair():
@@ -22,17 +25,13 @@ def _make_keypair():
 
 
 class TestPersistence(unittest.TestCase):
-
     def setUp(self):
         self.tmpdir = tempfile.mkdtemp()
 
     def tearDown(self):
         shutil.rmtree(self.tmpdir, ignore_errors=True)
 
-    # Helpers
-
     def _chain_with_tx(self):
-        """Return a Blockchain that has one mined block with a transfer."""
         bc = Blockchain()
         alice_sk, alice_pk = _make_keypair()
         _, bob_pk = _make_keypair()
@@ -52,24 +51,21 @@ class TestPersistence(unittest.TestCase):
         bc.add_block(block)
         return bc, alice_pk, bob_pk
 
-    # --- Basic save/load ---
-
-    def test_save_creates_file(self):
+    def test_save_creates_sqlite_file(self):
         bc = Blockchain()
         save(bc, path=self.tmpdir)
-        self.assertTrue(os.path.exists(os.path.join(self.tmpdir, "data.json")))
+        self.assertTrue(os.path.exists(os.path.join(self.tmpdir, DB_FILE)))
+        self.assertTrue(persistence_exists(self.tmpdir))
 
     def test_chain_length_preserved(self):
         bc, _, _ = self._chain_with_tx()
         save(bc, path=self.tmpdir)
-
         restored = load(path=self.tmpdir)
         self.assertEqual(len(restored.chain), len(bc.chain))
 
     def test_block_hashes_preserved(self):
         bc, _, _ = self._chain_with_tx()
         save(bc, path=self.tmpdir)
-
         restored = load(path=self.tmpdir)
         for original, loaded in zip(bc.chain, restored.chain):
             self.assertEqual(original.hash, loaded.hash)
@@ -79,11 +75,9 @@ class TestPersistence(unittest.TestCase):
     def test_transaction_data_preserved(self):
         bc, _, _ = self._chain_with_tx()
         save(bc, path=self.tmpdir)
-
         restored = load(path=self.tmpdir)
         original_tx = bc.chain[1].transactions[0]
         loaded_tx = restored.chain[1].transactions[0]
-
         self.assertEqual(original_tx.sender, loaded_tx.sender)
         self.assertEqual(original_tx.receiver, loaded_tx.receiver)
         self.assertEqual(original_tx.amount, loaded_tx.amount)
@@ -94,91 +88,71 @@ class TestPersistence(unittest.TestCase):
         bc = Blockchain()
         save(bc, path=self.tmpdir)
         restored = load(path=self.tmpdir)
-
         self.assertEqual(len(restored.chain), 1)
         self.assertEqual(restored.chain[0].hash, "0" * 64)
 
-    # --- State recomputation ---
-
-    def test_state_recomputed_from_blocks(self):
-        """Balances must be recomputed by replaying blocks, not from a file."""
+    def test_state_snapshot_preserved(self):
         bc, alice_pk, bob_pk = self._chain_with_tx()
         save(bc, path=self.tmpdir)
-
         restored = load(path=self.tmpdir)
-        # Alice started with 100, sent 30 → 70
         self.assertEqual(
             restored.state.get_account(alice_pk)["balance"],
             bc.state.get_account(alice_pk)["balance"],
         )
-        # Bob received 30
         self.assertEqual(
             restored.state.get_account(bob_pk)["balance"],
             bc.state.get_account(bob_pk)["balance"],
         )
 
-    # --- Integrity verification ---
-
     def test_tampered_hash_rejected(self):
-        """Loading a chain with a tampered block hash must raise ValueError."""
         bc, _, _ = self._chain_with_tx()
         save(bc, path=self.tmpdir)
-
-        # Tamper with block hash
-        chain_path = os.path.join(self.tmpdir, "data.json")
-        with open(chain_path, "r") as f:
-            data = json.load(f)
-        data["chain"][1]["hash"] = "deadbeef" * 8
-        with open(chain_path, "w") as f:
-            json.dump(data, f)
-
+        db_path = os.path.join(self.tmpdir, DB_FILE)
+        with sqlite3.connect(db_path) as conn:
+            row = conn.execute("SELECT block_json FROM blocks WHERE height = 1").fetchone()
+            payload = json.loads(row[0])
+            payload["hash"] = "deadbeef" * 8
+            conn.execute(
+                "UPDATE blocks SET block_json = ? WHERE height = 1",
+                (json.dumps(payload),),
+            )
         with self.assertRaises(ValueError):
             load(path=self.tmpdir)
 
     def test_broken_linkage_rejected(self):
-        """Loading a chain with broken previous_hash linkage must raise."""
         bc, _, _ = self._chain_with_tx()
         save(bc, path=self.tmpdir)
-
-        chain_path = os.path.join(self.tmpdir, "data.json")
-        with open(chain_path, "r") as f:
-            data = json.load(f)
-        data["chain"][1]["previous_hash"] = "0" * 64 + "ff"
-        with open(chain_path, "w") as f:
-            json.dump(data, f)
-
+        db_path = os.path.join(self.tmpdir, DB_FILE)
+        with sqlite3.connect(db_path) as conn:
+            row = conn.execute("SELECT block_json FROM blocks WHERE height = 1").fetchone()
+            payload = json.loads(row[0])
+            payload["previous_hash"] = "0" * 64 + "ff"
+            conn.execute(
+                "UPDATE blocks SET block_json = ? WHERE height = 1",
+                (json.dumps(payload),),
+            )
         with self.assertRaises(ValueError):
             load(path=self.tmpdir)
 
-    # --- Crash safety ---
-
-    def test_corrupted_json_raises(self):
-        """Half-written JSON must raise an error, not silently corrupt."""
+    def test_corrupted_sqlite_payload_raises(self):
         bc = Blockchain()
         save(bc, path=self.tmpdir)
-
-        # Corrupt the file
-        chain_path = os.path.join(self.tmpdir, "data.json")
-        with open(chain_path, "w") as f:
-            f.write('{"truncated": ')  # invalid JSON
-
-        with self.assertRaises(json.JSONDecodeError):
+        db_path = os.path.join(self.tmpdir, DB_FILE)
+        with sqlite3.connect(db_path) as conn:
+            conn.execute("UPDATE blocks SET block_json = ? WHERE height = 0", ("{bad-json",))
+        with self.assertRaises(ValueError):
             load(path=self.tmpdir)
 
     def test_missing_file_raises(self):
         with self.assertRaises(FileNotFoundError):
-            load(path=self.tmpdir)  # nothing saved yet
-
-    # --- Chain continuity after load ---
+            load(path=self.tmpdir)
+        self.assertFalse(persistence_exists(self.tmpdir))
 
     def test_loaded_chain_can_add_new_block(self):
-        """Restored chain must still accept new valid blocks."""
-        bc, alice_pk, bob_pk = self._chain_with_tx()
+        bc, _, bob_pk = self._chain_with_tx()
         save(bc, path=self.tmpdir)
-
         restored = load(path=self.tmpdir)
 
-        # Build a second transfer using a new key
         new_sk, new_pk = _make_keypair()
         restored.state.credit_mining_reward(new_pk, 50)
 
@@ -195,6 +169,19 @@ class TestPersistence(unittest.TestCase):
 
         self.assertTrue(restored.add_block(block2))
         self.assertEqual(len(restored.chain), len(bc.chain) + 1)
+
+    def test_legacy_json_load_still_supported(self):
+        bc = Blockchain()
+        snapshot = {
+            "chain": [block.to_dict() for block in bc.chain],
+            "state": bc.state.accounts,
+        }
+        with open(os.path.join(self.tmpdir, LEGACY_FILE), "w", encoding="utf-8") as f:
+            json.dump(snapshot, f)
+
+        restored = load(path=self.tmpdir)
+        self.assertEqual(len(restored.chain), 1)
+        self.assertTrue(persistence_exists(self.tmpdir))
 
 
 if __name__ == "__main__":
