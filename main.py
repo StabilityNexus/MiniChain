@@ -238,7 +238,8 @@ async def cli_loop(sk, pk, chain, mempool, network):
         elif cmd == "mine":
             mined = mine_and_process_block(chain, mempool, pk)
             if mined:
-                await network.broadcast_block(mined, miner=pk)
+                mined.miner = pk
+                await network.broadcast_block(mined)
 
         # ── peers ──
         elif cmd == "peers":
