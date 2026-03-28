@@ -166,6 +166,16 @@ def _initialize_schema(conn: sqlite3.Connection) -> None:
     )
 
 
+def _require_schema(conn: sqlite3.Connection) -> None:
+    required = {"blocks", "accounts", "metadata"}
+    rows = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type = 'table'"
+    ).fetchall()
+    existing = {row["name"] for row in rows}
+    if not required.issubset(existing):
+        raise ValueError("Missing persistence tables")
+
+
 def _save_snapshot_to_sqlite(db_path: str, snapshot: dict[str, Any]) -> None:
     conn = _connect(db_path)
     try:
@@ -202,7 +212,7 @@ def _load_snapshot_from_sqlite(db_path: str) -> dict[str, Any]:
         raise ValueError(f"Invalid SQLite persistence data in '{db_path}'") from exc
 
     try:
-        _initialize_schema(conn)
+        _require_schema(conn)
         block_rows = conn.execute(
             "SELECT block_json FROM blocks ORDER BY height ASC"
         ).fetchall()

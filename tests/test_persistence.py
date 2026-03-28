@@ -143,6 +143,15 @@ class TestPersistence(unittest.TestCase):
         with self.assertRaises(ValueError):
             load(path=self.tmpdir)
 
+    def test_missing_required_sqlite_table_raises(self):
+        bc = Blockchain()
+        save(bc, path=self.tmpdir)
+        db_path = os.path.join(self.tmpdir, DB_FILE)
+        with sqlite3.connect(db_path) as conn:
+            conn.execute("DROP TABLE accounts")
+        with self.assertRaises(ValueError):
+            load(path=self.tmpdir)
+
     def test_malformed_block_row_raises_value_error(self):
         bc = Blockchain()
         save(bc, path=self.tmpdir)
