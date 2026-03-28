@@ -43,8 +43,20 @@ class P2PNetwork:
             raise ValueError("handler_callback must be callable")
         self._handler_callback = handler_callback
 
+    def register_on_peer_connected(self, handler_callback):
+        if not callable(handler_callback):
+            raise ValueError("handler_callback must be callable")
+        self._on_peer_connected = handler_callback
+
+    async def _notify_peer_connected(self, writer, error_message):
+        if self._on_peer_connected:
+            try:
+                await self._on_peer_connected(writer)
+            except Exception:
+                logger.exception(error_message)
+
     async def start(self, port: int = 9000, host: str = "127.0.0.1"):
-        """Start listening for incoming peer connections."""
+        """Start listening for incoming peer connections on the given port."""
         self._port = port
         self._server = await asyncio.start_server(self._handle_incoming, host, port)
         logger.info("Network: Listening on %s:%d", host, port)
@@ -78,11 +90,7 @@ class P2PNetwork:
                 self._listen_to_peer(reader, writer, f"{host}:{port}")
             )
             self._listen_tasks.append(task)
-            if self._on_peer_connected:
-                try:
-                    await self._on_peer_connected(writer)
-                except Exception:
-                    logger.exception("Network: Error during outbound peer sync")
+            await self._notify_peer_connected(writer, "Network: Error during outbound peer sync")
             logger.info("Network: Connected to peer %s:%d", host, port)
             return True
         except Exception as exc:
@@ -101,11 +109,7 @@ class P2PNetwork:
         self._peers.append((reader, writer))
         task = asyncio.create_task(self._listen_to_peer(reader, writer, addr))
         self._listen_tasks.append(task)
-        if self._on_peer_connected:
-            try:
-                await self._on_peer_connected(writer)
-            except Exception:
-                logger.exception("Network: Error during peer sync")
+        await self._notify_peer_connected(writer, "Network: Error during peer sync")
 
     def _validate_transaction_payload(self, payload):
         if not isinstance(payload, dict):
@@ -206,8 +210,10 @@ class P2PNetwork:
         if not isinstance(message, dict):
             logger.warning("Network: Received non-dict message")
             return False
-
-        if not {"type", "data"}.issubset(message):
+        required_fields = {"type", "data"}
+        if not required_fields.issubset(set(message)):
+            return False
+        if not set(message).issubset(required_fields):
             return False
 
         msg_type = message.get("type")
@@ -266,9 +272,6 @@ class P2PNetwork:
                 except (json.JSONDecodeError, UnicodeDecodeError):
                     logger.warning("Network: Malformed message from %s", addr)
                     continue
-                if isinstance(data, dict):
-                    data["_peer_addr"] = addr
-
                 if not self._validate_message(data):
                     logger.warning("Network: Invalid message schema from %s", addr)
                     continue
@@ -279,6 +282,7 @@ class P2PNetwork:
                     logger.info("Network: Duplicate %s ignored from %s", msg_type, addr)
                     continue
                 self._mark_seen(msg_type, payload)
+                data["_peer_addr"] = addr
 
                 if self._handler_callback:
                     try:
