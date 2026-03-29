@@ -45,7 +45,8 @@ class Block:
     ):
         self.index = index
         self.previous_hash = previous_hash
-        self.transactions: List[Transaction] = transactions or []
+        # Freeze transactions into an immutable tuple to prevent header/body mismatch
+        self.transactions = tuple(transactions) if transactions else ()
         self.miner = miner
 
         # Deterministic timestamp (ms)
@@ -66,15 +67,20 @@ class Block:
     # HEADER (used for mining)
     # -------------------------
     def to_header_dict(self):
-        return {
+        header = {
             "index": self.index,
             "previous_hash": self.previous_hash,
             "merkle_root": self.merkle_root,
             "timestamp": self.timestamp,
             "difficulty": self.difficulty,
             "nonce": self.nonce,
-            "miner": self.miner,
         }
+        
+        # Backward compatibility: Only include miner in hash if it exists
+        if self.miner is not None:
+            header["miner"] = self.miner
+            
+        return header
 
     # -------------------------
     # BODY (transactions only)
