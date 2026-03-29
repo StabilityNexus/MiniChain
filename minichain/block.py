@@ -148,8 +148,5 @@ class Block:
             raise ValueError("block hash is missing")
         if self.hash != self.compute_hash():
             raise ValueError("block hash does not match header")
-            
-        # <-- Removed the redundant and slow merkle_root check here as requested
-        # merkle_root consistency guaranteed by immutable transactions tuple
         
         return canonical_json_bytes(self.to_dict())
