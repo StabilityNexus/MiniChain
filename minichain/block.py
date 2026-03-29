@@ -137,4 +137,12 @@ class Block:
     @property
     def canonical_payload(self) -> bytes:
         """Returns the full block (header + body) as canonical bytes for networking."""
+        # Sanity checks to prevent broadcasting invalid blocks
+        if self.hash is None:
+            raise ValueError("block hash is missing")
+        if self.hash != self.compute_hash():
+            raise ValueError("block hash does not match header")
+        if _calculate_merkle_root(self.transactions) != self.merkle_root:
+            raise ValueError("merkle_root does not match transactions")
+            
         return canonical_json_bytes(self.to_dict())
