@@ -1,12 +1,17 @@
 import time
+
 import hashlib
+
 from typing import List, Optional
+
 from .transaction import Transaction
+
 from .serialization import canonical_json_hash, canonical_json_bytes
+
+
 
 def _sha256(data: str) -> str:
     return hashlib.sha256(data.encode()).hexdigest()
-
 
 def _calculate_merkle_root(transactions: List[Transaction]) -> Optional[str]:
     if not transactions:
@@ -32,7 +37,6 @@ def _calculate_merkle_root(transactions: List[Transaction]) -> Optional[str]:
 
     return tx_hashes[0]
 
-
 class Block:
     def __init__(
         self,
@@ -48,14 +52,12 @@ class Block:
         # Freeze transactions into an immutable tuple to prevent header/body mismatch
         self.transactions = tuple(transactions) if transactions else ()
         self.miner = miner
-
         # Deterministic timestamp (ms)
         self.timestamp: int = (
             round(time.time() * 1000)
             if timestamp is None
             else int(timestamp)
         )
-
         self.difficulty: Optional[int] = difficulty
         self.nonce: int = 0
         self.hash: Optional[str] = None
@@ -75,13 +77,10 @@ class Block:
             "difficulty": self.difficulty,
             "nonce": self.nonce,
         }
-        
         # Backward compatibility: Only include miner in hash if it exists
         if self.miner is not None:
-            header["miner"] = self.miner
-            
+            header["miner"] = self.miner          
         return header
-
     # -------------------------
     # BODY (transactions only)
     # -------------------------
@@ -113,17 +112,21 @@ class Block:
             Transaction.from_dict(tx_payload)
             for tx_payload in payload.get("transactions", [])
         ]
+        
+        # Safely extract and cast difficulty if it exists
+        raw_diff = payload.get("difficulty")
+        parsed_diff = int(raw_diff) if raw_diff is not None else None
         block = cls(
-            index=payload["index"],
+            index=int(payload["index"]),  # <-- Cast to int
             previous_hash=payload["previous_hash"],
             transactions=transactions,
             timestamp=payload.get("timestamp"),
-            difficulty=payload.get("difficulty"),
+            difficulty=parsed_diff,       # <-- Cast to int
             miner=payload.get("miner"),
         )
-        block.nonce = payload.get("nonce", 0)
+        block.nonce = int(payload.get("nonce", 0))  # <-- Cast to int
         block.hash = payload.get("hash")
-        
+      
         # Verify the block hash
         expected_hash = block.compute_hash()
         if block.hash is not None and block.hash != expected_hash:
@@ -132,8 +135,8 @@ class Block:
         # Recalculate and verify the Merkle root!
         if "merkle_root" in payload and payload["merkle_root"] != block.merkle_root:
             raise ValueError("merkle_root does not match transactions")
-            
         return block
+
     @property
     def canonical_payload(self) -> bytes:
         """Returns the full block (header + body) as canonical bytes for networking."""
@@ -143,6 +146,5 @@ class Block:
         if self.hash != self.compute_hash():
             raise ValueError("block hash does not match header")
         if _calculate_merkle_root(self.transactions) != self.merkle_root:
-            raise ValueError("merkle_root does not match transactions")
-            
+            raise ValueError("merkle_root does not match transactions")          
         return canonical_json_bytes(self.to_dict())
