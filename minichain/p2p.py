@@ -15,7 +15,7 @@ from .validators import is_valid_receiver
 logger = logging.getLogger(__name__)
 
 TOPIC = "minichain-global"
-SUPPORTED_MESSAGE_TYPES = {"sync", "tx", "block"}
+SUPPORTED_MESSAGE_TYPES = {"sync", "tx", "block", "status", "get_blocks", "blocks"}
 
 
 class P2PNetwork:
@@ -207,6 +207,37 @@ class P2PNetwork:
             for tx_payload in payload["transactions"]
         )
 
+    def _validate_status_payload(self, payload):
+        if not isinstance(payload, dict):
+            return False
+        if set(payload) != {"height"}:
+            return False
+        if not isinstance(payload["height"], int) or payload["height"] < 0:
+            return False
+        return True
+
+    def _validate_get_blocks_payload(self, payload):
+        if not isinstance(payload, dict):
+            return False
+        if set(payload) != {"from_height", "to_height"}:
+            return False
+        fh, th = payload.get("from_height"), payload.get("to_height")
+        if not isinstance(fh, int) or not isinstance(th, int):
+            return False
+        if fh < 0 or fh > th:
+            return False
+        return True
+
+    def _validate_blocks_payload(self, payload):
+        if not isinstance(payload, dict):
+            return False
+        if set(payload) != {"blocks"}:
+            return False
+        blocks = payload.get("blocks")
+        if not isinstance(blocks, list):
+            return False
+        return all(isinstance(b, dict) for b in blocks)
+
     def _validate_message(self, message):
         if not isinstance(message, dict):
             return False
@@ -226,6 +257,9 @@ class P2PNetwork:
             "sync": self._validate_sync_payload,
             "tx": self._validate_transaction_payload,
             "block": self._validate_block_payload,
+            "status": self._validate_status_payload,
+            "get_blocks": self._validate_get_blocks_payload,
+            "blocks": self._validate_blocks_payload,
         }
         return validators[msg_type](payload)
 
@@ -283,6 +317,7 @@ class P2PNetwork:
                     continue
                 self._mark_seen(msg_type, payload)
                 data["_peer_addr"] = addr
+                data["_writer"] = writer
 
                 if self._handler_callback:
                     try:
