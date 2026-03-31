@@ -156,6 +156,50 @@ def make_network_handler(chain, mempool):
             else:
                 logger.warning("📥 Received Block #%s — rejected", block.index)
 
+        elif msg_type == "status":
+            import json as _json
+            peer_height = payload["height"]
+            my_height = chain.height
+
+            if peer_height > my_height:
+                writer = data.get("_writer")
+                if writer:
+                    request = _json.dumps({
+                        "type": "get_blocks",
+                        "data": {
+                            "from_height": my_height + 1,
+                            "to_height": peer_height
+                        }
+                    }) + "\n"
+                    writer.write(request.encode())
+                    await writer.drain()
+                    logger.info("📡 Requesting blocks %d~%d from %s",
+                               my_height + 1, peer_height, peer_addr)
+        elif msg_type == "get_blocks":
+            import json as _json
+            from_h = payload["from_height"]
+            to_h = payload["to_height"]
+            blocks = chain.get_blocks_range(from_h, to_h)
+
+            writer = data.get("_writer")
+            if writer and blocks:
+                response = _json.dumps({
+                    "type": "blocks",
+                    "data": {"blocks": blocks}
+                }) + "\n"
+                writer.write(response.encode())
+                await writer.drain()
+                logger.info("📤 Sent %d blocks to %s", len(blocks), peer_addr)
+
+        elif msg_type == "blocks":
+            received = payload["blocks"]
+            success, count = chain.add_blocks_bulk(received)
+
+            if success:
+                logger.info("✅ Chain synced: added %d blocks", count)
+            else:
+                logger.warning("❌ Chain sync failed after %d blocks", count)
+
     return handler
 
 
@@ -324,7 +368,14 @@ async def run_node(port: int, host: str, connect_to: str | None, fund: int, data
         }) + "\n"
         writer.write(sync_msg.encode())
         await writer.drain()
-        logger.info("🔄 Sent state sync to new peer")
+
+        status_msg = _json.dumps({
+            "type": "status",
+            "data": {"height": chain.height}
+        }) + "\n"
+        writer.write(status_msg.encode())
+        await writer.drain()
+        logger.info("🔄 Sent state sync and status to new peer")
 
     network.register_on_peer_connected(on_peer_connected)
 
