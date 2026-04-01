@@ -12,7 +12,7 @@
 <!-- Organization Name -->
 <div align="center">
 
-[![Static Badge](https://img.shields.io/badge/Stability_Nexus-/TODO-228B22?style=for-the-badge&labelColor=FFC517)](https://TODO.stability.nexus/)
+[![Static Badge](https://img.shields.io/badge/Stability_Nexus-MiniChain-228B22?style=for-the-badge&labelColor=FFC517)](https://stability.nexus/minichain)
 
 <!-- Correct deployed url to be added -->
 
@@ -105,9 +105,7 @@ It is encouraged that you develop an initial prototype during the application ph
 
 ## Project Maturity
 
-TODO: In the checklist below, mark the items that have been completed and delete items that are not applicable to the current project:
-
-* [ ] The project has a logo.
+* [x] The project has a logo.
 * [ ] The project has a favicon.
 * [ ] The protocol:
    - [ ] has been described and formally specified in a paper.
@@ -124,41 +122,26 @@ TODO: In the checklist below, mark the items that have been completed and delete
         - [ ] Polygon
         - [ ] BSC
         - [ ] Base
-* [ ] The mobile app:
-   - [ ] has an _About_ page containing the Stability Nexus's logo and pointing to the social media accounts of the Stability Nexus.
-   - [ ] is available for download as a release in this repo.
-   - [ ] is available in the relevant app stores.
 * [ ] The web frontend:
    - [ ] has proper title and metadata.
    - [ ] has proper open graph metadata, to ensure that it is shown well when shared in social media (Discord, Telegram, Twitter, LinkedIn).
    - [ ] has a footer, containing the Stability Nexus's logo and pointing to the social media accounts of the Stability Nexus.
-   - [ ] is fully static and client-side.
-   - [ ] is deployed to Github Pages via a Github Workflow.
-   - [ ] is accessible through the https://TODO:PROJECT-NAME.stability.nexus domain.
-* [ ] the project is listed in [https://stability.nexus/protocols](https://stability.nexus/protocols).
+* [x] the project is listed in [https://stability.nexus/protocols](https://stability.nexus/protocols).
 
 ---
 
 ## Tech Stack
 
-TODO:
+### Backend/Core
 
-### Frontend
+- Python 3.10+
+- PyNaCl (hashing, signing, verification)
+- py-libp2p (peer-to-peer networking)
 
-TODO:
+### Development Tools
 
-- Next.js 14+ (React)
-- TypeScript
-- TailwindCSS
-- shadcn/ui
-
-### Blockchain
-
-TODO:
-
-- Wagmi
-- Solidity Smart Contracts
-- Ethers.js
+- pytest (testing)
+- Poetry (dependency management)
 
 ---
 
@@ -166,21 +149,17 @@ TODO:
 
 ### Prerequisites
 
-TODO
-
-- Node.js 18+
-- npm/yarn/pnpm
-- MetaMask or any other web3 wallet browser extension
+- Python 3.10+
+- pip or Poetry (package manager)
+- git
 
 ### Installation
-
-TODO
 
 #### 1. Clone the Repository
 
 ```bash
-git clone https://github.com/StabilityNexus/TODO.git
-cd TODO
+git clone https://github.com/StabilityNexus/MiniChain.git
+cd MiniChain
 ```
 
 #### 2. Install Dependencies
@@ -188,28 +167,30 @@ cd TODO
 Using your preferred package manager:
 
 ```bash
-npm install
-# or
-yarn install
-# or
-pnpm install
+pip install -r requirements.txt
+# or using Poetry
+poetry install
 ```
 
-#### 3. Run the Development Server
+#### 3. Run Tests
 
-Start the app locally:
+Run the test suite to verify the implementation:
 
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
+pytest
+# or using Poetry
+poetry run pytest
 ```
 
-#### 4. Open your Browser
+#### 4. Run the Application
 
-Navigate to [http://localhost:3000](http://localhost:3000) to see the application.
+Start the blockchain node locally:
+
+```bash
+python main.py
+# or using Poetry
+poetry run python main.py
+```
 
 ---
 
@@ -220,9 +201,8 @@ We welcome contributions of all kinds! To contribute:
 1. Fork the repository and create your feature branch (`git checkout -b feature/AmazingFeature`).
 2. Commit your changes (`git commit -m 'Add some AmazingFeature'`).
 3. Run the development workflow commands to ensure code quality:
-   - `npm run format:write`
-   - `npm run lint:fix`
-   - `npm run typecheck`
+   - `pytest`
+   - `pytest --cov=minichain` (with coverage)
 4. Push your branch (`git push origin feature/AmazingFeature`).
 5. Open a Pull Request for review.
 
