@@ -1,18 +1,20 @@
 import unittest
-from nacl.signing import SigningKey
-from nacl.encoding import HexEncoder
 
-from minichain import Transaction, Blockchain, State # Removed unused imports
+from nacl.encoding import HexEncoder
+from nacl.signing import SigningKey
+
+from minichain import Blockchain, State, Transaction  # Removed unused imports
+
 
 class TestCore(unittest.TestCase):
     def setUp(self):
         self.state = State()
         self.chain = Blockchain()
-        
+
         # Setup Alice
         self.alice_sk = SigningKey.generate()
         self.alice_pk = self.alice_sk.verify_key.encode(encoder=HexEncoder).decode()
-        
+
         # Setup Bob
         self.bob_sk = SigningKey.generate()
         self.bob_pk = self.bob_sk.verify_key.encode(encoder=HexEncoder).decode()
@@ -37,39 +39,39 @@ class TestCore(unittest.TestCase):
         """Test simple balance transfer."""
         # 1. Credit Alice
         self.state.credit_mining_reward(self.alice_pk, 100)
-        
+
         # 2. Transfer
         tx = Transaction(self.alice_pk, self.bob_pk, 40, 0)
         tx.sign(self.alice_sk)
-        
+
         result = self.state.apply_transaction(tx)
         self.assertTrue(result)
-        
+
         # 3. Check Balances
-        self.assertEqual(self.state.get_account(self.alice_pk)['balance'], 60)
-        self.assertEqual(self.state.get_account(self.bob_pk)['balance'], 40)
+        self.assertEqual(self.state.get_account(self.alice_pk)["balance"], 60)
+        self.assertEqual(self.state.get_account(self.bob_pk)["balance"], 40)
 
     def test_insufficient_funds(self):
         """Test that you cannot spend more than you have."""
         self.state.credit_mining_reward(self.alice_pk, 10)
-        
+
         tx = Transaction(self.alice_pk, self.bob_pk, 50, 0)
         tx.sign(self.alice_sk)
-        
+
         result = self.state.apply_transaction(tx)
         self.assertFalse(result)
-        
-        self.assertEqual(self.state.get_account(self.alice_pk)['balance'], 10)
-        self.assertEqual(self.state.get_account(self.bob_pk)['balance'], 0)
+
+        self.assertEqual(self.state.get_account(self.alice_pk)["balance"], 10)
+        self.assertEqual(self.state.get_account(self.bob_pk)["balance"], 0)
 
     def test_transaction_wrong_signer(self):
         """Test that a transaction signed with the wrong key is invalid."""
-        tx = Transaction(self.alice_pk, self.bob_pk, 10, 0) # Alice is sender
+        tx = Transaction(self.alice_pk, self.bob_pk, 10, 0)  # Alice is sender
         # Attempt to sign with Bob's key, which should raise ValueError
         with self.assertRaises(ValueError) as cm:
             tx.sign(self.bob_sk)
         self.assertIn("Signing key does not match sender", str(cm.exception))
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     unittest.main()

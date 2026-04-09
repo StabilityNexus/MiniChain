@@ -1,10 +1,11 @@
-import unittest
-import sys
 import os
+import sys
+import unittest
+
+from nacl.encoding import HexEncoder
+from nacl.signing import SigningKey
 
 from minichain import State, Transaction
-from nacl.signing import SigningKey
-from nacl.encoding import HexEncoder
 
 
 class TestSmartContract(unittest.TestCase):
@@ -125,7 +126,7 @@ raise Exception("boom")
         tx_deploy.sign(self.sk)
 
         # Corrected typo: contract_add_ to contract_addr
-        contract_addr = self.state.apply_transaction(tx_deploy) 
+        contract_addr = self.state.apply_transaction(tx_deploy)
         self.assertTrue(isinstance(contract_addr, str))
 
         # Verify balance and nonce after deploy
