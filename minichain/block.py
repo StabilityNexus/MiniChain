@@ -111,6 +111,7 @@ class Block:
             transactions=transactions,
             timestamp=payload.get("timestamp"),
             difficulty=payload.get("difficulty"),
+            mining_time=payload.get("mining_time"),
         )
         block.nonce = payload.get("nonce", 0)
         block.hash = payload.get("hash")
