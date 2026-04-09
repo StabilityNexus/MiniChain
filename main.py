@@ -19,7 +19,6 @@ Commands (type in the terminal while the node is running):
 import argparse
 import asyncio
 import logging
-import os
 import re
 import sys
 
@@ -294,11 +293,12 @@ async def run_node(port: int, host: str, connect_to: str | None, fund: int, data
 
     # Load existing chain from disk, or start fresh
     chain = None
-    if datadir and os.path.exists(os.path.join(datadir, "data.json")):
+    if datadir:
         try:
-            from minichain.persistence import load
-            chain = load(datadir)
-            logger.info("Restored chain from '%s'", datadir)
+            from minichain.persistence import load, persistence_exists
+            if persistence_exists(datadir):
+                chain = load(datadir)
+                logger.info("Restored chain from '%s'", datadir)
         except FileNotFoundError as e:
             logger.warning("Could not load saved chain: %s — starting fresh", e)
         except ValueError as e:
