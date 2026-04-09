@@ -26,8 +26,8 @@ class State:
         return self.accounts[address]
 
     def verify_transaction_logic(self, tx):
-        if not tx.verify():
-            logger.error(f"Error: Invalid signature for tx from {tx.sender[:8]}...")
+        if not tx.is_valid():
+            logger.error("Error: Invalid transaction schema or signature")
             return False
 
         sender_acc = self.get_account(tx.sender)
@@ -50,18 +50,7 @@ class State:
         new_state.contract_machine = ContractMachine(new_state) # Reinitialize contract_machine
         return new_state
 
-    def validate_and_apply(self, tx):
-        """
-        Validate and apply a transaction.
-        Returns the same success/failure shape as apply_transaction().
-        NOTE: Delegates to apply_transaction. Callers should use this for
-        semantic validation entry points.
-        """
-        # Semantic validation: amount must be an integer and non-negative
-        if not isinstance(tx.amount, int) or tx.amount < 0:
-            return False
-        # Further checks can be added here
-        return self.apply_transaction(tx)
+
 
     def apply_transaction(self, tx):
         """

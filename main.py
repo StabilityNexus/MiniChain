@@ -27,7 +27,7 @@ from nacl.signing import SigningKey
 from nacl.encoding import HexEncoder
 
 from minichain import Transaction, Blockchain, Block, State, Mempool, P2PNetwork, mine_block
-from minichain.validators import is_valid_receiver
+
 
 
 logger = logging.getLogger(__name__)
@@ -67,7 +67,7 @@ def mine_and_process_block(chain, mempool, miner_pk):
         if tx.nonce < expected_nonce:
             stale_txs.append(tx)
             continue
-        if temp_state.validate_and_apply(tx):
+        if temp_state.apply_transaction(tx):
             mineable_txs.append(tx)
 
     if stale_txs:
@@ -212,7 +212,7 @@ async def cli_loop(sk, pk, chain, mempool, network):
                 print("  Usage: send <receiver_address> <amount>")
                 continue
             receiver = parts[1]
-            if not is_valid_receiver(receiver):
+            if not Transaction.is_valid_address(receiver):
                 print("  Invalid receiver format. Expected 40 or 64 hex characters.")
                 continue
             try:

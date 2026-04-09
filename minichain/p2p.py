@@ -10,7 +10,6 @@ import json
 import logging
 
 from .serialization import canonical_json_hash
-from .validators import is_valid_receiver
 
 logger = logging.getLogger(__name__)
 
@@ -114,41 +113,13 @@ class P2PNetwork:
         await self._notify_peer_connected(writer, "Network: Error during peer sync")
 
     def _validate_transaction_payload(self, payload):
+        from .transaction import Transaction
         if not isinstance(payload, dict):
             return False
-
-        required_fields = {
-            "sender": str,
-            "amount": int,
-            "nonce": int,
-            "timestamp": int,
-            "signature": str,
-        }
-        optional_fields = {
-            "receiver": (str, type(None)),
-            "data": (str, type(None)),
-        }
-        allowed_fields = set(required_fields) | set(optional_fields)
-
-        if set(payload) != allowed_fields:
+        tx = Transaction.from_dict(payload)
+        if not tx:
             return False
-
-        for field, expected_type in required_fields.items():
-            if not isinstance(payload.get(field), expected_type):
-                return False
-
-        for field, expected_type in optional_fields.items():
-            if not isinstance(payload.get(field), expected_type):
-                return False
-
-        if payload["amount"] <= 0:
-            return False
-
-        receiver = payload.get("receiver")
-        if receiver is not None and not is_valid_receiver(receiver):
-            return False
-
-        return True
+        return tx.is_valid()
 
     def _validate_sync_payload(self, payload):
         if not isinstance(payload, dict) or set(payload) != {"accounts"}:
@@ -176,36 +147,11 @@ class P2PNetwork:
         return True
 
     def _validate_block_payload(self, payload):
+        from .block import Block
         if not isinstance(payload, dict):
             return False
-
-        required_fields = {
-            "index": int,
-            "previous_hash": str,
-            "merkle_root": (str, type(None)),
-            "transactions": list,
-            "timestamp": int,
-            "difficulty": (int, type(None)),
-            "nonce": int,
-            "hash": str,
-        }
-        optional_fields = {"miner": str}
-        allowed_fields = set(required_fields) | set(optional_fields)
-
-        if not set(payload).issubset(allowed_fields):
-            return False
-
-        for field, expected_type in required_fields.items():
-            if not isinstance(payload.get(field), expected_type):
-                return False
-
-        if "miner" in payload and not isinstance(payload["miner"], str):
-            return False
-
-        return all(
-            self._validate_transaction_payload(tx_payload)
-            for tx_payload in payload["transactions"]
-        )
+        block = Block.from_dict(payload)
+        return block is not None and block.is_valid()
 
     def _validate_message(self, message):
         if not isinstance(message, dict):

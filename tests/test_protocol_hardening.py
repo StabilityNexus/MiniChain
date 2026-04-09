@@ -105,7 +105,7 @@ class TestP2PValidationAndDedup(unittest.IsolatedAsyncioTestCase):
         sender_pk = sender_sk.verify_key.encode(encoder=HexEncoder).decode()
         receiver_pk = SigningKey.generate().verify_key.encode(encoder=HexEncoder).decode()
 
-        tx = Transaction(sender_pk, receiver_pk, 1, 0, timestamp=123)
+        tx = Transaction(sender_pk, receiver_pk, 1, 0, timestamp=1600000000000)
         tx.sign(sender_sk)
 
         block = Block(index=1, previous_hash="0" * 64, transactions=[tx], timestamp=456, difficulty=2)
