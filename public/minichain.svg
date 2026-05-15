@@ -1,0 +1,84 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="330" height="330" viewBox="0 0 330 330">
+
+  <defs>
+    <!-- Edge gradient -->
+    <linearGradient id="edgeGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#228B22"/>
+      <stop offset="45%" stop-color="#5A981A"/>
+      <stop offset="75%" stop-color="#C8B209"/>
+      <stop offset="100%" stop-color="#FFBF00"/>
+    </linearGradient>
+
+    <!-- Gold glow -->
+    <filter id="goldGlow">
+      <feDropShadow dx="0" dy="0" stdDeviation="2.5"
+        flood-color="#FFC517" flood-opacity="0.55"/>
+    </filter>
+
+    <!-- Edge glow -->
+    <filter id="edgeGlow">
+      <feDropShadow dx="0" dy="0" stdDeviation="2"
+        flood-color="#5A981A" flood-opacity="0.45"/>
+    </filter>
+  </defs>
+
+  <!-- Edges -->
+  <g
+    fill="none"
+    stroke="url(#edgeGradient)"
+    stroke-width="3.2"
+    stroke-linejoin="round"
+    filter="url(#edgeGlow)"
+  >
+    <path d="M165 11l109 45.2-45.2 109-109-45.2L165 11z"/>
+    <path d="M273.9 56.1l45.2 109-109 45.2-45.2-109 109-45.2z"/>
+    <path d="M319 165l-45.2 109-109-45.2 45.2-109L319 165z"/>
+    <path d="M273.9 273.9l-109 45.2-45.2-109 109-45.2 45.2 109z"/>
+    <path d="M165 319L56 273.8l45.2-109 109 45.2L165 319z"/>
+    <path d="M56.1 273.9l-45.2-109 109-45.2 45.2 109-109 45.2z"/>
+    <path d="M11 165L56.2 56l109 45.2-45.2 109L11 165z"/>
+    <path d="M56.1 56.1l109-45.2 45.2 109-109 45.2-45.2-109z"/>
+  </g>
+
+  <!-- All glowing vertices -->
+  <g filter="url(#goldGlow)">
+
+
+
+    <!-- Remaining vertices -->
+    <g fill="#91A511">
+
+      <circle cx="274" cy="56.2" r="5.9"/>
+      <circle cx="119.8" cy="120" r="5.9"/>
+      <circle cx="228.9" cy="165.2" r="5.9"/>
+      <circle cx="273.9" cy="56.1" r="5.9"/>
+      <circle cx="319.1" cy="165.1" r="5.9"/>
+      <circle cx="164.9" cy="101.3" r="5.9"/>
+      <circle cx="210" cy="210.3" r="5.9"/>
+      <circle cx="273.8" cy="274" r="5.9"/>
+      <circle cx="210" cy="119.8" r="5.9"/>
+      <circle cx="164.8" cy="228.9" r="5.9"/>
+      <circle cx="273.9" cy="273.9" r="5.9"/>
+      <circle cx="164.9" cy="319.1" r="5.9"/>
+      <circle cx="228.7" cy="164.9" r="5.9"/>
+      <circle cx="119.7" cy="210" r="5.9"/>
+      <circle cx="56" cy="273.8" r="5.9"/>
+      <circle cx="210.2" cy="210" r="5.9"/>
+      <circle cx="101.1" cy="164.8" r="5.9"/>
+      <circle cx="56.1" cy="273.9" r="5.9"/>
+      <circle cx="10.9" cy="164.9" r="5.9"/>
+      <circle cx="165.1" cy="228.7" r="5.9"/>
+      <circle cx="120" cy="119.7" r="5.9"/>
+      <circle cx="56.2" cy="56" r="5.9"/>
+      <circle cx="120" cy="210.2" r="5.9"/>
+      <circle cx="165.2" cy="101.1" r="5.9"/>
+      <circle cx="56.1" cy="56.1" r="5.9"/>
+      <circle cx="165.1" cy="10.9" r="5.9"/>
+      <circle cx="101.3" cy="165.1" r="5.9"/>
+      <circle cx="210.3" cy="120" r="5.9"/>
+
+    </g>
+
+  </g>
+
+</svg>
