@@ -1,4 +1,5 @@
 import time
+import re
 from nacl.signing import SigningKey, VerifyKey
 from nacl.encoding import HexEncoder
 from nacl.exceptions import BadSignatureError, CryptoError
@@ -41,17 +42,41 @@ class Transaction:
             "timestamp": self.timestamp,
         }
 
+    @staticmethod
+    def is_valid_address(address):
+        return bool(re.fullmatch(r"[0-9a-fA-F]{40}|[0-9a-fA-F]{64}", address))
+
     @classmethod
     def from_dict(cls, payload: dict):
-        return cls(
-            sender=payload["sender"],
-            receiver=payload.get("receiver"),
-            amount=payload["amount"],
-            nonce=payload["nonce"],
-            data=payload.get("data"),
-            signature=payload.get("signature"),
-            timestamp=payload.get("timestamp"),
-        )
+        try:
+            return cls(
+                sender=payload["sender"],
+                receiver=payload.get("receiver"),
+                amount=payload["amount"],
+                nonce=payload["nonce"],
+                data=payload.get("data"),
+                signature=payload.get("signature"),
+                timestamp=payload.get("timestamp"),
+            )
+        except (KeyError, TypeError):
+            return None
+
+    def is_valid(self):
+        """Unified, stateless validation (Types, Schema, Signatures)"""
+        if not isinstance(self.amount, int) or self.amount < 0:
+            return False
+        if not isinstance(self.nonce, int) or self.nonce < 0:
+            return False
+        if not isinstance(self.sender, str) or not self.is_valid_address(self.sender):
+            return False
+        if self.receiver is not None and (not isinstance(self.receiver, str) or not self.is_valid_address(self.receiver)):
+            return False
+        if self.data is not None and not isinstance(self.data, str):
+            return False
+        if not isinstance(self.timestamp, int) or self.timestamp <= 0:
+            return False
+            
+        return self.verify()
 
     @property
     def hash_payload(self):

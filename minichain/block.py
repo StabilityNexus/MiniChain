@@ -101,19 +101,37 @@ class Block:
 
     @classmethod
     def from_dict(cls, payload: dict):
-        transactions = [
-            Transaction.from_dict(tx_payload)
-            for tx_payload in payload.get("transactions", [])
-        ]
-        block = cls(
-            index=payload["index"],
-            previous_hash=payload["previous_hash"],
-            transactions=transactions,
-            timestamp=payload.get("timestamp"),
-            difficulty=payload.get("difficulty"),
-        )
-        block.nonce = payload.get("nonce", 0)
-        block.hash = payload.get("hash")
-        if "merkle_root" in payload:
-            block.merkle_root = payload["merkle_root"]
-        return block
+        try:
+            transactions = [
+                Transaction.from_dict(tx_payload)
+                for tx_payload in payload.get("transactions", [])
+            ]
+            if any(tx is None for tx in transactions):
+                return None
+
+            block = cls(
+                index=payload["index"],
+                previous_hash=payload["previous_hash"],
+                transactions=transactions,
+                timestamp=payload.get("timestamp"),
+                difficulty=payload.get("difficulty"),
+            )
+            block.nonce = payload.get("nonce", 0)
+            block.hash = payload.get("hash")
+            if "merkle_root" in payload:
+                # Accept payload value, but validate against computed value in is_valid().
+                block.merkle_root = payload["merkle_root"]
+            return block
+        except (KeyError, TypeError, ValueError):
+            return None
+
+    def is_valid(self):
+        if type(self.index) is not int or type(self.nonce) is not int or type(self.timestamp) is not int:
+            return False
+        if not isinstance(self.previous_hash, str) or (self.hash is not None and not isinstance(self.hash, str)):
+            return False
+        if self.merkle_root is not None and not isinstance(self.merkle_root, str):
+            return False
+        if self.merkle_root != _calculate_merkle_root(self.transactions):
+            return False
+        return all(tx.is_valid() for tx in self.transactions)

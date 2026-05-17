@@ -218,6 +218,9 @@ _minted*
 *.spell.bad
 *.spell.txt
 
+# MiniChain local persistence directories
+/.node*/
+
 # svg
 svg-inkscape/
 
