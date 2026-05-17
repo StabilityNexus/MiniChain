@@ -58,9 +58,7 @@ class P2PNetwork:
     async def start(self, port: int = 9000, host: str = "127.0.0.1"):
         """Start listening for incoming peer connections on the given port."""
         self._port = port
-        self._server = await asyncio.start_server(
-            self._handle_incoming, host, port
-        )
+        self._server = await asyncio.start_server(self._handle_incoming, host, port)
         logger.info("Network: Listening on %s:%d", host, port)
 
     async def stop(self):
@@ -92,7 +90,9 @@ class P2PNetwork:
                 self._listen_to_peer(reader, writer, f"{host}:{port}")
             )
             self._listen_tasks.append(task)
-            await self._notify_peer_connected(writer, "Network: Error during outbound peer sync")
+            await self._notify_peer_connected(
+                writer, "Network: Error during outbound peer sync"
+            )
             logger.info("Network: Connected to peer %s:%d", host, port)
             return True
         except Exception as exc:

@@ -3,6 +3,7 @@ import threading
 
 logger = logging.getLogger(__name__)
 
+
 class Mempool:
     def __init__(self, max_size=1000, transactions_per_block=100):
         self._pool = {}
@@ -21,14 +22,16 @@ class Mempool:
 
             if existing:
                 if existing.tx_id == tx.tx_id:
-                    logger.warning("Mempool: Duplicate transaction rejected %s", tx.tx_id)
+                    logger.warning(
+                        "Mempool: Duplicate transaction rejected %s", tx.tx_id
+                    )
                     return False
                 # Fix: Guard against older replacements (e.g. rejected block restore)
                 # Only allow overwrite if it's a genuinely newer replacement
                 if tx.timestamp <= existing.timestamp:
                     logger.warning("Mempool: Ignoring older replacement %s", tx.tx_id)
                     return False
-                
+
             else:
                 if self._size >= self.max_size:
                     logger.warning("Mempool: Full, rejecting transaction")
@@ -48,16 +51,20 @@ class Mempool:
         while len(selected) < self.transactions_per_block:
             best_tx = None
             best_sender = None
-            
+
             for sender, txs in snapshot.items():
                 if txs:
-                    if best_tx is None or (txs[0].timestamp, sender, txs[0].nonce) < (best_tx.timestamp, best_sender, best_tx.nonce):
+                    if best_tx is None or (txs[0].timestamp, sender, txs[0].nonce) < (
+                        best_tx.timestamp,
+                        best_sender,
+                        best_tx.nonce,
+                    ):
                         best_tx = txs[0]
                         best_sender = sender
-                        
+
             if not best_tx:
                 break
-                
+
             selected.append(best_tx)
             snapshot[best_sender].pop(0)
 

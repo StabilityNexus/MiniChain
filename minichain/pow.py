@@ -1,4 +1,5 @@
 import time
+
 from .serialization import canonical_json_hash
 
 
@@ -17,7 +18,7 @@ def mine_block(
     max_nonce=10_000_000,
     timeout_seconds=None,
     logger=None,
-    progress_callback=None
+    progress_callback=None,
 ):
     """Mines a block using Proof-of-Work without mutating input block until success."""
 
@@ -26,7 +27,7 @@ def mine_block(
 
     target = "0" * difficulty
     local_nonce = 0
-    header_dict = block.to_header_dict() # Construct header dict once outside loop
+    header_dict = block.to_header_dict()  # Construct header dict once outside loop
     start_time = time.monotonic()
 
     if logger:
@@ -45,7 +46,10 @@ def mine_block(
             raise MiningExceededError("Mining failed: max_nonce exceeded")
 
         # Enforce timeout if specified
-        if timeout_seconds is not None and (time.monotonic() - start_time) > timeout_seconds:
+        if (
+            timeout_seconds is not None
+            and (time.monotonic() - start_time) > timeout_seconds
+        ):
             if logger:
                 logger.warning("Mining timeout exceeded.")
             raise MiningExceededError("Mining failed: timeout exceeded")

@@ -1,8 +1,10 @@
-import time
 import hashlib
+import time
 from typing import List, Optional
-from .transaction import Transaction
+
 from .serialization import canonical_json_hash
+from .transaction import Transaction
+
 
 def _sha256(data: str) -> str:
     return hashlib.sha256(data.encode()).hexdigest()
@@ -13,10 +15,7 @@ def _calculate_merkle_root(transactions: List[Transaction]) -> Optional[str]:
         return None
 
     # Hash each transaction deterministically
-    tx_hashes = [
-        tx.tx_id
-        for tx in transactions
-    ]
+    tx_hashes = [tx.tx_id for tx in transactions]
 
     # Build Merkle tree
     while len(tx_hashes) > 1:
@@ -48,9 +47,7 @@ class Block:
 
         # Deterministic timestamp (ms)
         self.timestamp: int = (
-            round(time.time() * 1000)
-            if timestamp is None
-            else int(timestamp)
+            round(time.time() * 1000) if timestamp is None else int(timestamp)
         )
 
         self.difficulty: Optional[int] = difficulty
@@ -77,11 +74,7 @@ class Block:
     # BODY (transactions only)
     # -------------------------
     def to_body_dict(self):
-        return {
-            "transactions": [
-                tx.to_dict() for tx in self.transactions
-            ]
-        }
+        return {"transactions": [tx.to_dict() for tx in self.transactions]}
 
     # -------------------------
     # FULL BLOCK

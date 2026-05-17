@@ -1,23 +1,27 @@
 import time
-from nacl.signing import SigningKey, VerifyKey
+
 from nacl.encoding import HexEncoder
 from nacl.exceptions import BadSignatureError, CryptoError
+from nacl.signing import SigningKey, VerifyKey
+
 from .serialization import canonical_json_bytes, canonical_json_hash
 
 
 class Transaction:
-    def __init__(self, sender, receiver, amount, nonce, data=None, signature=None, timestamp=None):
-        self.sender = sender        # Public key (Hex str)
-        self.receiver = receiver    # Public key (Hex str) or None for Deploy
+    def __init__(
+        self, sender, receiver, amount, nonce, data=None, signature=None, timestamp=None
+    ):
+        self.sender = sender  # Public key (Hex str)
+        self.receiver = receiver  # Public key (Hex str) or None for Deploy
         self.amount = amount
         self.nonce = nonce
-        self.data = data            # Preserve None (do NOT normalize to "")
+        self.data = data  # Preserve None (do NOT normalize to "")
         if timestamp is None:
             self.timestamp = round(time.time() * 1000)  # New tx: seconds → ms
         elif timestamp > 1e12:
-            self.timestamp = int(timestamp)              # Already in ms (from network)
+            self.timestamp = int(timestamp)  # Already in ms (from network)
         else:
-            self.timestamp = round(timestamp * 1000)     # Seconds → ms
+            self.timestamp = round(timestamp * 1000)  # Seconds → ms
         self.signature = signature  # Hex str
 
     def to_dict(self):

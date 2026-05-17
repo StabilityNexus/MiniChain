@@ -1,8 +1,10 @@
-from nacl.hash import sha256
-from nacl.encoding import HexEncoder
-from .contract import ContractMachine
 import copy
 import logging
+
+from nacl.encoding import HexEncoder
+from nacl.hash import sha256
+
+from .contract import ContractMachine
 
 logger = logging.getLogger(__name__)
 
@@ -18,10 +20,10 @@ class State:
     def get_account(self, address):
         if address not in self.accounts:
             self.accounts[address] = {
-                'balance': 0,
-                'nonce': 0,
-                'code': None,
-                'storage': {}
+                "balance": 0,
+                "nonce": 0,
+                "code": None,
+                "storage": {},
             }
         return self.accounts[address]
 
@@ -32,12 +34,14 @@ class State:
 
         sender_acc = self.get_account(tx.sender)
 
-        if sender_acc['balance'] < tx.amount:
+        if sender_acc["balance"] < tx.amount:
             logger.error(f"Error: Insufficient balance for {tx.sender[:8]}...")
             return False
 
-        if sender_acc['nonce'] != tx.nonce:
-            logger.error(f"Error: Invalid nonce. Expected {sender_acc['nonce']}, got {tx.nonce}")
+        if sender_acc["nonce"] != tx.nonce:
+            logger.error(
+                f"Error: Invalid nonce. Expected {sender_acc['nonce']}, got {tx.nonce}"
+            )
             return False
 
         return True
@@ -47,7 +51,9 @@ class State:
         Return an independent copy of state for transactional validation.
         """
         new_state = copy.deepcopy(self)
-        new_state.contract_machine = ContractMachine(new_state) # Reinitialize contract_machine
+        new_state.contract_machine = ContractMachine(
+            new_state
+        )  # Reinitialize contract_machine
         return new_state
 
     def validate_and_apply(self, tx):
@@ -77,8 +83,8 @@ class State:
         sender = self.accounts[tx.sender]
 
         # Deduct funds and increment nonce
-        sender['balance'] -= tx.amount
-        sender['nonce'] += 1
+        sender["balance"] -= tx.amount
+        sender["nonce"] += 1
 
         # LOGIC BRANCH 1: Contract Deployment
         if tx.receiver is None or tx.receiver == "":
@@ -88,11 +94,13 @@ class State:
             existing = self.accounts.get(contract_address)
             if existing and existing.get("code"):
                 # Restore sender state on failure
-                sender['balance'] += tx.amount
-                sender['nonce'] -= 1
+                sender["balance"] += tx.amount
+                sender["nonce"] -= 1
                 return False
 
-            return self.create_contract(contract_address, tx.data, initial_balance=tx.amount)
+            return self.create_contract(
+                contract_address, tx.data, initial_balance=tx.amount
+            )
 
         # LOGIC BRANCH 2: Contract Call
         # If data is provided (non-empty), treat as contract call
@@ -102,32 +110,32 @@ class State:
             # Fail if contract does not exist or has no code
             if not receiver or not receiver.get("code"):
                 # Rollback sender balance and nonce on failure
-                sender['balance'] += tx.amount # Refund amount
-                sender['nonce'] -= 1
+                sender["balance"] += tx.amount  # Refund amount
+                sender["nonce"] -= 1
                 return False
 
             # Credit contract balance
-            receiver['balance'] += tx.amount
+            receiver["balance"] += tx.amount
 
             success = self.contract_machine.execute(
-                contract_address=tx.receiver, # Pass receiver as contract_address
+                contract_address=tx.receiver,  # Pass receiver as contract_address
                 sender_address=tx.sender,
                 payload=tx.data,
-                amount=tx.amount
+                amount=tx.amount,
             )
 
             if not success:
                 # Rollback transfer and nonce if execution fails
-                receiver['balance'] -= tx.amount
-                sender['balance'] += tx.amount # Refund amount
-                sender['nonce'] -= 1
+                receiver["balance"] -= tx.amount
+                sender["balance"] += tx.amount  # Refund amount
+                sender["nonce"] -= 1
                 return False
 
             return True
 
         # LOGIC BRANCH 3: Regular Transfer
         receiver = self.get_account(tx.receiver)
-        receiver['balance'] += tx.amount
+        receiver["balance"] += tx.amount
         return True
 
     def derive_contract_address(self, sender, nonce):
@@ -136,16 +144,16 @@ class State:
 
     def create_contract(self, contract_address, code, initial_balance=0):
         self.accounts[contract_address] = {
-            'balance': initial_balance,
-            'nonce': 0,
-            'code': code,
-            'storage': {}
+            "balance": initial_balance,
+            "nonce": 0,
+            "code": code,
+            "storage": {},
         }
         return contract_address
 
     def update_contract_storage(self, address, new_storage):
         if address in self.accounts:
-            self.accounts[address]['storage'] = new_storage
+            self.accounts[address]["storage"] = new_storage
         else:
             raise KeyError(f"Contract address not found: {address}")
 
@@ -153,11 +161,11 @@ class State:
         if address not in self.accounts:
             raise KeyError(f"Contract address not found: {address}")
         if isinstance(updates, dict):
-            self.accounts[address]['storage'].update(updates)
+            self.accounts[address]["storage"].update(updates)
         else:
             raise ValueError("Updates must be a dictionary")
 
     def credit_mining_reward(self, miner_address, reward=None):
         reward = reward if reward is not None else self.DEFAULT_MINING_REWARD
         account = self.get_account(miner_address)
-        account['balance'] += reward
+        account["balance"] += reward

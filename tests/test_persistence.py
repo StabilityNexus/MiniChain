@@ -8,11 +8,11 @@ import shutil
 import tempfile
 import unittest
 
-from nacl.signing import SigningKey
 from nacl.encoding import HexEncoder
+from nacl.signing import SigningKey
 
-from minichain import Blockchain, Transaction, Block, mine_block
-from minichain.persistence import save, load
+from minichain import Block, Blockchain, Transaction, mine_block
+from minichain.persistence import load, save
 
 
 def _make_keypair():

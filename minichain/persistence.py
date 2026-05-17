@@ -15,11 +15,11 @@ Usage:
     blockchain = load(path="data/")
 """
 
+import copy
 import json
+import logging
 import os
 import tempfile
-import logging
-import copy
 
 from .block import Block
 from .chain import Blockchain, validate_block_link_and_hash
@@ -32,6 +32,7 @@ _DATA_FILE = "data.json"
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
+
 
 def save(blockchain: Blockchain, path: str = ".") -> None:
     """
@@ -47,10 +48,7 @@ def save(blockchain: Blockchain, path: str = ".") -> None:
         chain_data = [block.to_dict() for block in blockchain.chain]
         state_data = copy.deepcopy(blockchain.state.accounts)
 
-    snapshot = {
-        "chain": chain_data,
-        "state": state_data
-    }
+    snapshot = {"chain": chain_data, "state": state_data}
 
     _atomic_write_json(os.path.join(path, _DATA_FILE), snapshot)
 
@@ -95,8 +93,8 @@ def load(path: str = ".") -> Blockchain:
     _verify_chain_integrity(blocks)
 
     # --- Rebuild blockchain properly (no __new__ hack) ---
-    blockchain = Blockchain()           # creates genesis + fresh state
-    blockchain.chain = blocks           # replace with loaded chain
+    blockchain = Blockchain()  # creates genesis + fresh state
+    blockchain.chain = blocks  # replace with loaded chain
 
     # Restore state
     blockchain.state.accounts = raw_accounts
@@ -113,6 +111,7 @@ def load(path: str = ".") -> Blockchain:
 # ---------------------------------------------------------------------------
 # Integrity verification
 # ---------------------------------------------------------------------------
+
 
 def _verify_chain_integrity(blocks: list) -> None:
     """Verify genesis, hash linkage, and block hashes."""
@@ -135,6 +134,7 @@ def _verify_chain_integrity(blocks: list) -> None:
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _atomic_write_json(filepath: str, data) -> None:
     """Write JSON atomically with fsync for durability."""
     dir_name = os.path.dirname(filepath) or "."
@@ -144,7 +144,7 @@ def _atomic_write_json(filepath: str, data) -> None:
             json.dump(data, f, indent=2)
             f.flush()
             os.fsync(f.fileno())  # Ensure data is on disk
-        os.replace(tmp_path, filepath)   # Atomic rename
+        os.replace(tmp_path, filepath)  # Atomic rename
 
         # Attempt to fsync the directory so the rename is durable
         if hasattr(os, "O_DIRECTORY"):
