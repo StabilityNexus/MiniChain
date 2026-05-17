@@ -8,11 +8,14 @@ Messages are newline-delimited JSON.
 import asyncio
 import json
 import logging
+import re
 
 from .serialization import canonical_json_hash
-from .validators import is_valid_receiver
 
 logger = logging.getLogger(__name__)
+
+def is_valid_receiver(receiver):
+    return bool(re.fullmatch(r"[0-9a-fA-F]{40}|[0-9a-fA-F]{64}", receiver))
 
 TOPIC = "minichain-global"
 SUPPORTED_MESSAGE_TYPES = {"sync", "tx", "block"}

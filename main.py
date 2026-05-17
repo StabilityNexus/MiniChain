@@ -27,8 +27,7 @@ from nacl.signing import SigningKey
 from nacl.encoding import HexEncoder
 
 from minichain import Transaction, Blockchain, Block, State, Mempool, P2PNetwork, mine_block
-from minichain.validators import is_valid_receiver
-
+from minichain.p2p import is_valid_receiver
 
 logger = logging.getLogger(__name__)
 
@@ -327,7 +326,6 @@ async def run_node(port: int, host: str, connect_to: str | None, fund: int, data
         logger.info("🔄 Sent state sync to new peer")
 
     network.register_on_peer_connected(on_peer_connected)
-
     await network.start(port=port, host=host)
 
     # Fund this node's wallet so it can transact in the demo
