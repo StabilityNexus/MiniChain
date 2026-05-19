@@ -27,6 +27,7 @@ from nacl.encoding import HexEncoder
 
 from minichain import Transaction, Blockchain, Block, State, Mempool, P2PNetwork, mine_block
 from minichain.validators import is_valid_receiver
+from minichain.chain import MAX_BLOCKS_PER_REQUEST
 
 
 logger = logging.getLogger(__name__)
@@ -154,6 +155,51 @@ def make_network_handler(chain, mempool):
                 mempool.remove_transactions(block.transactions)
             else:
                 logger.warning("📥 Received Block #%s — rejected", block.index)
+
+        elif msg_type == "status":
+            import json as _json
+            peer_height = payload["height"]
+            my_height = chain.height
+
+            if peer_height > my_height:
+                writer = data.get("_writer")
+                if writer:
+                    from_h = my_height + 1
+                    to_h = min(peer_height, from_h + MAX_BLOCKS_PER_REQUEST - 1)
+                    request = _json.dumps({
+                        "type": "get_blocks",
+                        "data": {"from_height": from_h, "to_height": to_h},
+                    }) + "\n"
+                    writer.write(request.encode())
+                    await writer.drain()
+                    logger.info(
+                        "📡 Requesting blocks %d~%d from %s",
+                        from_h, to_h, peer_addr,
+                    )
+
+        elif msg_type == "get_blocks":
+            import json as _json
+            from_h = payload["from_height"]
+            to_h = payload["to_height"]
+            blocks = chain.get_blocks_range(from_h, to_h)
+
+            writer = data.get("_writer")
+            if writer and blocks:
+                response = _json.dumps({
+                    "type": "blocks",
+                    "data": {"blocks": blocks}
+                }) + "\n"
+                writer.write(response.encode())
+                await writer.drain()
+                logger.info("📤 Sent %d blocks to %s", len(blocks), peer_addr)
+
+        elif msg_type == "blocks":
+            received = payload["blocks"]
+            success, count = chain.add_blocks_bulk(received)
+            if success:
+                logger.info("✅ Chain synced: added %d blocks", count)
+            else:
+                logger.warning("❌ Chain sync failed — batch rejected")
 
     return handler
 
@@ -318,13 +364,24 @@ async def run_node(port: int, host: str, connect_to: str | None, fund: int, data
     # When a new peer connects, send our state so they can sync
     async def on_peer_connected(writer):
         import json as _json
+        accounts_snapshot, height_snapshot = chain.snapshot_state_and_height()
+
         sync_msg = _json.dumps({
             "type": "sync",
-            "data": {"accounts": chain.state.accounts}
+            "data": {"accounts": accounts_snapshot},
         }) + "\n"
+        status_msg = _json.dumps({
+            "type": "status",
+            "data": {"height": height_snapshot},
+        }) + "\n"
+
         writer.write(sync_msg.encode())
+        writer.write(status_msg.encode())
         await writer.drain()
-        logger.info("🔄 Sent state sync to new peer")
+        logger.info(
+            "🔄 Sent state sync (%d accounts) and status (height=%d) to new peer",
+            len(accounts_snapshot), height_snapshot,
+        )
 
     network.register_on_peer_connected(on_peer_connected)
 
