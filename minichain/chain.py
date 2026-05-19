@@ -4,6 +4,8 @@ from .pow import calculate_hash
 import logging
 import threading
 
+MAX_BLOCKS_PER_REQUEST = 500
+
 logger = logging.getLogger(__name__)
 
 
@@ -90,24 +92,62 @@ class Blockchain:
             return True
 
     def get_blocks_range(self, from_height: int, to_height: int) -> list:
-        """Return serialized blocks from from_height to to_height inclusive."""
+        """Return serialized blocks in [from_height, to_height], capped at MAX_BLOCKS_PER_REQUEST."""
         with self._lock:
-            to_height = min(to_height, len(self.chain) - 1)
+            to_height = min(
+                to_height,
+                len(self.chain) - 1,
+                from_height + MAX_BLOCKS_PER_REQUEST - 1,
+            )
             if from_height > to_height or from_height < 0:
                 return []
             return [b.to_dict() for b in self.chain[from_height:to_height + 1]]
 
     def add_blocks_bulk(self, block_dicts: list) -> tuple:
-        """Add blocks validating chain linkage only. State relies on sync message."""
-        added = 0
-        for block_dict in block_dicts:
-            block = Block.from_dict(block_dict)
-            with self._lock:
+        """
+        Atomically add a batch of blocks: validate each block's transactions
+        against a temporary state, and commit chain + state only if every
+        block passes. Any failure leaves the local chain and state untouched.
+
+        Returns (True, count) on full success, (False, 0) on any failure.
+        """
+        with self._lock:
+            temp_state = self.state.copy()
+            prev_block = self.chain[-1]
+            new_blocks = []
+
+            for block_dict in block_dicts:
                 try:
-                    validate_block_link_and_hash(self.last_block, block)
+                    block = Block.from_dict(block_dict)
+                except (KeyError, TypeError, ValueError) as exc:
+                    logger.warning("Bulk add rejected: malformed block dict: %s", exc)
+                    return False, 0
+
+                try:
+                    validate_block_link_and_hash(prev_block, block)
                 except ValueError as exc:
-                    logger.warning("Block %s rejected: %s", block.index, exc)
-                    return False, added
-                self.chain.append(block)
-                added += 1
-        return True, added
+                    logger.warning("Bulk add rejected at block %s: %s", block.index, exc)
+                    return False, 0
+
+                for tx in block.transactions:
+                    if not temp_state.validate_and_apply(tx):
+                        logger.warning(
+                            "Bulk add rejected at block %s: transaction failed validation",
+                            block.index,
+                        )
+                        return False, 0
+
+                new_blocks.append(block)
+                prev_block = block
+
+            self.state = temp_state
+            self.chain.extend(new_blocks)
+            return True, len(new_blocks)
+
+    def snapshot_state_and_height(self) -> tuple:
+        """Capture accounts and chain height under a single lock acquisition."""
+        with self._lock:
+            accounts_copy = {
+                addr: dict(acc) for addr, acc in self.state.accounts.items()
+            }
+            return accounts_copy, len(self.chain) - 1

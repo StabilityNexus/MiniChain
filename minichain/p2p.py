@@ -11,6 +11,7 @@ import logging
 
 from .serialization import canonical_json_hash
 from .validators import is_valid_receiver
+from .chain import MAX_BLOCKS_PER_REQUEST
 
 logger = logging.getLogger(__name__)
 
@@ -236,7 +237,9 @@ class P2PNetwork:
         blocks = payload.get("blocks")
         if not isinstance(blocks, list):
             return False
-        return all(isinstance(b, dict) for b in blocks)
+        if len(blocks) > MAX_BLOCKS_PER_REQUEST:
+            return False
+        return all(self._validate_block_payload(b) for b in blocks)
 
     def _validate_message(self, message):
         if not isinstance(message, dict):
