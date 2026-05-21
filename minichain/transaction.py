@@ -17,8 +17,11 @@ class Transaction:
 
     @staticmethod
     def _normalize_ts(ts) -> int:
-        ts = int(ts)
-        return ts * 1000 if ts < 1e12 else ts
+        # Multiply by 1000 and round to preserve ms if it's a standard timestamp (seconds)
+        if ts < 1e12:
+            return round(ts * 1000)
+        # If it's already in milliseconds (>= 1e12), just ensure it's an integer
+        return int(ts)
 
     def __init__(self, sender, receiver, amount, nonce, data=None, signature=None, timestamp=None):
         self.sender = sender
