@@ -89,7 +89,7 @@ class TestPersistence(unittest.TestCase):
         save(bc, path=self.tmpdir)
         restored = load(path=self.tmpdir)
         self.assertEqual(len(restored.chain), 1)
-        self.assertEqual(restored.chain[0].hash, "0" * 64)
+        self.assertEqual(restored.chain[0].hash, bc.chain[0].hash)
 
     def test_state_snapshot_preserved(self):
         bc, alice_pk, bob_pk = self._chain_with_tx()
@@ -254,7 +254,7 @@ class TestPersistence(unittest.TestCase):
 
         restored = load(path=self.tmpdir)
         self.assertEqual(len(restored.chain), 1)
-        self.assertEqual(restored.chain[0].hash, "0" * 64)
+        self.assertEqual(restored.chain[0].hash, bc.chain[0].hash)
 
 
 if __name__ == "__main__":

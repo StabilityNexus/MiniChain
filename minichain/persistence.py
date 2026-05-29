@@ -126,8 +126,11 @@ def load(path: str = ".") -> Blockchain:
 def _verify_chain_integrity(blocks: list[Block]) -> None:
     """Verify genesis, hash linkage, and block hashes."""
     genesis = blocks[0]
-    if genesis.index != 0 or genesis.hash != "0" * 64:
+    if genesis.index != 0:
         raise ValueError("Invalid genesis block")
+    from .pow import calculate_hash
+    if genesis.hash != calculate_hash(genesis.to_header_dict()):
+        raise ValueError("Invalid genesis block hash")
 
     for i in range(1, len(blocks)):
         block = blocks[i]

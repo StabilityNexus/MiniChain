@@ -3,6 +3,9 @@ from .state import State
 from .pow import calculate_hash
 import logging
 import threading
+import json
+import os
+import sys
 
 logger = logging.getLogger(__name__)
 
@@ -28,22 +31,60 @@ class Blockchain:
     Manages the blockchain, validates blocks, and commits state transitions.
     """
 
-    def __init__(self):
+    def __init__(self, genesis_path="genesis.json"):
         self.chain = []
         self.state = State()
         self._lock = threading.RLock()
-        self._create_genesis_block()
+        self._create_genesis_block(genesis_path)
 
-    def _create_genesis_block(self):
+    def _create_genesis_block(self, genesis_path):
         """
-        Creates the genesis block with a fixed hash.
+        Creates the genesis block and initializes state from config.
         """
+        config = {}
+        if os.path.exists(genesis_path):
+            try:
+                with open(genesis_path, "r") as f:
+                    config = json.load(f)
+            except Exception as e:
+                logger.error(f"Failed to load genesis config: {e}")
+                sys.exit(1)
+        else:
+            logger.error(f"Failed to load genesis config: file {genesis_path} does not exist.")
+            sys.exit(1)
+        
+        # Apply genesis allocations
+        alloc = config.get("alloc", {})
+        for address, data in alloc.items():
+            balance = data.get("balance", 0)
+            if not isinstance(balance, int) or balance < 0:
+                logger.error(f"Invalid genesis balance for {address}: {balance}. Must be a non-negative integer.")
+                sys.exit(1)
+            account = self.state.get_account(address)
+            account['balance'] = balance
+
+        timestamp = config.get("timestamp")
+        difficulty = config.get("difficulty")
+        
         genesis_block = Block(
             index=0,
             previous_hash="0",
-            transactions=[]
+            transactions=[],
+            timestamp=timestamp,
+            difficulty=difficulty
         )
-        genesis_block.hash = "0" * 64
+        
+        computed_hash = calculate_hash(genesis_block.to_header_dict())
+        config_hash = config.get("hash")
+        
+        if config_hash:
+            if config_hash != computed_hash:
+                logger.error(f"Genesis hash mismatch. Config hash: {config_hash}, Computed hash: {computed_hash}")
+                sys.exit(1)
+            genesis_block.hash = config_hash
+        else:
+            genesis_block.hash = computed_hash
+            
         self.chain.append(genesis_block)
 
     @property
