@@ -45,7 +45,7 @@ class TestMempoolQueue(unittest.TestCase):
     def test_transactions_for_block_are_sorted_and_capped(self):
         mempool = Mempool()
         for nonce in range(mempool.transactions_per_block + 5):
-            self.assertTrue(mempool.add_transaction(self._signed_tx(nonce, timestamp=5000 - nonce)))
+            self.assertTrue(mempool.add_transaction(self._signed_tx(nonce, timestamp=5000 + nonce)))
 
         selected = mempool.get_transactions_for_block()
 
