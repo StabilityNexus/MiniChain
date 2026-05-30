@@ -306,22 +306,32 @@ class P2PNetwork:
                 self._peers.remove((reader, writer))
 
     async def _broadcast_raw(self, payload: dict):
-        """Send a JSON message to every connected peer."""
+        """Send a JSON message to every connected peer concurrently."""
         line = (canonical_json_dumps(payload) + "\n").encode()
-        disconnected = []
-        for reader, writer in self._peers:
+        peers_snapshot = list(self._peers)
+
+        async def _send(reader, writer):
+            """Send to a single peer; return the pair on failure."""
             try:
                 writer.write(line)
                 await writer.drain()
+                return None
             except Exception:
-                disconnected.append((reader, writer))
-        for reader, writer in disconnected:
+                return (reader, writer)
+
+        results = await asyncio.gather(
+            *(_send(r, w) for r, w in peers_snapshot)
+        )
+
+        for pair in results:
+            if pair is None:
+                continue
+            reader, writer = pair
             try:
                 writer.close()
                 await writer.wait_closed()
             except Exception:
                 pass
-            pair = (reader, writer)
             if pair in self._peers:
                 self._peers.remove(pair)
 
@@ -346,7 +356,7 @@ class P2PNetwork:
 
         payload = {
             "type": "block",
-            "data": json.loads(block.canonical_payload.decode("utf-8"))
+            "data": block.to_dict()
         }
 
         self._mark_seen("block", payload["data"])

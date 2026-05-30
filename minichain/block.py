@@ -40,7 +40,7 @@ class Block:
         self,
         index: int,
         previous_hash: str,
-        transactions: Optional[list[Transaction]] = None,  # <-- Updated to built-in 'list'
+        transactions: Optional[Sequence[Transaction]] = None,
         timestamp: Optional[float] = None,
         difficulty: Optional[int] = None,
         miner: Optional[str] = None
