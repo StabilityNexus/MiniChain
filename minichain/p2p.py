@@ -326,7 +326,7 @@ class P2PNetwork:
         for pair in results:
             if pair is None:
                 continue
-            reader, writer = pair
+            _reader, writer = pair
             try:
                 writer.close()
                 await writer.wait_closed()
