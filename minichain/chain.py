@@ -133,6 +133,10 @@ class Blockchain:
                 logger.warning("Block %s rejected: Invalid receipt root. Expected %s, got %s", block.index, computed_receipt_root, block.receipt_root)
                 return False
 
+            if [r.to_dict() for r in block.receipts] != [r.to_dict() for r in receipts]:
+                logger.warning("Block %s rejected: Receipts payload mismatch", block.index)
+                return False
+
             # Verify state root
             if block.state_root != temp_state.state_root():
                 logger.warning("Block %s rejected: Invalid state root. Expected %s, got %s", block.index, temp_state.state_root(), block.state_root)

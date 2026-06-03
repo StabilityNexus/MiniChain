@@ -208,6 +208,22 @@ class P2PNetwork:
         if "miner" in payload and not isinstance(payload["miner"], (str, type(None))):
             return False
 
+        for r_payload in payload.get("receipts", []):
+            if not isinstance(r_payload, dict):
+                return False
+            if "tx_hash" not in r_payload or not isinstance(r_payload["tx_hash"], str):
+                return False
+            if "status" not in r_payload or not isinstance(r_payload["status"], int):
+                return False
+            if "gas_used" in r_payload and not isinstance(r_payload["gas_used"], int):
+                return False
+            if "error_message" in r_payload and not isinstance(r_payload["error_message"], (str, type(None))):
+                return False
+            if "logs" in r_payload and not isinstance(r_payload["logs"], list):
+                return False
+            if "contract_address" in r_payload and not isinstance(r_payload["contract_address"], (str, type(None))):
+                return False
+
         return all(
             self._validate_transaction_payload(tx_payload)
             for tx_payload in payload["transactions"]

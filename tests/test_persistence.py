@@ -91,6 +91,18 @@ class TestPersistence(unittest.TestCase):
         self.assertEqual(original_tx.nonce, loaded_tx.nonce)
         self.assertEqual(original_tx.signature, loaded_tx.signature)
 
+    def test_receipt_data_preserved(self):
+        bc, _, _ = self._chain_with_tx()
+        save(bc, path=self.tmpdir)
+        restored = load(path=self.tmpdir)
+        original_receipt = bc.chain[1].receipts[0]
+        loaded_receipt = restored.chain[1].receipts[0]
+        self.assertEqual(original_receipt.tx_hash, loaded_receipt.tx_hash)
+        self.assertEqual(original_receipt.status, loaded_receipt.status)
+        self.assertEqual(original_receipt.gas_used, loaded_receipt.gas_used)
+        self.assertEqual(original_receipt.error_message, loaded_receipt.error_message)
+        self.assertEqual(original_receipt.contract_address, loaded_receipt.contract_address)
+
     def test_genesis_only_chain(self):
         bc = Blockchain()
         save(bc, path=self.tmpdir)
