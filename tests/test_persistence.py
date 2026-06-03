@@ -41,11 +41,15 @@ class TestPersistence(unittest.TestCase):
         tx = Transaction(alice_pk, bob_pk, 30, 0)
         tx.sign(alice_sk)
 
+        temp_state = bc.state.copy()
+        temp_state.validate_and_apply(tx)
+
         block = Block(
             index=1,
             previous_hash=bc.last_block.hash,
             transactions=[tx],
             difficulty=1,
+            state_root=temp_state.state_root(),
         )
         mine_block(block, difficulty=1)
         bc.add_block(block)
@@ -216,11 +220,15 @@ class TestPersistence(unittest.TestCase):
         tx2 = Transaction(new_pk, bob_pk, 10, 0)
         tx2.sign(new_sk)
 
+        temp_state = restored.state.copy()
+        temp_state.validate_and_apply(tx2)
+
         block2 = Block(
             index=len(restored.chain),
             previous_hash=restored.last_block.hash,
             transactions=[tx2],
             difficulty=1,
+            state_root=temp_state.state_root(),
         )
         mine_block(block2, difficulty=1)
 

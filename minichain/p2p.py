@@ -183,14 +183,18 @@ class P2PNetwork:
             "index": int,
             "previous_hash": str,
             "merkle_root": (str, type(None)),
+            "state_root": str,
             "transactions": list,
             "timestamp": int,
             "difficulty": (int, type(None)),
             "nonce": int,
             "hash": str,
         }
-        optional_fields = {"miner": str}
+        optional_fields = {"miner": (str, type(None))}
         allowed_fields = set(required_fields) | set(optional_fields)
+
+        if not set(required_fields).issubset(payload):
+            return False
 
         if not set(payload).issubset(allowed_fields):
             return False
@@ -199,7 +203,7 @@ class P2PNetwork:
             if not isinstance(payload.get(field), expected_type):
                 return False
 
-        if "miner" in payload and not isinstance(payload["miner"], str):
+        if "miner" in payload and not isinstance(payload["miner"], (str, type(None))):
             return False
 
         return all(

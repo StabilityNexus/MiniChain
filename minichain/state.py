@@ -13,6 +13,21 @@ class State:
         self.accounts = {}
         self.contract_machine = ContractMachine(self)
 
+    def state_root(self) -> str:
+        """
+        Dynamically builds the Merkle Patricia Trie from the current state dictionary
+        and returns the cryptographic state root hash.
+        """
+        import json
+        from .mpt import Trie
+        trie = Trie()
+        # Sort items to ensure deterministic insertion order if necessary (though MPT is order-independent)
+        for addr, acc in sorted(self.accounts.items()):
+            if acc.get('balance', 0) == 0 and acc.get('nonce', 0) == 0 and not acc.get('code') and not acc.get('storage'):
+                continue
+            trie.put(addr, json.dumps(acc, sort_keys=True))
+        return trie.root_hash()
+
     DEFAULT_MINING_REWARD = 50
 
     def get_account(self, address):

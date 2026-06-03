@@ -71,7 +71,8 @@ class Blockchain:
             previous_hash="0",
             transactions=[],
             timestamp=timestamp,
-            difficulty=difficulty
+            difficulty=difficulty,
+            state_root=self.state.state_root()
         )
         
         computed_hash = calculate_hash(genesis_block.to_header_dict())
@@ -118,6 +119,14 @@ class Blockchain:
                 if not result:
                     logger.warning("Block %s rejected: Transaction failed validation", block.index)
                     return False
+
+            if block.miner:
+                temp_state.credit_mining_reward(block.miner)
+
+            # Verify state root
+            if block.state_root != temp_state.state_root():
+                logger.warning("Block %s rejected: Invalid state root. Expected %s, got %s", block.index, temp_state.state_root(), block.state_root)
+                return False
 
             # All transactions valid → commit state and append block
             self.state = temp_state

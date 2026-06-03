@@ -76,10 +76,14 @@ def mine_and_process_block(chain, mempool, miner_pk):
         logger.info("No mineable transactions in current queue window.")
         return None
 
+    temp_state.credit_mining_reward(miner_pk)
+
     block = Block(
         index=chain.last_block.index + 1,
         previous_hash=chain.last_block.hash,
         transactions=mineable_txs,
+        state_root=temp_state.state_root(),
+        miner=miner_pk,
     )
 
     mined_block = mine_block(block)
@@ -87,7 +91,6 @@ def mine_and_process_block(chain, mempool, miner_pk):
     if chain.add_block(mined_block):
         logger.info("✅ Block #%d mined and added (%d txs)", mined_block.index, len(mineable_txs))
         mempool.remove_transactions(mineable_txs)
-        chain.state.credit_mining_reward(miner_pk)
         return mined_block
     else:
         logger.error("❌ Block rejected by chain")
@@ -145,10 +148,6 @@ def make_network_handler(chain, mempool):
 
             if chain.add_block(block):
                 logger.info("📥 Received Block #%d — added to chain", block.index)
-
-                # Apply mining reward for the remote miner (burn address as placeholder)
-                miner = payload.get("miner", BURN_ADDRESS)
-                chain.state.credit_mining_reward(miner)
 
                 # Drop only confirmed transactions so higher nonces can remain queued.
                 mempool.remove_transactions(block.transactions)
