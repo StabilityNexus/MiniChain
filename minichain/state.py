@@ -99,50 +99,58 @@ class State:
         # LOGIC BRANCH 1: Contract Deployment
         if tx.receiver is None or tx.receiver == "":
             contract_address = self.derive_contract_address(tx.sender, tx.nonce)
+            gas_used = getattr(tx, 'fee', 0)
 
             # Prevent redeploy collision
             existing = self.accounts.get(contract_address)
             if existing and existing.get("code"):
                 # Restore sender balance on failure, but keep nonce incremented
                 sender['balance'] += tx.amount
-                return Receipt(tx.tx_id, status=0, error_message="Contract collision")
+                return Receipt(tx.tx_id, status=0, error_message="Contract collision", gas_used=gas_used)
 
             self.create_contract(contract_address, tx.data, initial_balance=tx.amount)
-            return Receipt(tx.tx_id, status=1, contract_address=contract_address)
+            return Receipt(tx.tx_id, status=1, contract_address=contract_address, gas_used=gas_used)
 
         # LOGIC BRANCH 2: Contract Call
         # If data is provided (non-empty), treat as contract call
         if tx.data:
             receiver = self.accounts.get(tx.receiver)
+            gas_limit = getattr(tx, 'fee', 0)
 
             # Fail if contract does not exist or has no code
             if not receiver or not receiver.get("code"):
                 # Rollback sender balance on failure, but keep nonce incremented
                 sender['balance'] += tx.amount # Refund amount
-                return Receipt(tx.tx_id, status=0, error_message="Contract not found")
+                return Receipt(tx.tx_id, status=0, error_message="Contract not found", gas_used=gas_limit)
 
             # Credit contract balance
             receiver['balance'] += tx.amount
 
-            success = self.contract_machine.execute(
-                contract_address=tx.receiver, # Pass receiver as contract_address
+            result = self.contract_machine.execute(
+                contract_address=tx.receiver,
                 sender_address=tx.sender,
                 payload=tx.data,
-                amount=tx.amount
+                amount=tx.amount,
+                gas_limit=gas_limit
             )
 
-            if not success:
+            gas_used = result.get("gas_used", gas_limit)
+            gas_refund = gas_limit - gas_used
+            if gas_refund > 0:
+                sender['balance'] += gas_refund
+
+            if not result.get("success"):
                 # Rollback transfer if execution fails, but keep nonce incremented
                 receiver['balance'] -= tx.amount
                 sender['balance'] += tx.amount # Refund amount
-                return Receipt(tx.tx_id, status=0, error_message="Execution failed")
+                return Receipt(tx.tx_id, status=0, error_message=result.get("error", "Execution failed"), gas_used=gas_used)
 
-            return Receipt(tx.tx_id, status=1)
+            return Receipt(tx.tx_id, status=1, gas_used=gas_used)
 
         # LOGIC BRANCH 3: Regular Transfer
         receiver = self.get_account(tx.receiver)
         receiver['balance'] += tx.amount
-        return Receipt(tx.tx_id, status=1)
+        return Receipt(tx.tx_id, status=1, gas_used=getattr(tx, 'fee', 0))
 
     def derive_contract_address(self, sender, nonce):
         raw = f"{sender}:{nonce}".encode()

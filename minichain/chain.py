@@ -125,7 +125,7 @@ class Blockchain:
                     
                 receipts.append(receipt)
 
-            total_fees = sum(getattr(tx, 'fee', 0) for tx in block.transactions)
+            total_fees = sum(getattr(r, 'gas_used', 0) for r in receipts)
             if block.miner:
                 temp_state.credit_mining_reward(block.miner, reward=temp_state.DEFAULT_MINING_REWARD + total_fees)
                 
