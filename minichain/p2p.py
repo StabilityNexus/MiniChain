@@ -118,6 +118,7 @@ class P2PNetwork:
         required_fields = {
             "sender": str,
             "amount": int,
+            "fee": int,
             "nonce": int,
             "timestamp": int,
             "signature": str,

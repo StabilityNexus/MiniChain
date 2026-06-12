@@ -51,7 +51,9 @@ class Mempool:
             
             for sender, txs in snapshot.items():
                 if txs:
-                    if best_tx is None or (txs[0].timestamp, sender, txs[0].nonce) < (best_tx.timestamp, best_sender, best_tx.nonce):
+                    current_criteria = (-getattr(txs[0], 'fee', 0), txs[0].timestamp, sender, txs[0].nonce)
+                    best_criteria = (-getattr(best_tx, 'fee', 0), best_tx.timestamp, best_sender, best_tx.nonce) if best_tx else None
+                    if best_tx is None or current_criteria < best_criteria:
                         best_tx = txs[0]
                         best_sender = sender
                         

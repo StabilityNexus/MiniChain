@@ -13,7 +13,7 @@ class TestSmartContract(unittest.TestCase):
         self.state = State()
         self.sk = SigningKey.generate()
         self.pk = self.sk.verify_key.encode(encoder=HexEncoder).decode()
-        self.state.credit_mining_reward(self.pk, 100)
+        self.state.credit_mining_reward(self.pk, 10000)
 
     def test_deploy_and_execute(self):
         """Happy path: deploy and increment counter."""
@@ -23,7 +23,7 @@ if msg['data'] == 'increment':
     storage['counter'] = storage.get('counter', 0) + 1
 """
 
-        tx_deploy = Transaction(self.pk, None, 0, 0, data=code)
+        tx_deploy = Transaction(self.pk, None, 0, 0, fee=500, data=code)
         tx_deploy.sign(self.sk)
 
         receipt_deploy = self.state.apply_transaction(tx_deploy)
@@ -32,7 +32,7 @@ if msg['data'] == 'increment':
         contract_addr = receipt_deploy.contract_address
         self.assertTrue(isinstance(contract_addr, str))
 
-        tx_call = Transaction(self.pk, contract_addr, 0, 1, data="increment")
+        tx_call = Transaction(self.pk, contract_addr, 0, 1, fee=1000, data="increment")
         tx_call.sign(self.sk)
 
         receipt_call = self.state.apply_transaction(tx_call)
@@ -50,7 +50,7 @@ if msg['data'] == 'increment':
 
         code = "storage['x'] = 1"
 
-        tx = Transaction(poor_pk, None, 1000, 0, data=code)
+        tx = Transaction(poor_pk, None, 1000, 0, fee=500, data=code)
         tx.sign(poor_sk)
 
         receipt = self.state.apply_transaction(tx)
@@ -63,7 +63,7 @@ if msg['data'] == 'increment':
         fake_sk = SigningKey.generate()
         fake_receiver = fake_sk.verify_key.encode(encoder=HexEncoder).decode()
 
-        tx = Transaction(self.pk, fake_receiver, 0, 0, data="increment")
+        tx = Transaction(self.pk, fake_receiver, 0, 0, fee=500, data="increment")
         tx.sign(self.sk)
 
         receipt = self.state.apply_transaction(tx)
@@ -78,7 +78,7 @@ if msg['data'] == 'increment':
 raise Exception("boom")
 """
 
-        tx_deploy = Transaction(self.pk, None, 0, 0, data=code)
+        tx_deploy = Transaction(self.pk, None, 0, 0, fee=500, data=code)
         tx_deploy.sign(self.sk)
 
         receipt_deploy = self.state.apply_transaction(tx_deploy)
@@ -87,13 +87,13 @@ raise Exception("boom")
         contract_addr = receipt_deploy.contract_address
         self.assertTrue(isinstance(contract_addr, str))
 
-        tx_call = Transaction(self.pk, contract_addr, 0, 1, data="anything")
+        tx_call = Transaction(self.pk, contract_addr, 0, 1, fee=1000, data="anything")
         tx_call.sign(self.sk)
 
         receipt_call = self.state.apply_transaction(tx_call)
         self.assertIsNotNone(receipt_call)
         self.assertEqual(receipt_call.status, 0)
-        self.assertEqual(receipt_call.error_message, "Execution failed")
+        self.assertEqual(receipt_call.error_message, "boom")
 
         contract_acc = self.state.get_account(contract_addr)
         self.assertEqual(contract_acc["storage"], {})
@@ -104,7 +104,7 @@ raise Exception("boom")
         code = "storage['x'] = 1"
 
         # First deploy
-        tx1 = Transaction(self.pk, None, 0, 0, data=code)
+        tx1 = Transaction(self.pk, None, 0, 0, fee=500, data=code)
         tx1.sign(self.sk)
 
         receipt1 = self.state.apply_transaction(tx1)
@@ -121,7 +121,7 @@ raise Exception("boom")
         self.state.create_contract(collision_addr, "storage['y'] = 2")
 
         # Attempt redeploy
-        tx2 = Transaction(self.pk, None, 0, next_nonce, data=code)
+        tx2 = Transaction(self.pk, None, 0, next_nonce, fee=500, data=code)
         tx2.sign(self.sk)
 
         receipt2 = self.state.apply_transaction(tx2)
@@ -138,7 +138,7 @@ raise Exception("boom")
 
         code = "storage['x'] = 1"
 
-        tx_deploy = Transaction(self.pk, None, 10, initial_nonce, data=code)
+        tx_deploy = Transaction(self.pk, None, 10, initial_nonce, fee=500, data=code)
         tx_deploy.sign(self.sk)
 
         receipt = self.state.apply_transaction(tx_deploy)
@@ -148,8 +148,71 @@ raise Exception("boom")
         self.assertTrue(isinstance(contract_addr, str))
 
         # Verify balance and nonce after deploy
+        # We spent 10 amount + 500 gas for deploy = 510 total deduction
         sender_after = self.state.get_account(self.pk)
-        self.assertEqual(sender_after["balance"], initial_balance - 10)
+        self.assertEqual(sender_after["balance"], initial_balance - 510)
         self.assertEqual(sender_after["nonce"], initial_nonce + 1)
 
-        # Further test calls if needed
+    def test_out_of_gas(self):
+        """Contract with infinite loop should run out of gas and revert."""
+        
+        code = "while True: pass"
+        
+        # 1. Deploy code
+        tx_deploy = Transaction(self.pk, None, 0, 0, fee=500, data=code)
+        tx_deploy.sign(self.sk)
+        receipt_deploy = self.state.apply_transaction(tx_deploy)
+        self.assertEqual(receipt_deploy.status, 1)
+        contract_addr = receipt_deploy.contract_address
+        
+        # 2. Call code with specific fee (gas limit)
+        tx_call = Transaction(self.pk, contract_addr, 0, 1, fee=1000, data="loop")
+        tx_call.sign(self.sk)
+        
+        balance_before = self.state.get_account(self.pk)["balance"]
+        
+        receipt_call = self.state.apply_transaction(tx_call)
+        
+        self.assertEqual(receipt_call.status, 0)
+        self.assertEqual(receipt_call.error_message, "Out of gas!")
+        self.assertEqual(receipt_call.gas_used, 1000)
+        
+        balance_after = self.state.get_account(self.pk)["balance"]
+        # Entire fee should be deducted because gas was completely consumed
+        self.assertEqual(balance_after, balance_before - 1000)
+
+    def test_malicious_import(self):
+        """Contract attempting to import a module should fail AST validation."""
+        code = "import os\nstorage['x'] = 1"
+        tx_deploy = Transaction(self.pk, None, 0, 0, fee=500, data=code)
+        tx_deploy.sign(self.sk)
+        
+        receipt_deploy = self.state.apply_transaction(tx_deploy)
+        self.assertEqual(receipt_deploy.status, 1) # Deploy succeeds, saves code
+
+        tx_call = Transaction(self.pk, receipt_deploy.contract_address, 0, 1, fee=500, data="call")
+        tx_call.sign(self.sk)
+        receipt_call = self.state.apply_transaction(tx_call)
+        
+        self.assertIsNotNone(receipt_call)
+        self.assertEqual(receipt_call.status, 0)
+        self.assertEqual(receipt_call.error_message, "AST Validation Failed")
+
+    def test_malicious_file_deletion(self):
+        """Contract attempting to use open() or file IO should fail at runtime due to missing builtins."""
+        # Using open() which is stripped from __builtins__
+        code = "f = open('critical_file.txt', 'w')\nf.write('hacked')"
+        tx_deploy = Transaction(self.pk, None, 0, 0, fee=500, data=code)
+        tx_deploy.sign(self.sk)
+        
+        receipt_deploy = self.state.apply_transaction(tx_deploy)
+        self.assertEqual(receipt_deploy.status, 1)
+
+        tx_call = Transaction(self.pk, receipt_deploy.contract_address, 0, 1, fee=500, data="call")
+        tx_call.sign(self.sk)
+        receipt_call = self.state.apply_transaction(tx_call)
+
+        self.assertIsNotNone(receipt_call)
+        self.assertEqual(receipt_call.status, 0)
+        # Should throw a NameError because 'open' is not defined in safe_builtins
+        self.assertIn("name 'open' is not defined", receipt_call.error_message)

@@ -103,6 +103,26 @@ It is encouraged that you develop an initial prototype during the application ph
 
 ---
 
+## Smart Contracts
+
+MiniChain supports fully-functional smart contracts written directly in Python! 
+The execution engine uses `sys.settrace` for precise **Gas Metering** (charging 1 gas per executed opcode) and `multiprocessing` for **Sandboxed Execution** to ensure network security.
+
+### Writing a Contract
+Smart contracts in MiniChain have access to a persistent `storage` dictionary and a `msg` dictionary containing transaction context (`sender`, `value`, `data`).
+
+Check out the `/examples` directory for tutorials:
+- `examples/counter.py` - A basic state mutation example.
+- `examples/stablecoin.py` - A minimal ERC-20 style fungible token.
+- `examples/dex.py` - An Automated Market Maker (AMM) using the constant product formula (x * y = k).
+
+### Interacting via CLI
+Start the interactive node using `python main.py` and use the following commands:
+1. **Deploy:** `deploy <filepath> [amount] [gas_limit]`
+2. **Call:** `call <contract_address> <payload> [amount] [gas_limit]`
+
+---
+
 ## Tech Stack
 
 TODO:

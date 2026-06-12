@@ -80,7 +80,8 @@ def mine_and_process_block(chain, mempool, miner_pk):
         logger.info("No mineable transactions in current queue window.")
         return None
 
-    temp_state.credit_mining_reward(miner_pk)
+    total_fees = sum(getattr(r, 'gas_used', 0) for r in receipts)
+    temp_state.credit_mining_reward(miner_pk, reward=temp_state.DEFAULT_MINING_REWARD + total_fees)
 
     block = Block(
         index=chain.last_block.index + 1,
@@ -208,12 +209,13 @@ async def cli_loop(sk, pk, chain, mempool, network):
                 print("  (no accounts yet)")
             for addr, acc in accounts.items():
                 tag = " (you)" if addr == pk else ""
-                print(f"  {addr[:12]}...  balance={acc['balance']}  nonce={acc['nonce']}{tag}")
+                contract_tag = " [Contract]" if acc.get("code") else ""
+                print(f"  {addr[:12]}...  balance={acc['balance']}  nonce={acc['nonce']}{tag}{contract_tag}")
 
         # ── send ──
         elif cmd == "send":
             if len(parts) < 3:
-                print("  Usage: send <receiver_address> <amount>")
+                print("  Usage: send <receiver_address> <amount> [fee]")
                 continue
             receiver = parts[1]
             if not is_valid_receiver(receiver):
@@ -221,15 +223,19 @@ async def cli_loop(sk, pk, chain, mempool, network):
                 continue
             try:
                 amount = int(parts[2])
+                fee = int(parts[3]) if len(parts) > 3 else 0
             except ValueError:
-                print("  Amount must be an integer.")
+                print("  Amount and fee must be integers.")
                 continue
             if amount <= 0:
                 print("  Amount must be greater than 0.")
                 continue
+            if fee < 0:
+                print("  Fee cannot be negative.")
+                continue
 
             nonce = chain.state.get_account(pk).get("nonce", 0)
-            tx = Transaction(sender=pk, receiver=receiver, amount=amount, nonce=nonce)
+            tx = Transaction(sender=pk, receiver=receiver, amount=amount, nonce=nonce, fee=fee)
             tx.sign(sk)
 
             if mempool.add_transaction(tx):
@@ -237,6 +243,72 @@ async def cli_loop(sk, pk, chain, mempool, network):
                 print(f"  ✅ Tx sent: {amount} coins → {receiver[:12]}...")
             else:
                 print("  ❌ Transaction rejected (invalid sig, duplicate, or mempool full).")
+
+        # ── deploy ──
+        elif cmd == "deploy":
+            if len(parts) < 2:
+                print("  Usage: deploy <filepath> [amount] [fee]")
+                continue
+            filepath = parts[1]
+            try:
+                with open(filepath, "r") as f:
+                    code = f.read()
+            except FileNotFoundError:
+                print(f"  File not found: {filepath}")
+                continue
+            
+            try:
+                amount = int(parts[2]) if len(parts) > 2 else 0
+                fee = int(parts[3]) if len(parts) > 3 else 0
+            except ValueError:
+                print("  Amount and fee must be integers.")
+                continue
+
+            if amount < 0 or fee < 0:
+                print("  Amount and fee cannot be negative.")
+                continue
+
+            nonce = chain.state.get_account(pk).get("nonce", 0)
+            tx = Transaction(sender=pk, receiver=None, amount=amount, nonce=nonce, fee=fee, data=code)
+            tx.sign(sk)
+
+            if mempool.add_transaction(tx):
+                await network.broadcast_transaction(tx)
+                print(f"  ✅ Deploy Tx sent (nonce={nonce}). Mine a block to confirm.")
+            else:
+                print("  ❌ Deploy Transaction rejected.")
+
+        # ── call ──
+        elif cmd == "call":
+            if len(parts) < 3:
+                print("  Usage: call <contract_address> <payload> [amount] [fee]")
+                continue
+            receiver = parts[1]
+            if not is_valid_receiver(receiver):
+                print("  Invalid receiver format. Expected 40 or 64 hex characters.")
+                continue
+            payload = parts[2]
+            
+            try:
+                amount = int(parts[3]) if len(parts) > 3 else 0
+                fee = int(parts[4]) if len(parts) > 4 else 0
+            except ValueError:
+                print("  Amount and fee must be integers.")
+                continue
+
+            if amount < 0 or fee < 0:
+                print("  Amount and fee cannot be negative.")
+                continue
+
+            nonce = chain.state.get_account(pk).get("nonce", 0)
+            tx = Transaction(sender=pk, receiver=receiver, amount=amount, nonce=nonce, fee=fee, data=payload)
+            tx.sign(sk)
+
+            if mempool.add_transaction(tx):
+                await network.broadcast_transaction(tx)
+                print(f"  ✅ Call Tx sent to {receiver[:12]}... (payload='{payload}'). Mine a block to confirm.")
+            else:
+                print("  ❌ Call Transaction rejected.")
 
         # ── mine ──
         elif cmd == "mine":

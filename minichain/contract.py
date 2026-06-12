@@ -1,13 +1,37 @@
 import logging
 import multiprocessing
 import ast
+import sys
+
+class OutOfGasException(Exception):
+    pass
+
+class GasMeter:
+    def __init__(self, limit):
+        self.gas = limit
+        self.initial_gas = limit
+
+    def trace_calls(self, frame, event, arg):
+        frame.f_trace_opcodes = True
+        if event == 'opcode':
+            self.gas -= 1
+            if self.gas <= 0:
+                raise OutOfGasException("Out of gas!")
+        return self.trace_calls
 
 import json # Moved to module-level import
 logger = logging.getLogger(__name__)
 
-def _safe_exec_worker(code, globals_dict, context_dict, result_queue):
+def _safe_exec_worker(code, globals_dict, context_dict, result_queue, gas_limit):
     """
-    Worker function to execute contract code in a separate process.
+    Worker function to execute contract code in a separate process with gas metering.
+    
+    SECURITY:
+    This function relies on `globals_dict` (which has `__builtins__` stripped down 
+    to a minimal safe allowlist) to prevent malicious code from accessing file systems
+    (e.g., `open()`), networking, or OS-level commands (e.g., `__import__('os')`).
+    Because `exec` is run with these restricted globals, any attempt to call unauthorized
+    builtins or standard library modules will result in a NameError or ImportError.
     """
     try:
         # Attempt to set resource limits (Unix only)
@@ -21,29 +45,52 @@ def _safe_exec_worker(code, globals_dict, context_dict, result_queue):
         except (OSError, ValueError) as e:
             logger.warning("Failed to set resource limits: %s", e)
 
-        exec(code, globals_dict, context_dict)
-        # Return the updated storage
-        result_queue.put({"status": "success", "storage": context_dict.get("storage")})
+        meter = GasMeter(gas_limit)
+        sys.settrace(meter.trace_calls)
+        
+        try:
+            exec(code, globals_dict, context_dict)
+        finally:
+            sys.settrace(None)
+            
+        gas_used = meter.initial_gas - meter.gas
+        result_queue.put({"status": "success", "storage": context_dict.get("storage"), "gas_used": gas_used})
+    except OutOfGasException as e:
+        result_queue.put({"status": "error", "error": "Out of gas!", "gas_used": gas_limit})
     except Exception as e:
-        result_queue.put({"status": "error", "error": str(e)})
+        # If it failed for another reason, we still charge the gas it consumed up to the failure
+        gas_used = gas_limit if 'meter' not in locals() else meter.initial_gas - meter.gas
+        result_queue.put({"status": "error", "error": str(e), "gas_used": gas_used})
 
 class ContractMachine:
     """
     A minimal execution environment for Python-based smart contracts.
     WARNING: Still not production-safe. For educational use only.
+    
+    SANDBOX ENFORCEMENT:
+    1. Builtins Restriction: `__builtins__` is aggressively filtered. Functions like 
+       `open`, `exec`, `eval`, `__import__`, `print`, and `input` are completely removed.
+       This inherently prevents file deletion, network requests, or OS command execution.
+    2. AST Validation: `_validate_code_ast` statically analyzes the code before execution 
+       to block double-underscore access (preventing sandbox escape via introspection) 
+       and entirely blocks the `import` statement.
+    
+    Allowed Builtins: range(), len(), min(), max(), abs(), str(), bool(), float(), int(), list(), dict(), tuple(), sum(), Exception
+    Blocked Builtins: Imports, File IO (open), OS modules, Networking, Introspection.
     """
 
     def __init__(self, state):
         self.state = state
 
-    def execute(self, contract_address, sender_address, payload, amount):
+    def execute(self, contract_address, sender_address, payload, amount, gas_limit):
         """
         Executes the contract code associated with the contract_address.
+        Returns a dict: {"success": bool, "gas_used": int, "error": str}
         """
 
         account = self.state.get_account(contract_address)
         if not account:
-            return False
+            return {"success": False, "gas_used": 0, "error": "Account not found"}
 
         code = account.get("code")
 
@@ -51,11 +98,11 @@ class ContractMachine:
         storage = dict(account.get("storage", {}))
 
         if not code:
-            return False
+            return {"success": False, "gas_used": 0, "error": "No code"}
 
         # AST Validation to prevent introspection
         if not self._validate_code_ast(code):
-            return False
+            return {"success": False, "gas_used": 0, "error": "AST Validation Failed"}
 
         # Restricted builtins (explicit allowlist)
         safe_builtins = {
@@ -97,7 +144,7 @@ class ContractMachine:
             queue = multiprocessing.Queue()
             p = multiprocessing.Process(
                 target=_safe_exec_worker,
-                args=(code, globals_for_exec, context, queue)
+                args=(code, globals_for_exec, context, queue, gas_limit)
             )
             p.start()
             p.join(timeout=2)  # 2 second timeout
@@ -106,23 +153,24 @@ class ContractMachine:
                 p.kill()
                 p.join()
                 logger.error("Contract execution timed out")
-                return False
+                return {"success": False, "gas_used": gas_limit, "error": "Execution timed out"}
 
             try:
                 result = queue.get(timeout=1)
             except Exception:
                 logger.error("Contract execution crashed without result")
-                return False
+                return {"success": False, "gas_used": gas_limit, "error": "Crashed"}
+            
             if result["status"] != "success":
                 logger.error("Contract Execution Failed: %s", result.get('error'))
-                return False
+                return {"success": False, "gas_used": result.get("gas_used", gas_limit), "error": result.get('error')}
 
             # Validate storage is JSON serializable
             try:
                 json.dumps(result["storage"])
             except (TypeError, ValueError):
                 logger.error("Contract storage not JSON serializable")
-                return False
+                return {"success": False, "gas_used": result.get("gas_used", gas_limit), "error": "Storage not JSON serializable"}
 
             # Commit updated storage only after successful execution
             self.state.update_contract_storage(
@@ -130,11 +178,11 @@ class ContractMachine:
                 result["storage"]
             )
 
-            return True
+            return {"success": True, "gas_used": result["gas_used"], "error": None}
 
         except Exception as e:
             logger.error("Contract Execution Failed", exc_info=True)
-            return False
+            return {"success": False, "gas_used": gas_limit, "error": "System Error"}
 
     def _validate_code_ast(self, code):
         """Reject code that uses double underscores or introspection."""

@@ -6,7 +6,7 @@ from .serialization import canonical_json_bytes, canonical_json_hash
 
 
 class Transaction:
-    _TX_FIELDS = frozenset({"sender", "receiver", "amount", "nonce", "data", "timestamp", "signature"})
+    _TX_FIELDS = frozenset({"sender", "receiver", "amount", "fee", "nonce", "data", "timestamp", "signature"})
 
     def __setattr__(self, name, value) -> None:
         if name in self._TX_FIELDS and getattr(self, "_sealed", False):
@@ -23,10 +23,11 @@ class Transaction:
         # If it's already in milliseconds (>= 1e12), just ensure it's an integer
         return int(ts)
 
-    def __init__(self, sender, receiver, amount, nonce, data=None, signature=None, timestamp=None):
+    def __init__(self, sender, receiver, amount, nonce, fee=0, data=None, signature=None, timestamp=None):
         self.sender = sender
         self.receiver = receiver
         self.amount = amount
+        self.fee = fee
         self.nonce = nonce
         self.data = data
         self.timestamp = self._normalize_ts(timestamp) if timestamp is not None else round(time.time() * 1000)
@@ -35,18 +36,18 @@ class Transaction:
         self._sealed = False
 
     def to_dict(self):
-        return {"sender": self.sender, "receiver": self.receiver, "amount": self.amount,
+        return {"sender": self.sender, "receiver": self.receiver, "amount": self.amount, "fee": self.fee,
                 "nonce": self.nonce, "data": self.data, "timestamp": self.timestamp,
                 "signature": self.signature}
 
     def to_signing_dict(self):
-        return {"sender": self.sender, "receiver": self.receiver, "amount": self.amount,
+        return {"sender": self.sender, "receiver": self.receiver, "amount": self.amount, "fee": self.fee,
                 "nonce": self.nonce, "data": self.data, "timestamp": self.timestamp}
 
     @classmethod
     def from_dict(cls, payload: dict):
         return cls(sender=payload["sender"], receiver=payload.get("receiver"),
-                   amount=payload["amount"], nonce=payload["nonce"],
+                   amount=payload["amount"], nonce=payload["nonce"], fee=payload["fee"],
                    data=payload.get("data"), signature=payload.get("signature"),
                    timestamp=payload.get("timestamp"))
 
