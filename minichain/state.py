@@ -1,8 +1,11 @@
+import copy
+import json
+import logging
 from nacl.hash import sha256
 from nacl.encoding import HexEncoder
 from .contract import ContractMachine
-import copy
-import logging
+from .mpt import Trie
+from .receipt import Receipt
 
 logger = logging.getLogger(__name__)
 
@@ -18,8 +21,6 @@ class State:
         Dynamically builds the Merkle Patricia Trie from the current state dictionary
         and returns the cryptographic state root hash.
         """
-        import json
-        from .mpt import Trie
         trie = Trie()
         # Sort items to ensure deterministic insertion order if necessary (though MPT is order-independent)
         for addr, acc in sorted(self.accounts.items()):
@@ -42,17 +43,17 @@ class State:
 
     def verify_transaction_logic(self, tx):
         if not tx.verify():
-            logger.error(f"Error: Invalid signature for tx from {tx.sender[:8]}...")
+            logger.error("Error: Invalid signature for tx from %s...", tx.sender[:8])
             return False
 
         sender_acc = self.get_account(tx.sender)
 
         if sender_acc['balance'] < tx.amount:
-            logger.error(f"Error: Insufficient balance for {tx.sender[:8]}...")
+            logger.error("Error: Insufficient balance for %s...", tx.sender[:8])
             return False
 
         if sender_acc['nonce'] != tx.nonce:
-            logger.error(f"Error: Invalid nonce. Expected {sender_acc['nonce']}, got {tx.nonce}")
+            logger.error("Error: Invalid nonce. Expected %s, got %s", sender_acc['nonce'], tx.nonce)
             return False
 
         return True
@@ -74,20 +75,17 @@ class State:
         """
         # Semantic validation: amount must be an integer and non-negative
         if not isinstance(tx.amount, int) or tx.amount < 0:
-            return False
+            return None
         # Further checks can be added here
         return self.apply_transaction(tx)
 
     def apply_transaction(self, tx):
         """
         Applies transaction and mutates state.
-        Returns:
-            - Contract address (str) if deployment
-            - True if successful execution
-            - False if failed
+        Returns: Receipt object if mathematically valid, None if invalid.
         """
         if not self.verify_transaction_logic(tx):
-            return False
+            return None
 
         sender = self.accounts[tx.sender]
 
@@ -102,12 +100,12 @@ class State:
             # Prevent redeploy collision
             existing = self.accounts.get(contract_address)
             if existing and existing.get("code"):
-                # Restore sender state on failure
+                # Restore sender balance on failure, but keep nonce incremented
                 sender['balance'] += tx.amount
-                sender['nonce'] -= 1
-                return False
+                return Receipt(tx.tx_id, status=0, error_message="Contract collision")
 
-            return self.create_contract(contract_address, tx.data, initial_balance=tx.amount)
+            self.create_contract(contract_address, tx.data, initial_balance=tx.amount)
+            return Receipt(tx.tx_id, status=1, contract_address=contract_address)
 
         # LOGIC BRANCH 2: Contract Call
         # If data is provided (non-empty), treat as contract call
@@ -116,10 +114,9 @@ class State:
 
             # Fail if contract does not exist or has no code
             if not receiver or not receiver.get("code"):
-                # Rollback sender balance and nonce on failure
+                # Rollback sender balance on failure, but keep nonce incremented
                 sender['balance'] += tx.amount # Refund amount
-                sender['nonce'] -= 1
-                return False
+                return Receipt(tx.tx_id, status=0, error_message="Contract not found")
 
             # Credit contract balance
             receiver['balance'] += tx.amount
@@ -132,18 +129,17 @@ class State:
             )
 
             if not success:
-                # Rollback transfer and nonce if execution fails
+                # Rollback transfer if execution fails, but keep nonce incremented
                 receiver['balance'] -= tx.amount
                 sender['balance'] += tx.amount # Refund amount
-                sender['nonce'] -= 1
-                return False
+                return Receipt(tx.tx_id, status=0, error_message="Execution failed")
 
-            return True
+            return Receipt(tx.tx_id, status=1)
 
         # LOGIC BRANCH 3: Regular Transfer
         receiver = self.get_account(tx.receiver)
         receiver['balance'] += tx.amount
-        return True
+        return Receipt(tx.tx_id, status=1)
 
     def derive_contract_address(self, sender, nonce):
         raw = f"{sender}:{nonce}".encode()

@@ -93,7 +93,7 @@ def load(path: str = ".") -> Blockchain:
         if not isinstance(raw_block, dict):
             raise ValueError(f"Invalid chain data in '{path}'")
         try:
-            blocks.append(_deserialize_block(raw_block))
+            blocks.append(Block.from_dict(raw_block))
         except (KeyError, TypeError, ValueError) as exc:
             raise ValueError(f"Invalid chain data in '{path}'") from exc
 
@@ -267,10 +267,4 @@ def _read_legacy_json(filepath: str) -> dict[str, Any]:
         return json.load(f)
 
 
-# ---------------------------------------------------------------------------
-# Block deserialisation
-# ---------------------------------------------------------------------------
 
-
-def _deserialize_block(data: dict[str, Any]) -> Block:
-    return Block.from_dict(data)

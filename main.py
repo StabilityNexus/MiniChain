@@ -27,11 +27,11 @@ from nacl.encoding import HexEncoder
 
 from minichain import Transaction, Blockchain, Block, State, Mempool, P2PNetwork, mine_block
 from minichain.validators import is_valid_receiver
+from minichain.block import calculate_receipt_root
 
 
 logger = logging.getLogger(__name__)
 
-BURN_ADDRESS = "0" * 40
 TRUSTED_PEERS = set()
 LOCALHOST_PEERS = {"127.0.0.1", "::1", "localhost", "0:0:0:0:0:0:0:1"}
 
@@ -61,13 +61,17 @@ def mine_and_process_block(chain, mempool, miner_pk):
     temp_state = chain.state.copy()
     mineable_txs = []
     stale_txs = []
+    receipts = []
     for tx in pending_txs:
         expected_nonce = temp_state.get_account(tx.sender).get("nonce", 0)
         if tx.nonce < expected_nonce:
             stale_txs.append(tx)
             continue
-        if temp_state.validate_and_apply(tx):
+            
+        receipt = temp_state.validate_and_apply(tx)
+        if receipt is not None:
             mineable_txs.append(tx)
+            receipts.append(receipt)
 
     if stale_txs:
         mempool.remove_transactions(stale_txs)
@@ -82,6 +86,9 @@ def mine_and_process_block(chain, mempool, miner_pk):
         index=chain.last_block.index + 1,
         previous_hash=chain.last_block.hash,
         transactions=mineable_txs,
+        state_root=temp_state.state_root(),
+        receipt_root=calculate_receipt_root(receipts),
+        receipts=receipts,
         miner=miner_pk,
     )
 

@@ -1,4 +1,4 @@
-from .block import Block
+from .block import Block, calculate_receipt_root
 from .state import State
 from .pow import calculate_hash
 import logging
@@ -47,10 +47,10 @@ class Blockchain:
                 with open(genesis_path, "r") as f:
                     config = json.load(f)
             except Exception as e:
-                logger.error(f"Failed to load genesis config: {e}")
+                logger.error("Failed to load genesis config: %s", e)
                 sys.exit(1)
         else:
-            logger.error(f"Failed to load genesis config: file {genesis_path} does not exist.")
+            logger.error("Failed to load genesis config: file %s does not exist.", genesis_path)
             sys.exit(1)
         
         # Apply genesis allocations
@@ -58,7 +58,7 @@ class Blockchain:
         for address, data in alloc.items():
             balance = data.get("balance", 0)
             if not isinstance(balance, int) or balance < 0:
-                logger.error(f"Invalid genesis balance for {address}: {balance}. Must be a non-negative integer.")
+                logger.error("Invalid genesis balance for %s: %s. Must be a non-negative integer.", address, balance)
                 sys.exit(1)
             account = self.state.get_account(address)
             account['balance'] = balance
@@ -72,7 +72,9 @@ class Blockchain:
             transactions=[],
             timestamp=timestamp,
             difficulty=difficulty,
-            state_root=self.state.state_root()
+            state_root=self.state.state_root(),
+            receipt_root=None,
+            receipts=[]
         )
         
         computed_hash = calculate_hash(genesis_block.to_header_dict())
@@ -80,7 +82,7 @@ class Blockchain:
         
         if config_hash:
             if config_hash != computed_hash:
-                logger.error(f"Genesis hash mismatch. Config hash: {config_hash}, Computed hash: {computed_hash}")
+                logger.error("Genesis hash mismatch. Config hash: %s, Computed hash: %s", config_hash, computed_hash)
                 sys.exit(1)
             genesis_block.hash = config_hash
         else:
@@ -111,17 +113,29 @@ class Blockchain:
 
             # Validate transactions on a temporary state copy
             temp_state = self.state.copy()
+            receipts = []
 
             for tx in block.transactions:
-                result = temp_state.validate_and_apply(tx)
+                receipt = temp_state.validate_and_apply(tx)
 
-                # Reject block if any transaction fails
-                if not result:
+                # Reject block if any transaction fails mathematical validation (None)
+                if receipt is None:
                     logger.warning("Block %s rejected: Transaction failed validation", block.index)
                     return False
+                    
+                receipts.append(receipt)
 
             if block.miner:
                 temp_state.credit_mining_reward(block.miner)
+                
+            computed_receipt_root = calculate_receipt_root(receipts)
+            if block.receipt_root != computed_receipt_root:
+                logger.warning("Block %s rejected: Invalid receipt root. Expected %s, got %s", block.index, computed_receipt_root, block.receipt_root)
+                return False
+
+            if [r.to_dict() for r in block.receipts] != [r.to_dict() for r in receipts]:
+                logger.warning("Block %s rejected: Receipts payload mismatch", block.index)
+                return False
 
             # Verify state root
             if block.state_root != temp_state.state_root():

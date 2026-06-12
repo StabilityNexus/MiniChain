@@ -42,14 +42,17 @@ class TestPersistence(unittest.TestCase):
         tx.sign(alice_sk)
 
         temp_state = bc.state.copy()
-        temp_state.validate_and_apply(tx)
+        receipt = temp_state.validate_and_apply(tx)
 
+        from minichain.block import calculate_receipt_root
         block = Block(
             index=1,
             previous_hash=bc.last_block.hash,
             transactions=[tx],
             difficulty=1,
             state_root=temp_state.state_root(),
+            receipt_root=calculate_receipt_root([receipt]),
+            receipts=[receipt],
         )
         mine_block(block, difficulty=1)
         bc.add_block(block)
@@ -87,6 +90,18 @@ class TestPersistence(unittest.TestCase):
         self.assertEqual(original_tx.amount, loaded_tx.amount)
         self.assertEqual(original_tx.nonce, loaded_tx.nonce)
         self.assertEqual(original_tx.signature, loaded_tx.signature)
+
+    def test_receipt_data_preserved(self):
+        bc, _, _ = self._chain_with_tx()
+        save(bc, path=self.tmpdir)
+        restored = load(path=self.tmpdir)
+        original_receipt = bc.chain[1].receipts[0]
+        loaded_receipt = restored.chain[1].receipts[0]
+        self.assertEqual(original_receipt.tx_hash, loaded_receipt.tx_hash)
+        self.assertEqual(original_receipt.status, loaded_receipt.status)
+        self.assertEqual(original_receipt.gas_used, loaded_receipt.gas_used)
+        self.assertEqual(original_receipt.error_message, loaded_receipt.error_message)
+        self.assertEqual(original_receipt.contract_address, loaded_receipt.contract_address)
 
     def test_genesis_only_chain(self):
         bc = Blockchain()
@@ -221,14 +236,17 @@ class TestPersistence(unittest.TestCase):
         tx2.sign(new_sk)
 
         temp_state = restored.state.copy()
-        temp_state.validate_and_apply(tx2)
+        receipt2 = temp_state.validate_and_apply(tx2)
 
+        from minichain.block import calculate_receipt_root
         block2 = Block(
             index=len(restored.chain),
             previous_hash=restored.last_block.hash,
             transactions=[tx2],
             difficulty=1,
             state_root=temp_state.state_root(),
+            receipt_root=calculate_receipt_root([receipt2]),
+            receipts=[receipt2],
         )
         mine_block(block2, difficulty=1)
 

@@ -114,7 +114,7 @@ class ContractMachine:
                 logger.error("Contract execution crashed without result")
                 return False
             if result["status"] != "success":
-                logger.error(f"Contract Execution Failed: {result.get('error')}")
+                logger.error("Contract Execution Failed: %s", result.get('error'))
                 return False
 
             # Validate storage is JSON serializable
@@ -155,7 +155,7 @@ class ContractMachine:
                         logger.warning("Rejected type() call.")
                         return False
                 if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id in {"getattr", "setattr", "delattr"}:
-                    logger.warning(f"Rejected direct call to {node.func.id}.")
+                    logger.warning("Rejected direct call to %s.", node.func.id)
                     return False
                 if isinstance(node, ast.Constant) and isinstance(node.value, str):
                     if "__" in node.value:

@@ -71,7 +71,7 @@ def test_tampered_amount_fails_verification(alice, bob):
 
     tx = Transaction(alice_pk, bob_pk, 10, nonce=0)
     tx.sign(alice_sk)
-    tx.amount = 9999  # tamper
+    object.__setattr__(tx, "amount", 9999)  # tamper
 
     assert not tx.verify(), "A transaction with a tampered amount must not verify."
 
@@ -85,7 +85,7 @@ def test_tampered_receiver_fails_verification(alice, bob):
     tx.sign(alice_sk)
 
     attacker_sk = SigningKey.generate()
-    tx.receiver = attacker_sk.verify_key.encode(encoder=HexEncoder).decode()  # tamper
+    object.__setattr__(tx, "receiver", attacker_sk.verify_key.encode(encoder=HexEncoder).decode())  # tamper
 
     assert not tx.verify(), "A transaction with a tampered receiver must not verify."
 
@@ -97,7 +97,7 @@ def test_tampered_nonce_fails_verification(alice, bob):
 
     tx = Transaction(alice_pk, bob_pk, 10, nonce=0)
     tx.sign(alice_sk)
-    tx.nonce = 99  # tamper
+    object.__setattr__(tx, "nonce", 99)  # tamper
 
     assert not tx.verify(), "A transaction with a tampered nonce must not verify."
 
@@ -124,7 +124,7 @@ def test_forged_sender_field_fails_verification(alice, bob):
 
     tx = Transaction(alice_pk, bob_pk, 10, nonce=0)
     tx.sign(alice_sk)
-    tx.sender = bob_pk  # forge sender
+    object.__setattr__(tx, "sender", bob_pk)  # forge sender
 
     assert not tx.verify(), "A transaction with a forged sender field must not verify."
 

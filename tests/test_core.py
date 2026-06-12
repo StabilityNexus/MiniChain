@@ -30,7 +30,7 @@ class TestCore(unittest.TestCase):
         self.assertTrue(tx.verify())
 
         # Tamper with amount
-        tx.amount = 100
+        object.__setattr__(tx, 'amount', 100)
         self.assertFalse(tx.verify())
 
     def test_state_transfer(self):
