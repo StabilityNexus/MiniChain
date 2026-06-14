@@ -67,6 +67,18 @@ class State:
         new_state.contract_machine = ContractMachine(new_state) # Reinitialize contract_machine
         return new_state
 
+    def snapshot(self):
+        """
+        Returns a deep copy of the current accounts dictionary for rollback safety.
+        """
+        return copy.deepcopy(self.accounts)
+
+    def restore(self, snapshot_data):
+        """
+        Restores the state's accounts dictionary from a snapshot.
+        """
+        self.accounts = copy.deepcopy(snapshot_data)
+
     def validate_and_apply(self, tx):
         """
         Validate and apply a transaction.

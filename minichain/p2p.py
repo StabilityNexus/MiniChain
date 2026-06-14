@@ -15,7 +15,7 @@ from .validators import is_valid_receiver
 logger = logging.getLogger(__name__)
 
 TOPIC = "minichain-global"
-SUPPORTED_MESSAGE_TYPES = {"sync", "tx", "block"}
+SUPPORTED_MESSAGE_TYPES = {"sync", "tx", "block", "chain_request", "chain_response"}
 
 
 class P2PNetwork:
@@ -228,6 +228,21 @@ class P2PNetwork:
             for tx_payload in payload["transactions"]
         )
 
+    def _validate_chain_request(self, payload):
+        if not isinstance(payload, dict):
+            return False
+        return True
+
+    def _validate_chain_response(self, payload):
+        if not isinstance(payload, dict) or "blocks" not in payload:
+            return False
+        if not isinstance(payload["blocks"], list):
+            return False
+        for block_payload in payload["blocks"]:
+            if not self._validate_block_payload(block_payload):
+                return False
+        return True
+
     def _validate_message(self, message):
         # FIX: Check if message is a dictionary first to prevent crashes
         if not isinstance(message, dict):
@@ -249,6 +264,8 @@ class P2PNetwork:
             "sync": self._validate_sync_payload,
             "tx": self._validate_transaction_payload,
             "block": self._validate_block_payload,
+            "chain_request": self._validate_chain_request,
+            "chain_response": self._validate_chain_response,
         }
         return validators[msg_type](payload)
 
@@ -384,6 +401,21 @@ class P2PNetwork:
 
         self._mark_seen("block", payload["data"])
         await self._broadcast_raw(payload)
+
+    async def broadcast_chain_request(self):
+        logger.info("Network: Broadcasting chain request")
+        payload = {"type": "chain_request", "data": {}}
+        await self._broadcast_raw(payload)
+
+    async def send_chain_response(self, blocks_dicts, writer):
+        logger.info("Network: Sending chain response with %d blocks", len(blocks_dicts))
+        payload = {"type": "chain_response", "data": {"blocks": blocks_dicts}}
+        line = (canonical_json_dumps(payload) + "\n").encode()
+        try:
+            writer.write(line)
+            await writer.drain()
+        except Exception as e:
+            logger.error("Network: Failed to send chain response: %s", e)
 
     @property
     def peer_count(self) -> int:

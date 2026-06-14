@@ -26,6 +26,7 @@ from nacl.signing import SigningKey
 from nacl.encoding import HexEncoder
 
 from minichain import Transaction, Blockchain, Block, State, Mempool, P2PNetwork, mine_block
+from minichain.rpc import JSONRPCServer
 from minichain.validators import is_valid_receiver
 from minichain.block import calculate_receipt_root
 
@@ -113,7 +114,7 @@ def mine_and_process_block(chain, mempool, miner_pk):
 # Network message handler
 # ──────────────────────────────────────────────
 
-def make_network_handler(chain, mempool):
+def make_network_handler(chain, mempool, network):
     """Return an async callback that processes incoming P2P messages."""
 
     async def handler(data):
@@ -159,7 +160,33 @@ def make_network_handler(chain, mempool):
                 # Drop only confirmed transactions so higher nonces can remain queued.
                 mempool.remove_transactions(block.transactions)
             else:
-                logger.warning("📥 Received Block #%s — rejected", block.index)
+                if block.index > chain.last_block.index:
+                    logger.warning("📥 Received Block #%s — ahead of us (tip: %s). Requesting chain sync...", block.index, chain.last_block.index)
+                    asyncio.create_task(network.broadcast_chain_request())
+                else:
+                    logger.warning("📥 Received Block #%s — rejected", block.index)
+
+        elif msg_type == "chain_request":
+            logger.info("📡 Peer requested chain sync. Broadcasting our chain...")
+            blocks_dicts = [b.to_dict() for b in chain.chain]
+            payload = {"type": "chain_response", "data": {"blocks": blocks_dicts}}
+            asyncio.create_task(network._broadcast_raw(payload))
+
+        elif msg_type == "chain_response":
+            blocks_payload = payload.get("blocks", [])
+            new_chain = []
+            try:
+                new_chain = [Block.from_dict(b) for b in blocks_payload]
+            except Exception as e:
+                logger.warning("❌ Failed to parse chain_response: %s", e)
+                return
+
+            if new_chain:
+                success, orphans = chain.resolve_conflicts(new_chain)
+                if success:
+                    logger.info("🔄 Reorg complete! Restoring %d orphaned txs to mempool.", len(orphans))
+                    for tx in orphans:
+                        mempool.add_transaction(tx)
 
     return handler
 
@@ -389,8 +416,10 @@ async def run_node(port: int, host: str, connect_to: str | None, fund: int, data
     mempool = Mempool()
     network = P2PNetwork()
 
-    handler = make_network_handler(chain, mempool)
+    handler = make_network_handler(chain, mempool, network)
     network.register_handler(handler)
+    
+    rpc_server = JSONRPCServer(chain, mempool, network)
 
     # When a new peer connects, send our state so they can sync
     async def on_peer_connected(writer):
@@ -406,6 +435,10 @@ async def run_node(port: int, host: str, connect_to: str | None, fund: int, data
     network.register_on_peer_connected(on_peer_connected)
 
     await network.start(port=port, host=host)
+    
+    # Start RPC server on a port correlated to the node port (e.g. 8545 if P2P is 9000)
+    rpc_port = 8545 + (port - 9000)
+    rpc_task = asyncio.create_task(rpc_server.start(host="127.0.0.1", port=rpc_port))
 
     # Fund this node's wallet so it can transact in the demo
     if fund > 0:
@@ -431,6 +464,9 @@ async def run_node(port: int, host: str, connect_to: str | None, fund: int, data
                 logger.info("Chain saved to '%s'", datadir)
             except Exception as e:
                 logger.error("Failed to save chain during shutdown: %s", e)
+        
+        if rpc_task:
+            rpc_task.cancel()
         await network.stop()
 
 
