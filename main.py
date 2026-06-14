@@ -26,6 +26,7 @@ from nacl.signing import SigningKey
 from nacl.encoding import HexEncoder
 
 from minichain import Transaction, Blockchain, Block, State, Mempool, P2PNetwork, mine_block
+from minichain.rpc import JSONRPCServer
 from minichain.validators import is_valid_receiver
 from minichain.block import calculate_receipt_root
 
@@ -417,6 +418,8 @@ async def run_node(port: int, host: str, connect_to: str | None, fund: int, data
 
     handler = make_network_handler(chain, mempool, network)
     network.register_handler(handler)
+    
+    rpc_server = JSONRPCServer(chain, mempool, network)
 
     # When a new peer connects, send our state so they can sync
     async def on_peer_connected(writer):
@@ -432,6 +435,10 @@ async def run_node(port: int, host: str, connect_to: str | None, fund: int, data
     network.register_on_peer_connected(on_peer_connected)
 
     await network.start(port=port, host=host)
+    
+    # Start RPC server on a port correlated to the node port (e.g. 8545 if P2P is 9000)
+    rpc_port = 8545 + (port - 9000)
+    rpc_task = asyncio.create_task(rpc_server.start(host="127.0.0.1", port=rpc_port))
 
     # Fund this node's wallet so it can transact in the demo
     if fund > 0:
@@ -457,6 +464,9 @@ async def run_node(port: int, host: str, connect_to: str | None, fund: int, data
                 logger.info("Chain saved to '%s'", datadir)
             except Exception as e:
                 logger.error("Failed to save chain during shutdown: %s", e)
+        
+        if rpc_task:
+            rpc_task.cancel()
         await network.stop()
 
 
