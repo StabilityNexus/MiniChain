@@ -89,6 +89,9 @@ class Blockchain:
             genesis_block.hash = computed_hash
             
         self.chain.append(genesis_block)
+        
+        # Snapshot the state exactly after genesis allocation for clean reorg rebuilds
+        self._genesis_state_snapshot = self.state.snapshot()
 
     @property
     def last_block(self):
@@ -97,6 +100,16 @@ class Blockchain:
         """
         with self._lock: # Acquire lock for thread-safe access
             return self.chain[-1]
+
+    def get_total_work(self, chain_list=None):
+        """
+        Calculates the cumulative PoW of a chain.
+        Work is proportional to 2^difficulty.
+        """
+        if chain_list is None:
+            with self._lock:
+                chain_list = self.chain
+        return sum(2 ** (block.difficulty or 1) for block in chain_list)
 
     def add_block(self, block):
         """
@@ -147,3 +160,77 @@ class Blockchain:
             self.state = temp_state
             self.chain.append(block)
             return True
+
+    def resolve_conflicts(self, new_chain_list) -> tuple[bool, list]:
+        """
+        Evaluates a competing chain. If it has strictly greater cumulative work,
+        attempts a reorg. Rebuilds state from genesis to guarantee validity.
+        Returns: (success_bool, list_of_orphaned_transactions)
+        """
+        if not new_chain_list:
+            return False, []
+
+        with self._lock:
+            current_work = self.get_total_work()
+            new_work = self.get_total_work(new_chain_list)
+
+            if new_work <= current_work:
+                logger.debug("Incoming chain (work: %s) is not heavier than local chain (work: %s). Rejecting.", new_work, current_work)
+                return False, []
+
+            # 1. Verify genesis block matches
+            if new_chain_list[0].hash != self.chain[0].hash:
+                logger.warning("Reorg failed: Genesis hash mismatch.")
+                return False, []
+
+            logger.info("Incoming chain is heavier (%s > %s). Attempting reorg...", new_work, current_work)
+
+            # 2. Snapshot current state and chain in case reorg fails validation
+            state_snapshot = self.state.snapshot()
+            original_chain = list(self.chain)
+
+            # 3. Rebuild state entirely from genesis using the new chain
+            temp_state = State()
+            temp_state.restore(self._genesis_state_snapshot)
+
+            # Verify and apply blocks 1 to N
+            for i in range(1, len(new_chain_list)):
+                prev_block = new_chain_list[i-1]
+                block = new_chain_list[i]
+
+                try:
+                    validate_block_link_and_hash(prev_block, block)
+                except ValueError as exc:
+                    logger.warning("Reorg failed at block %s: %s", block.index, exc)
+                    return False, []
+
+                receipts = []
+                for tx in block.transactions:
+                    receipt = temp_state.validate_and_apply(tx)
+                    if receipt is None:
+                        logger.warning("Reorg failed: Transaction validation failed in block %s", block.index)
+                        return False, []
+                    receipts.append(receipt)
+
+                total_fees = sum(getattr(r, 'gas_used', 0) for r in receipts)
+                if block.miner:
+                    temp_state.credit_mining_reward(block.miner, reward=temp_state.DEFAULT_MINING_REWARD + total_fees)
+
+                computed_receipt_root = calculate_receipt_root(receipts)
+                if block.receipt_root != computed_receipt_root:
+                    logger.warning("Reorg failed: Invalid receipt root at block %s. Expected %s, got %s", block.index, computed_receipt_root, block.receipt_root)
+                    return False, []
+
+                if block.state_root != temp_state.state_root():
+                    logger.warning("Reorg failed: Invalid state root at block %s", block.index)
+                    return False, []
+
+            # 4. Success! Compute orphaned transactions.
+            old_txs = {tx.tx_id: tx for b in original_chain[1:] for tx in b.transactions}
+            new_tx_ids = {tx.tx_id for b in new_chain_list[1:] for tx in b.transactions}
+            orphans = [tx for tx_id, tx in old_txs.items() if tx_id not in new_tx_ids]
+
+            self.chain = new_chain_list
+            self.state = temp_state
+            logger.info("Reorg successful! Switched to new chain tip: Block %s", self.last_block.index)
+            return True, orphans
