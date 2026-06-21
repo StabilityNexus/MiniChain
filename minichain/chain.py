@@ -34,6 +34,7 @@ class Blockchain:
     def __init__(self, genesis_path="genesis.json"):
         self.chain = []
         self.state = State()
+        self.chain_id = "minichain-default"
         self._lock = threading.RLock()
         self._create_genesis_block(genesis_path)
 
@@ -62,6 +63,9 @@ class Blockchain:
                 sys.exit(1)
             account = self.state.get_account(address)
             account['balance'] = balance
+
+        self.chain_id = config.get("chain_id", "minichain-default")
+        self.state.chain_id = self.chain_id
 
         timestamp = config.get("timestamp")
         difficulty = config.get("difficulty")
@@ -126,6 +130,7 @@ class Blockchain:
 
             # Validate transactions on a temporary state copy
             temp_state = self.state.copy()
+            temp_state.chain_id = self.chain_id
             receipts = []
 
             for tx in block.transactions:
@@ -191,6 +196,7 @@ class Blockchain:
 
             # 3. Rebuild state entirely from genesis using the new chain
             temp_state = State()
+            temp_state.chain_id = self.chain_id
             temp_state.restore(self._genesis_state_snapshot)
 
             # Verify and apply blocks 1 to N

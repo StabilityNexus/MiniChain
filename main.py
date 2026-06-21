@@ -122,33 +122,31 @@ def make_network_handler(chain, mempool, network):
         payload = data.get("data")
         peer_addr = data.get("_peer_addr", "unknown")
 
-        if msg_type == "sync":
-            peer_host = peer_addr.rsplit(":", 1)[0] if ":" in peer_addr else peer_addr
-            peer_host = peer_host.strip("[]")
-            is_trusted = peer_addr in TRUSTED_PEERS or peer_host in TRUSTED_PEERS
-            is_localhost = peer_host in LOCALHOST_PEERS
-            if chain.state.accounts and not (is_trusted or is_localhost):
-                logger.warning("🔒 Rejected sync from untrusted peer %s", peer_addr)
+        if msg_type == "hello":
+            peer_chain_id = payload.get("chain_id")
+            peer_gen_hash = payload.get("genesis_hash")
+            if peer_chain_id != chain.chain_id:
+                logger.warning("🔒 Disconnecting peer %s: chain_id mismatch (got %s, expected %s)", peer_addr, peer_chain_id, chain.chain_id)
+                asyncio.create_task(network.disconnect_peer(peer_addr))
+                return
+            if peer_gen_hash != chain.chain[0].hash:
+                logger.warning("🔒 Disconnecting peer %s: genesis hash mismatch", peer_addr)
+                asyncio.create_task(network.disconnect_peer(peer_addr))
                 return
 
-            # Merge remote state into local state (for accounts we don't have yet)
-            remote_accounts = payload.get("accounts") if isinstance(payload, dict) else None
-            if not isinstance(remote_accounts, dict):
-                logger.warning("🔒 Rejected sync from %s with invalid accounts payload", peer_addr)
-                return
-
-            for addr, acc in remote_accounts.items():
-                if not isinstance(acc, dict):
-                    logger.warning("🔒 Skipping malformed account %r from %s", addr, peer_addr)
-                    continue
-                if addr not in chain.state.accounts:
-                    chain.state.accounts[addr] = acc
-                    logger.info("🔄 Synced account %s... (balance=%d)", addr[:12], acc.get("balance", 0))
-            logger.info("🔄 Accepted state sync from %s — %d accounts", peer_addr, len(chain.state.accounts))
+            logger.info("🔄 Handshake successful with %s", peer_addr)
+            peer_tip = payload.get("latest_block_index", 0)
+            if peer_tip > chain.last_block.index:
+                logger.info("📡 Peer %s is ahead (%d > %d). Initiating chunked sync...", peer_addr, peer_tip, chain.last_block.index)
+                req = {"type": "chain_request", "data": {"start_index": chain.last_block.index + 1, "limit": 500}}
+                asyncio.create_task(network._broadcast_raw(req))
 
         elif msg_type == "tx":
             try:
                 tx = Transaction.from_dict(payload)
+                if getattr(tx, "chain_id", None) != chain.chain_id:
+                    logger.warning("Invalid chain_id in tx from %s", peer_addr)
+                    return
                 if mempool.add_transaction(tx):
                     logger.info("📥 Received tx from %s... (amount=%s)", tx.sender[:8], tx.amount)
             except Exception as e:
@@ -167,20 +165,36 @@ def make_network_handler(chain, mempool, network):
                 # Drop only confirmed transactions so higher nonces can remain queued.
                 mempool.remove_transactions(block.transactions)
             else:
-                if block.index > chain.last_block.index:
-                    logger.warning("📥 Received Block #%s — ahead of us (tip: %s). Requesting chain sync...", block.index, chain.last_block.index)
-                    asyncio.create_task(network.broadcast_chain_request())
+                if block.index > chain.last_block.index + 1:
+                    logger.warning("📥 Received Block #%s — ahead of us (tip: %s). Requesting chunked sync...", block.index, chain.last_block.index)
+                    req = {"type": "chain_request", "data": {"start_index": chain.last_block.index + 1, "limit": 500}}
+                    asyncio.create_task(network._broadcast_raw(req))
                 else:
-                    logger.warning("📥 Received Block #%s — rejected", block.index)
+                    logger.warning("📥 Received Block #%s — rejected. Fork detected, trigger reorg sync.", block.index)
+                    # For a fork, request the full chain to use resolve_conflicts
+                    req = {"type": "chain_request", "data": {"start_index": 0, "limit": 1000000}} # Request full chain for reorg
+                    asyncio.create_task(network._broadcast_raw(req))
 
         elif msg_type == "chain_request":
-            logger.info("📡 Peer requested chain sync. Broadcasting our chain...")
-            blocks_dicts = [b.to_dict() for b in chain.chain]
-            payload = {"type": "chain_response", "data": {"blocks": blocks_dicts}}
-            asyncio.create_task(network._broadcast_raw(payload))
+            start_index = payload.get("start_index", 0)
+            limit = payload.get("limit", 500)
+            logger.info("📡 Peer requested blocks from %d (limit %d).", start_index, limit)
+            
+            if start_index < len(chain.chain):
+                blocks_slice = chain.chain[start_index : start_index + limit]
+                blocks_dicts = [b.to_dict() for b in blocks_slice]
+            else:
+                blocks_dicts = []
+                
+            resp_payload = {"type": "chain_response", "data": {"blocks": blocks_dicts, "requested_limit": limit}}
+            asyncio.create_task(network._broadcast_raw(resp_payload))
 
         elif msg_type == "chain_response":
             blocks_payload = payload.get("blocks", [])
+            requested_limit = payload.get("requested_limit", 500)
+            if not blocks_payload:
+                return
+
             new_chain = []
             try:
                 new_chain = [Block.from_dict(b) for b in blocks_payload]
@@ -189,11 +203,36 @@ def make_network_handler(chain, mempool, network):
                 return
 
             if new_chain:
-                success, orphans = chain.resolve_conflicts(new_chain)
-                if success:
-                    logger.info("🔄 Reorg complete! Restoring %d orphaned txs to mempool.", len(orphans))
-                    for tx in orphans:
-                        mempool.add_transaction(tx)
+                # Distinguish between linear catch-up vs full reorg based on whether we received block 0
+                if new_chain[0].index == 0:
+                    # Fork / Reorg sync
+                    success, orphans = chain.resolve_conflicts(new_chain)
+                    if success:
+                        logger.info("🔄 Reorg complete! Restoring %d orphaned txs to mempool.", len(orphans))
+                        for tx in orphans:
+                            mempool.add_transaction(tx)
+                else:
+                    # Linear Catch-up
+                    all_added = True
+                    for block in new_chain:
+                        if block.index <= chain.last_block.index:
+                            continue # Ignore already known blocks
+                        if chain.add_block(block):
+                            logger.info("📥 Synced Block #%d", block.index)
+                            mempool.remove_transactions(block.transactions)
+                        else:
+                            logger.warning("❌ Sync failed at Block #%d. Fork detected. Requesting full chain.", block.index)
+                            req = {"type": "chain_request", "data": {"start_index": 0, "limit": 1000000}}
+                            asyncio.create_task(network._broadcast_raw(req))
+                            all_added = False
+                            break
+                            
+                    # If we added all blocks and we hit the limit, request next batch
+                    if all_added and len(new_chain) == requested_limit:
+                        next_index = chain.last_block.index + 1
+                        logger.info("📡 Requesting next batch from index %d", next_index)
+                        req = {"type": "chain_request", "data": {"start_index": next_index, "limit": requested_limit}}
+                        asyncio.create_task(network._broadcast_raw(req))
 
     return handler
 
@@ -269,7 +308,7 @@ async def cli_loop(sk, pk, chain, mempool, network):
                 continue
 
             nonce = chain.state.get_account(pk).get("nonce", 0)
-            tx = Transaction(sender=pk, receiver=receiver, amount=amount, nonce=nonce, fee=fee)
+            tx = Transaction(sender=pk, receiver=receiver, amount=amount, nonce=nonce, fee=fee, chain_id=chain.chain_id)
             tx.sign(sk)
 
             if mempool.add_transaction(tx):
@@ -303,7 +342,7 @@ async def cli_loop(sk, pk, chain, mempool, network):
                 continue
 
             nonce = chain.state.get_account(pk).get("nonce", 0)
-            tx = Transaction(sender=pk, receiver=None, amount=amount, nonce=nonce, fee=fee, data=code)
+            tx = Transaction(sender=pk, receiver=None, amount=amount, nonce=nonce, fee=fee, data=code, chain_id=chain.chain_id)
             tx.sign(sk)
 
             if mempool.add_transaction(tx):
@@ -335,7 +374,7 @@ async def cli_loop(sk, pk, chain, mempool, network):
                 continue
 
             nonce = chain.state.get_account(pk).get("nonce", 0)
-            tx = Transaction(sender=pk, receiver=receiver, amount=amount, nonce=nonce, fee=fee, data=payload)
+            tx = Transaction(sender=pk, receiver=receiver, amount=amount, nonce=nonce, fee=fee, data=payload, chain_id=chain.chain_id)
             tx.sign(sk)
 
             if mempool.add_transaction(tx):
@@ -423,16 +462,21 @@ async def run_node(port: int, host: str, connect_to: str | None, fund: int, data
     
     rpc_server = JSONRPCServer(chain, mempool, network)
 
-    # When a new peer connects, send our state so they can sync
+    # When a new peer connects, send our hello so they can handshake
     async def on_peer_connected(writer):
         import json as _json
         sync_msg = _json.dumps({
-            "type": "sync",
-            "data": {"accounts": chain.state.accounts}
+            "type": "hello",
+            "data": {
+                "chain_id": chain.chain_id,
+                "genesis_hash": chain.chain[0].hash,
+                "latest_block_index": chain.last_block.index,
+                "latest_block_hash": chain.last_block.hash
+            }
         }) + "\n"
         writer.write(sync_msg.encode())
         await writer.drain()
-        logger.info("🔄 Sent state sync to new peer")
+        logger.info("🔄 Sent hello handshake to new peer")
 
     network.register_on_peer_connected(on_peer_connected)
 

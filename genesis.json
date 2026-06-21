@@ -1,5 +1,5 @@
 {
-  "chain_id": "minichain_testnet_1",
+  "chain_id": "minichain-default",
   "timestamp": 1716880000000,
   "difficulty": 4,
   "alloc": {

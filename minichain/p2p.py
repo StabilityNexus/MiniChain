@@ -11,14 +11,14 @@ import trio
 import queue
 
 from libp2p import new_host
-from libp2p.typing import TProtocol
+TProtocol = str
 from libp2p.peer.peerinfo import info_from_p2p_addr
 from multiaddr import Multiaddr
 from .serialization import canonical_json_hash, canonical_json_dumps
 
 logger = logging.getLogger(__name__)
 
-SUPPORTED_MESSAGE_TYPES = {"sync", "tx", "block", "chain_request", "chain_response"}
+SUPPORTED_MESSAGE_TYPES = {"hello", "tx", "block", "chain_request", "chain_response"}
 PROTOCOL_ID = TProtocol("/minichain/1.0.0")
 
 class P2PNetwork:
@@ -87,6 +87,9 @@ class P2PNetwork:
 
     async def send_chain_response(self, blocks_dicts, peer_stream=None):
         await self._broadcast_raw({"type": "chain_response", "data": {"blocks": blocks_dicts}})
+
+    async def disconnect_peer(self, peer_addr):
+        self._to_trio.put(("DISCONNECT", peer_addr))
 
     @property
     def peer_count(self) -> int:
@@ -165,6 +168,13 @@ class P2PNetwork:
                             for s in list(streams):
                                 try: await s.write(msg)
                                 except Exception: pass
+                        elif cmd == "DISCONNECT":
+                            for s in list(streams):
+                                addr = f"peer:{s.muxed_conn.peer_id}"
+                                if addr == arg:
+                                    try: await s.reset()
+                                    except Exception: pass
+                                    if s in streams: streams.remove(s)
                 except Exception: pass
                 await trio.sleep(0.1)
 

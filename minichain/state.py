@@ -15,6 +15,7 @@ class State:
         # { address: {'balance': int, 'nonce': int, 'code': str|None, 'storage': dict} }
         self.accounts = {}
         self.contract_machine = ContractMachine(self)
+        self.chain_id = "minichain-default"
 
     def state_root(self) -> str:
         """
@@ -46,6 +47,10 @@ class State:
             logger.error("Error: Invalid signature for tx from %s...", tx.sender[:8])
             return False
 
+        if getattr(tx, "chain_id", None) != self.chain_id:
+            logger.error("Error: Invalid chain_id in tx from %s...", tx.sender[:8])
+            return False
+
         sender_acc = self.get_account(tx.sender)
 
         total_cost = tx.amount + getattr(tx, 'fee', 0)
@@ -65,6 +70,7 @@ class State:
         """
         new_state = copy.deepcopy(self)
         new_state.contract_machine = ContractMachine(new_state) # Reinitialize contract_machine
+        new_state.chain_id = self.chain_id
         return new_state
 
     def snapshot(self):
