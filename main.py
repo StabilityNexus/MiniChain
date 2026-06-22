@@ -187,7 +187,7 @@ def make_network_handler(chain, mempool, network):
                 blocks_dicts = []
                 
             resp_payload = {"type": "chain_response", "data": {"blocks": blocks_dicts, "requested_limit": limit}}
-            asyncio.create_task(network._broadcast_raw(resp_payload))
+            asyncio.create_task(network._unicast_raw(peer_addr, resp_payload))
 
         elif msg_type == "chain_response":
             blocks_payload = payload.get("blocks", [])
@@ -484,7 +484,7 @@ async def run_node(port: int, host: str, connect_to: str | None, fund: int, data
     
     # Start RPC server on a port correlated to the node port (e.g. 8545 if P2P is 9000)
     rpc_port = 8545 + (port - 9000)
-    rpc_task = asyncio.create_task(rpc_server.start(host="127.0.0.1", port=rpc_port))
+    await rpc_server.start(host="127.0.0.1", port=rpc_port)
 
     # Fund this node's wallet so it can transact in the demo
     if fund > 0:
@@ -507,8 +507,7 @@ async def run_node(port: int, host: str, connect_to: str | None, fund: int, data
             except Exception as e:
                 logger.error("Failed to save chain during shutdown: %s", e)
         
-        if rpc_task:
-            rpc_task.cancel()
+        await rpc_server.stop()
         await network.stop()
 
 

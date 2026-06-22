@@ -190,8 +190,7 @@ class Blockchain:
 
             logger.info("Incoming chain is heavier (%s > %s). Attempting reorg...", new_work, current_work)
 
-            # 2. Snapshot current state and chain in case reorg fails validation
-            state_snapshot = self.state.snapshot()
+            # 2. Snapshot current chain in case reorg fails validation
             original_chain = list(self.chain)
 
             # 3. Rebuild state entirely from genesis using the new chain

@@ -52,6 +52,12 @@ def _safe_exec_worker(code, globals_dict, context_dict, result_queue, gas_limit)
                 raise ValueError("Invalid transfer amount")
             if not isinstance(address, str):
                 raise ValueError("Invalid address type")
+            if not address or len(address) not in (40, 64):
+                raise ValueError("Invalid address format")
+            try:
+                int(address, 16)
+            except ValueError:
+                raise ValueError("Invalid address format")
             transfers.append({"to": address, "amount": amount})
             
         globals_dict["__builtins__"]["transfer_out"] = transfer_out

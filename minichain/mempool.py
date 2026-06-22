@@ -64,7 +64,7 @@ class Mempool:
 
     def get_transactions_for_block(self):
         with self._lock:
-            # O(1) retrieval! The list is strictly ordered upon insertion.
+            # O(k) retrieval, where k = transactions_per_block! The list is strictly ordered upon insertion.
             return list(self._list[:self.transactions_per_block])
 
     def remove_transactions(self, transactions):

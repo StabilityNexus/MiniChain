@@ -141,8 +141,23 @@ def test_unsigned_transaction_fails_verification(alice, bob):
 
 
 # ------------------------------------------------------------------
-# 4. Replay protection
+# 4. Replay protection and Cross-Chain protection
 # ------------------------------------------------------------------
+
+def test_wrong_chain_id_rejected(alice, bob, funded_state):
+    """A transaction with a chain_id differing from the state's chain_id must be rejected."""
+    alice_sk, alice_pk = alice
+    _, bob_pk = bob
+
+    tx = Transaction(alice_pk, bob_pk, 10, nonce=0, chain_id="wrong-chain")
+    tx.sign(alice_sk)
+
+    assert not funded_state.apply_transaction(tx), "Transaction for a different chain_id must be rejected."
+    # Ensure the rejected transaction did not mutate the ledger
+    assert funded_state.get_account(alice_pk)["balance"] == 100, \
+        "Alice's balance must remain unchanged after a cross-chain rejection."
+    assert funded_state.get_account(alice_pk)["nonce"] == 0, \
+        "Alice's nonce must remain unchanged after a cross-chain rejection."
 
 def test_replay_attack_same_nonce_rejected(alice, bob, funded_state):
     """Replaying the same transaction must be rejected the second time."""

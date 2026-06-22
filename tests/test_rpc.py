@@ -49,6 +49,19 @@ async def test_rpc_getBlockByNumber(rpc_server):
             assert data["id"] == 2
 
 @pytest.mark.anyio
+async def test_rpc_invalid_request_format(rpc_server):
+    server, port, chain, mempool = rpc_server
+    
+    async with aiohttp.ClientSession() as session:
+        payload = 1
+        async with session.post(f"http://127.0.0.1:{port}/", json=payload) as resp:
+            assert resp.status == 200
+            data = await resp.json()
+            assert "error" in data
+            assert data["error"]["code"] == -32600
+            assert data["id"] is None
+
+@pytest.mark.anyio
 async def test_rpc_invalid_method(rpc_server):
     server, port, chain, mempool = rpc_server
     

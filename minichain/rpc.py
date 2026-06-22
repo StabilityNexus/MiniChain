@@ -15,11 +15,17 @@ class JSONRPCServer:
         self.app.add_routes([web.post('/', self.handle_rpc)])
 
     async def start(self, host="127.0.0.1", port=8545):
-        runner = web.AppRunner(self.app)
-        await runner.setup()
-        site = web.TCPSite(runner, host, port)
-        await site.start()
+        self.runner = web.AppRunner(self.app)
+        await self.runner.setup()
+        self.site = web.TCPSite(self.runner, host, port)
+        await self.site.start()
         logger.info("🚀 JSON-RPC Server running on http://%s:%d", host, port)
+
+    async def stop(self):
+        if hasattr(self, 'site'):
+            await self.site.stop()
+        if hasattr(self, 'runner'):
+            await self.runner.cleanup()
 
     async def handle_rpc(self, request):
         try:
@@ -38,7 +44,7 @@ class JSONRPCServer:
 
     async def _process_single(self, req):
         if not isinstance(req, dict) or "method" not in req or req.get("jsonrpc") != "2.0":
-            return {"jsonrpc": "2.0", "error": {"code": -32600, "message": "Invalid Request"}, "id": req.get("id")}
+            return {"jsonrpc": "2.0", "error": {"code": -32600, "message": "Invalid Request"}, "id": req.get("id") if isinstance(req, dict) else None}
         
         method = req["method"]
         params = req.get("params", [])

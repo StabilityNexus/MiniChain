@@ -72,6 +72,9 @@ class P2PNetwork:
     async def _broadcast_raw(self, payload: dict):
         self._to_trio.put(("BROADCAST", payload))
 
+    async def _unicast_raw(self, target_addr: str, payload: dict):
+        self._to_trio.put(("UNICAST", (target_addr, payload)))
+
     async def broadcast_transaction(self, tx):
         payload = {"type": "tx", "data": tx.to_dict()}
         self._mark_seen("tx", payload["data"])
@@ -168,6 +171,14 @@ class P2PNetwork:
                             for s in list(streams):
                                 try: await s.write(msg)
                                 except Exception: pass
+                        elif cmd == "UNICAST":
+                            target_addr, payload = arg
+                            msg = (canonical_json_dumps(payload) + "\n").encode()
+                            for s in list(streams):
+                                addr = f"peer:{s.muxed_conn.peer_id}"
+                                if addr == target_addr:
+                                    try: await s.write(msg)
+                                    except Exception: pass
                         elif cmd == "DISCONNECT":
                             for s in list(streams):
                                 addr = f"peer:{s.muxed_conn.peer_id}"

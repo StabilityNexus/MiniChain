@@ -31,7 +31,7 @@ transfer_out(target, 25)
         self.assertEqual(receipt.status, 1)
         contract_addr = receipt.contract_address
 
-        # Sender sent 100 to contract, plus 10 fee
+        # Sender sent 100 to contract, plus 1000 fee
         self.assertEqual(self.state.get_account(contract_addr)['balance'], 100)
         self.assertEqual(self.state.get_account(self.target_pk)['balance'], 0)
 
