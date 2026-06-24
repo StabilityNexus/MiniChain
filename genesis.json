@@ -2,6 +2,8 @@
   "chain_id": "minichain-default",
   "timestamp": 1716880000000,
   "difficulty": 4,
+  "target_block_time": 10000,
+  "alpha": 0.1,
   "alloc": {
     "0000000000000000000000000000000000000001": {
       "balance": 1000000000
