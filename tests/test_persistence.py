@@ -5,6 +5,7 @@ import os
 import shutil
 import sqlite3
 import tempfile
+import time
 import unittest
 
 from nacl.encoding import HexEncoder
@@ -49,12 +50,13 @@ class TestPersistence(unittest.TestCase):
             index=1,
             previous_hash=bc.last_block.hash,
             transactions=[tx],
-            difficulty=1,
+            difficulty=bc.current_difficulty,
             state_root=temp_state.state_root(),
             receipt_root=calculate_receipt_root([receipt]),
             receipts=[receipt],
+            timestamp=int(time.time()),
         )
-        mine_block(block, difficulty=1)
+        mine_block(block)
         bc.add_block(block)
         return bc, alice_pk, bob_pk
 
@@ -243,12 +245,13 @@ class TestPersistence(unittest.TestCase):
             index=len(restored.chain),
             previous_hash=restored.last_block.hash,
             transactions=[tx2],
-            difficulty=1,
+            difficulty=restored.current_difficulty,
             state_root=temp_state.state_root(),
             receipt_root=calculate_receipt_root([receipt2]),
             receipts=[receipt2],
+            timestamp=int(time.time()),
         )
-        mine_block(block2, difficulty=1)
+        mine_block(block2)
 
         self.assertTrue(restored.add_block(block2))
         self.assertEqual(len(restored.chain), len(bc.chain) + 1)
