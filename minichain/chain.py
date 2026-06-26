@@ -125,17 +125,18 @@ class Blockchain:
         Validates and adds a block to the chain if all transactions succeed.
         Uses a copied State to ensure atomic validation.
         """
+        from .validators import ValidationStatus
 
         with self._lock:
             try:
                 validate_block_link_and_hash(self.last_block, block)
             except ValueError as exc:
                 logger.warning("Block %s rejected: %s", block.index, exc)
-                return False
+                return ValidationStatus.INVALID if "hash" in str(exc) else ValidationStatus.FAILED
 
             if block.difficulty != self.current_difficulty:
                 logger.warning("Block %s rejected: Invalid difficulty. Expected %s, got %s", block.index, self.current_difficulty, block.difficulty)
-                return False
+                return ValidationStatus.INVALID
 
             # Validate transactions on a temporary state copy
             temp_state = self.state.copy()
@@ -143,12 +144,12 @@ class Blockchain:
             receipts = []
 
             for tx in block.transactions:
-                receipt = temp_state.validate_and_apply(tx)
+                status, receipt = temp_state.validate_and_apply_with_status(tx)
 
-                # Reject block if any transaction fails mathematical validation (None)
-                if receipt is None:
+                # Reject block if any transaction fails mathematical validation
+                if status != ValidationStatus.VALID:
                     logger.warning("Block %s rejected: Transaction failed validation", block.index)
-                    return False
+                    return status
                     
                 receipts.append(receipt)
 
@@ -159,16 +160,16 @@ class Blockchain:
             computed_receipt_root = calculate_receipt_root(receipts)
             if block.receipt_root != computed_receipt_root:
                 logger.warning("Block %s rejected: Invalid receipt root. Expected %s, got %s", block.index, computed_receipt_root, block.receipt_root)
-                return False
+                return ValidationStatus.INVALID
 
             if [r.to_dict() for r in block.receipts] != [r.to_dict() for r in receipts]:
                 logger.warning("Block %s rejected: Receipts payload mismatch", block.index)
-                return False
+                return ValidationStatus.INVALID
 
             # Verify state root
             if block.state_root != temp_state.state_root():
                 logger.warning("Block %s rejected: Invalid state root. Expected %s, got %s", block.index, temp_state.state_root(), block.state_root)
-                return False
+                return ValidationStatus.INVALID
 
             # Update EMA difficulty state
             time_diff = block.timestamp - self.last_block.timestamp
@@ -182,7 +183,7 @@ class Blockchain:
             # All transactions valid → commit state and append block
             self.state = temp_state
             self.chain.append(block)
-            return True
+            return ValidationStatus.VALID
 
     def resolve_conflicts(self, new_chain_list) -> tuple[bool, list]:
         """
@@ -236,8 +237,9 @@ class Blockchain:
 
                 receipts = []
                 for tx in block.transactions:
-                    receipt = temp_state.validate_and_apply(tx)
-                    if receipt is None:
+                    from .validators import ValidationStatus
+                    status, receipt = temp_state.validate_and_apply_with_status(tx)
+                    if status != ValidationStatus.VALID:
                         logger.warning("Reorg failed: Transaction validation failed in block %s", block.index)
                         return False, []
                     receipts.append(receipt)
