@@ -244,20 +244,57 @@ def make_network_handler(chain, mempool, network):
 # Interactive CLI
 # ──────────────────────────────────────────────
 
-HELP_TEXT = """
-╔════════════════════════════════════════════════╗
-║              MiniChain Commands                ║
-╠════════════════════════════════════════════════╣
-║  balance              - show all balances      ║
-║  send <to> <amount>   - send coins             ║
-║  mine                 - mine a block           ║
-║  peers                - show connected peers   ║
-║  connect <host>:<port> - connect to a peer     ║
-║  address              - show your public key   ║
-║  chain                - show chain summary     ║
-║  help                 - show this help         ║
-║  quit                 - shut down              ║
-╚════════════════════════════════════════════════╝
+C_CYAN = '\033[96m'
+C_BLUE = '\033[94m'
+C_YELLOW = '\033[38;2;255;205;0m' # Golden Wallet (#FFCD00)
+C_GREEN = '\033[38;2;0;132;61m'    # Baggy Green (#00843D)
+C_RED = '\033[91m'
+C_RESET = '\033[0m'
+C_BOLD = '\033[1m'
+
+def gradient_text(text: str, c1: tuple[int, int, int], c2: tuple[int, int, int]) -> str:
+    """Applies a smooth horizontal color gradient to text."""
+    lines = text.strip('\n').split('\n')
+    out = []
+    max_len = max(len(line) for line in lines) if lines else 1
+    
+    for line in lines:
+        line_out = ""
+        for i, char in enumerate(line):
+            t = i / max(1, max_len - 1)
+            r = int(c1[0] + (c2[0] - c1[0]) * t)
+            g = int(c1[1] + (c2[1] - c1[1]) * t)
+            b = int(c1[2] + (c2[2] - c1[2]) * t)
+            line_out += f"\033[38;2;{r};{g};{b}m{char}"
+        out.append(line_out + C_RESET)
+    return "\n".join(out)
+
+RAW_LOGO = r"""
+███╗   ███╗██╗███╗   ██╗██╗ ██████╗██╗  ██╗ █████╗ ██╗███╗   ██╗
+████╗ ████║██║████╗  ██║██║██╔════╝██║  ██║██╔══██╗██║████╗  ██║
+██╔████╔██║██║██╔██╗ ██║██║██║     ███████║███████║██║██╔██╗ ██║
+██║╚██╔╝██║██║██║╚██╗██║██║██║     ██╔══██║██╔══██║██║██║╚██╗██║
+██║ ╚═╝ ██║██║██║ ╚████║██║╚██████╗██║  ██║██║  ██║██║██║ ╚████║
+╚═╝     ╚═╝╚═╝╚═╝  ╚═══╝╚═╝ ╚═════╝╚═╝  ╚═╝╚═╝  ╚═╝╚═╝╚═╝  ╚═══╝
+"""
+
+ASCII_LOGO = gradient_text(RAW_LOGO, (255, 205, 0), (0, 132, 61))
+
+HELP_TEXT = f"""
+{C_BOLD}{ASCII_LOGO}{C_RESET}
+{C_CYAN}╔══════════════════════════════════════════════════════════╗{C_RESET}
+{C_CYAN}║{C_RESET}  {C_GREEN}balance{C_RESET}                 - show all balances             {C_CYAN}║{C_RESET}
+{C_CYAN}║{C_RESET}  {C_GREEN}send <to> <amount>{C_RESET}      - send coins                    {C_CYAN}║{C_RESET}
+{C_CYAN}║{C_RESET}  {C_GREEN}deploy <file>{C_RESET}           - deploy a contract             {C_CYAN}║{C_RESET}
+{C_CYAN}║{C_RESET}  {C_GREEN}call <addr> <data>{C_RESET}      - call a contract               {C_CYAN}║{C_RESET}
+{C_CYAN}║{C_RESET}  {C_GREEN}mine{C_RESET}                    - mine a block                  {C_CYAN}║{C_RESET}
+{C_CYAN}║{C_RESET}  {C_GREEN}peers{C_RESET}                   - show connected peers          {C_CYAN}║{C_RESET}
+{C_CYAN}║{C_RESET}  {C_GREEN}connect <multiaddr>{C_RESET}     - connect to a peer             {C_CYAN}║{C_RESET}
+{C_CYAN}║{C_RESET}  {C_GREEN}address{C_RESET}                 - show your public key          {C_CYAN}║{C_RESET}
+{C_CYAN}║{C_RESET}  {C_GREEN}chain{C_RESET}                   - show chain summary            {C_CYAN}║{C_RESET}
+{C_CYAN}║{C_RESET}  {C_GREEN}help{C_RESET}                    - show this help                {C_CYAN}║{C_RESET}
+{C_CYAN}║{C_RESET}  {C_GREEN}quit{C_RESET}                    - shut down                     {C_CYAN}║{C_RESET}
+{C_CYAN}╚══════════════════════════════════════════════════════════╝{C_RESET}
 """
 
 
@@ -265,11 +302,11 @@ async def cli_loop(sk, pk, chain, mempool, network):
     """Read commands from stdin asynchronously."""
     loop = asyncio.get_event_loop()
     print(HELP_TEXT)
-    print(f"Your address: {pk}\n")
+    print(f"  {C_YELLOW}Your address:{C_RESET} {C_BOLD}{pk}{C_RESET}\n")
 
     while True:
         try:
-            raw = await loop.run_in_executor(None, lambda: input("minichain> "))
+            raw = await loop.run_in_executor(None, lambda: input(f"{C_CYAN}minichain>{C_RESET} "))
         except (EOFError, KeyboardInterrupt):
             break
 
@@ -284,9 +321,9 @@ async def cli_loop(sk, pk, chain, mempool, network):
             if not accounts:
                 print("  (no accounts yet)")
             for addr, acc in accounts.items():
-                tag = " (you)" if addr == pk else ""
-                contract_tag = " [Contract]" if acc.get("code") else ""
-                print(f"  {addr[:12]}...  balance={acc['balance']}  nonce={acc['nonce']}{tag}{contract_tag}")
+                tag = f" {C_GREEN}(you){C_RESET}" if addr == pk else ""
+                contract_tag = f" {C_CYAN}[Contract]{C_RESET}" if acc.get("code") else ""
+                print(f"  {C_BOLD}{addr[:12]}...{C_RESET}  balance={C_YELLOW}{acc['balance']}{C_RESET}  nonce={acc['nonce']}{tag}{contract_tag}")
 
         # ── send ──
         elif cmd == "send":
@@ -316,9 +353,9 @@ async def cli_loop(sk, pk, chain, mempool, network):
 
             if mempool.add_transaction(tx):
                 await network.broadcast_transaction(tx)
-                print(f"  ✅ Tx sent: {amount} coins → {receiver[:12]}...")
+                print(f"  {C_GREEN}✅ Tx sent:{C_RESET} {amount} coins → {receiver[:12]}...")
             else:
-                print("  ❌ Transaction rejected (invalid sig, duplicate, or mempool full).")
+                print(f"  {C_RED}❌ Transaction rejected{C_RESET} (invalid sig, duplicate, or mempool full).")
 
         # ── deploy ──
         elif cmd == "deploy":
