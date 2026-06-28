@@ -117,6 +117,7 @@ def mine_and_process_block(chain, mempool, miner_pk):
 
 def make_network_handler(chain, mempool, network):
     """Return an async callback that processes incoming P2P messages."""
+    from minichain.validators import ValidationStatus
 
     async def handler(data):
         msg_type = data.get("type")
@@ -148,24 +149,30 @@ def make_network_handler(chain, mempool, network):
         elif msg_type == "tx":
             try:
                 tx = Transaction.from_dict(payload)
-                if getattr(tx, "chain_id", None) != chain.chain_id:
-                    logger.warning("Invalid chain_id in tx from %s", peer_addr)
-                    return
-                if mempool.add_transaction(tx):
-                    logger.info("📥 Received tx from %s... (amount=%s)", tx.sender[:8], tx.amount)
             except Exception as e:
                 logger.warning("Invalid tx payload from %s: %s", peer_addr, e)
+                return ValidationStatus.MALFORMED
+
+            if getattr(tx, "chain_id", None) != chain.chain_id:
+                logger.warning("Invalid chain_id in tx from %s", peer_addr)
+                return ValidationStatus.INVALID
+
+            if mempool.add_transaction(tx):
+                logger.info("📥 Received tx from %s... (amount=%s)", tx.sender[:8], tx.amount)
+                return ValidationStatus.VALID
+            else:
+                return ValidationStatus.FAILED
 
         elif msg_type == "block":
             try:
                 block = Block.from_dict(payload)
             except Exception as e:
                 logger.warning("Invalid block payload from %s: %s", peer_addr, e)
-                return
+                return ValidationStatus.MALFORMED
 
-            if chain.add_block(block):
+            status = chain.add_block(block)
+            if status == ValidationStatus.VALID:
                 logger.info("📥 Received Block #%d — added to chain", block.index)
-
                 # Drop only confirmed transactions so higher nonces can remain queued.
                 mempool.remove_transactions(block.transactions)
             else:
@@ -178,6 +185,7 @@ def make_network_handler(chain, mempool, network):
                     # For a fork, request the full chain to use resolve_conflicts
                     req = {"type": "chain_request", "data": {"start_index": 0, "limit": 1000000}} # Request full chain for reorg
                     asyncio.create_task(network._broadcast_raw(req))
+            return status
 
         elif msg_type == "chain_request":
             start_index = payload.get("start_index", 0)
