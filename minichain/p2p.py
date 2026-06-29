@@ -61,6 +61,15 @@ class P2PNetwork:
         # { peer_id_str -> {"malformed": int, "failed": int, "invalid": int} }
         self._peer_counters: dict = {}
 
+        if self.decay_interval_minutes <= 0:
+            raise ValueError(f"decay_interval_minutes must be positive, got {self.decay_interval_minutes}")
+        if self.malformed_threshold <= 0:
+            raise ValueError(f"malformed_threshold must be positive, got {self.malformed_threshold}")
+        if self.failed_threshold <= 0:
+            raise ValueError(f"failed_threshold must be positive, got {self.failed_threshold}")
+        if self.invalid_threshold <= 0:
+            raise ValueError(f"invalid_threshold must be positive, got {self.invalid_threshold}")
+
     def register_handler(self, handler_callback):
         self._handler_callback = handler_callback
 
@@ -214,9 +223,15 @@ class P2PNetwork:
                     peer_addr[len("peer:"):] if peer_addr.startswith("peer:") else peer_addr
                 )
 
-                if msg_type not in SUPPORTED_MESSAGE_TYPES or self._is_duplicate(msg_type, payload):
+                if msg_type not in SUPPORTED_MESSAGE_TYPES:
                     continue
-                self._mark_seen(msg_type, payload)
+                try:
+                    if self._is_duplicate(msg_type, payload):
+                        continue
+                    self._mark_seen(msg_type, payload)
+                except Exception:
+                    await self._handle_validation_status(peer_id, peer_addr, ValidationStatus.MALFORMED)
+                    continue
 
                 status = None
                 if self._handler_callback:
@@ -277,12 +292,15 @@ class P2PNetwork:
             self._to_asyncio.put(("PEER_CONNECTED", None))
 
             try:
+                buffer = b""
                 while True:
                     data = await stream.read(4096)
                     if not data:
                         break
-                    for line in data.split(b"\n"):
-                        if not line:
+                    buffer += data
+                    *lines, buffer = buffer.split(b"\n")
+                    for line in lines:
+                        if not line.strip():
                             continue
                         try:
                             parsed = json.loads(line.decode().strip())
