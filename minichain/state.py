@@ -123,6 +123,11 @@ class State:
         Validates and applies a transaction.
         Returns: Receipt object if valid, None if invalid.
         """
+        if not isinstance(tx.amount, int) or tx.amount < 0:
+            return None
+        fee = getattr(tx, "fee", 0)
+        if not isinstance(fee, int) or fee < 0:
+            return None
         from .validators import ValidationStatus
         if self.verify_transaction_logic(tx) != ValidationStatus.VALID:
             return None

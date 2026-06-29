@@ -27,7 +27,7 @@ from nacl.encoding import HexEncoder
 
 from minichain import Transaction, Blockchain, Block, State, Mempool, P2PNetwork, mine_block
 from minichain.rpc import JSONRPCServer
-from minichain.validators import is_valid_receiver
+from minichain.validators import is_valid_receiver, ValidationStatus
 from minichain.block import calculate_receipt_root
 
 
@@ -97,7 +97,7 @@ def mine_and_process_block(chain, mempool, miner_pk):
 
     mined_block = mine_block(block)
 
-    if chain.add_block(mined_block):
+    if chain.add_block(mined_block) == ValidationStatus.VALID:
         logger.info("✅ Block #%d mined and added (%d txs)", mined_block.index, len(mineable_txs))
         mempool.remove_transactions(mineable_txs)
         return mined_block
