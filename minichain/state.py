@@ -95,7 +95,14 @@ class State:
         # Semantic validation: amount must be an integer and non-negative
         if not isinstance(tx.amount, int) or tx.amount < 0:
             return None
-        # Further checks can be added here
+        
+        
+        fee = getattr(tx, 'fee', 0)
+        if not isinstance(fee, int) or fee < 0:
+            return None
+        
+        if not isinstance(tx.nonce, int) or tx.nonce < 0:
+            return None
         return self.apply_transaction(tx)
 
     def apply_transaction(self, tx):
@@ -217,4 +224,4 @@ class State:
     def credit_mining_reward(self, miner_address, reward=None):
         reward = reward if reward is not None else self.DEFAULT_MINING_REWARD
         account = self.get_account(miner_address)
-        account['balance'] += reward
+        account['balance'] += reward 
