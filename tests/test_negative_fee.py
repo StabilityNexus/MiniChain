@@ -110,6 +110,27 @@ class TestNegativeFeePrevention(unittest.TestCase):
         receipt = self.state.validate_and_apply(tx)
         self.assertIsNone(receipt, "Negative nonce should be rejected")
 
+    def test_bool_fee_is_rejected(self):
+        """bool is a subclass of int in Python; True/False must not pass as fee."""
+        for bad_fee in [True, False]:
+            with self.subTest(fee=bad_fee):
+                tx = self._make_tx(amount=0, fee=bad_fee)
+                receipt = self.state.validate_and_apply(tx)
+                self.assertIsNone(receipt, f"bool fee {bad_fee} should be rejected")
+
+    def test_apply_transaction_directly_rejects_negative_fee(self):
+        """Even when validate_and_apply is bypassed, apply_transaction's
+        underlying verify_transaction_logic must reject negative fees."""
+        initial_balance = self.state.get_account(self.alice_pk)["balance"]
+        tx = self._make_tx(amount=0, fee=-1000)
+        receipt = self.state.apply_transaction(tx)
+        self.assertIsNone(receipt, "apply_transaction must reject negative fee directly")
+        self.assertEqual(
+            self.state.get_account(self.alice_pk)["balance"],
+            initial_balance,
+            "Balance must not inflate when apply_transaction is called directly",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

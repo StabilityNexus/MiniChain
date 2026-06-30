@@ -42,6 +42,14 @@ class State:
             }
         return self.accounts[address]
 
+    def _validate_fee(self, fee):
+        """
+        Shared fee validation used by both verify_transaction_logic and
+        validate_and_apply, so the rule lives in exactly one place.
+        Uses exact type check to reject bool (since bool is a subclass of int).
+        """
+        return type(fee) is int and fee >= 0
+
     def verify_transaction_logic(self, tx):
         if not tx.verify():
             logger.error("Error: Invalid signature for tx from %s...", tx.sender[:8])
@@ -51,9 +59,14 @@ class State:
             logger.error("Error: Invalid chain_id in tx from %s...", tx.sender[:8])
             return False
 
+        fee = getattr(tx, 'fee', 0)
+        if not self._validate_fee(fee):
+            logger.error("Error: Invalid fee in tx from %s...", tx.sender[:8])
+            return False
+
         sender_acc = self.get_account(tx.sender)
 
-        total_cost = tx.amount + getattr(tx, 'fee', 0)
+        total_cost = tx.amount + fee
         if sender_acc['balance'] < total_cost:
             logger.warning("Invalid tx %s: insufficient balance", tx.tx_id)
             return False
@@ -93,16 +106,16 @@ class State:
         semantic validation entry points.
         """
         # Semantic validation: amount must be an integer and non-negative
-        if not isinstance(tx.amount, int) or tx.amount < 0:
+        if type(tx.amount) is not int or tx.amount < 0:
             return None
-        
-        
+
         fee = getattr(tx, 'fee', 0)
-        if not isinstance(fee, int) or fee < 0:
+        if not self._validate_fee(fee):
             return None
-        
-        if not isinstance(tx.nonce, int) or tx.nonce < 0:
+
+        if type(tx.nonce) is not int or tx.nonce < 0:
             return None
+
         return self.apply_transaction(tx)
 
     def apply_transaction(self, tx):
@@ -116,7 +129,7 @@ class State:
         sender = self.accounts[tx.sender]
 
         total_cost = tx.amount + getattr(tx, 'fee', 0)
-        
+
         # Deduct funds and increment nonce
         sender['balance'] -= total_cost
         sender['nonce'] += 1
@@ -181,7 +194,7 @@ class State:
 
             # Execution & transfers valid: commit state changes atomically
             self.update_contract_storage(tx.receiver, result["storage"])
-            
+
             receiver['balance'] -= total_transferred_out
             for t in transfers:
                 target_acc = self.get_account(t["to"])
@@ -224,4 +237,4 @@ class State:
     def credit_mining_reward(self, miner_address, reward=None):
         reward = reward if reward is not None else self.DEFAULT_MINING_REWARD
         account = self.get_account(miner_address)
-        account['balance'] += reward 
+        account['balance'] += reward
