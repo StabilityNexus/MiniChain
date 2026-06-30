@@ -7,6 +7,7 @@ import asyncio
 import json
 import logging
 import threading
+import time
 import trio
 import queue
 
@@ -15,16 +16,33 @@ TProtocol = str
 from libp2p.peer.peerinfo import info_from_p2p_addr
 from multiaddr import Multiaddr
 from .serialization import canonical_json_hash, canonical_json_dumps
+from .validators import ValidationStatus
+from .persistence import ban_peer, is_peer_banned
 
 logger = logging.getLogger(__name__)
 
 SUPPORTED_MESSAGE_TYPES = {"hello", "tx", "block", "chain_request", "chain_response"}
 PROTOCOL_ID = TProtocol("/minichain/1.0.0")
 
+# Misbehavior thresholds — all four are overridable per P2PNetwork instance.
+MALFORMED_THRESHOLD = 15     # N: accumulated malformed messages before ban
+FAILED_THRESHOLD = 15        # M: accumulated failed messages before ban
+INVALID_THRESHOLD = 1        # L: accumulated invalid messages before ban (1 = immediate)
+DECAY_INTERVAL_MINUTES = 10  # T: counter half-life period in minutes
+
+
 class P2PNetwork:
     """Lightweight peer-to-peer networking using libp2p."""
 
-    def __init__(self, handler_callback=None):
+    def __init__(
+        self,
+        handler_callback=None,
+        data_path: str = ".",
+        malformed_threshold: int = MALFORMED_THRESHOLD,
+        failed_threshold: int = FAILED_THRESHOLD,
+        invalid_threshold: int = INVALID_THRESHOLD,
+        decay_interval_minutes: float = DECAY_INTERVAL_MINUTES,
+    ):
         self._handler_callback = handler_callback
         self._on_peer_connected = None
         self._seen_tx_ids = set()
@@ -33,6 +51,24 @@ class P2PNetwork:
         self._to_asyncio = queue.Queue()
         self._peer_count = 0
         self._peer_count_lock = threading.Lock()
+
+        # Misbehavior tracking
+        self.data_path = data_path
+        self.malformed_threshold = malformed_threshold
+        self.failed_threshold = failed_threshold
+        self.invalid_threshold = invalid_threshold
+        self.decay_interval_minutes = decay_interval_minutes
+        # { peer_id_str -> {"malformed": int, "failed": int, "invalid": int} }
+        self._peer_counters: dict = {}
+
+        if self.decay_interval_minutes <= 0:
+            raise ValueError(f"decay_interval_minutes must be positive, got {self.decay_interval_minutes}")
+        if self.malformed_threshold <= 0:
+            raise ValueError(f"malformed_threshold must be positive, got {self.malformed_threshold}")
+        if self.failed_threshold <= 0:
+            raise ValueError(f"failed_threshold must be positive, got {self.failed_threshold}")
+        if self.invalid_threshold <= 0:
+            raise ValueError(f"invalid_threshold must be positive, got {self.invalid_threshold}")
 
     def register_handler(self, handler_callback):
         self._handler_callback = handler_callback
@@ -44,9 +80,10 @@ class P2PNetwork:
         self.port = port
         self.host_addr = host
         self.loop = asyncio.get_running_loop()
-        
+
         threading.Thread(target=trio.run, args=(self._trio_main,), daemon=True).start()
         asyncio.create_task(self._asyncio_reader())
+        asyncio.create_task(self._decay_counters())
         logger.info(f"Network: Starting libp2p on port {port}")
 
     async def stop(self):
@@ -101,17 +138,117 @@ class P2PNetwork:
         with self._peer_count_lock:
             return self._peer_count
 
+    # ── misbehavior helpers ──────────────────────────────────────────────────
+
+    def _increment_counter(self, peer_id: str, category: str) -> bool:
+        """
+        Increment the named counter (malformed/failed/invalid) for peer_id.
+        Returns True if any counter now meets or exceeds its threshold.
+        Called only from the asyncio thread — no lock needed.
+        """
+        if peer_id not in self._peer_counters:
+            self._peer_counters[peer_id] = {"malformed": 0, "failed": 0, "invalid": 0}
+        self._peer_counters[peer_id][category] += 1
+        counts = self._peer_counters[peer_id]
+        return (
+            counts["malformed"] >= self.malformed_threshold
+            or counts["failed"] >= self.failed_threshold
+            or counts["invalid"] >= self.invalid_threshold
+        )
+
+    async def _handle_validation_status(
+        self, peer_id: str, peer_addr: str, status: ValidationStatus
+    ):
+        """
+        Apply misbehavior policy for a single ValidationStatus event:
+          MALFORMED → always disconnect; ban if counter >= N
+          FAILED    → drop silently; ban + disconnect if counter >= M
+          INVALID   → always ban + disconnect (L=1 means first occurrence triggers)
+        """
+        if status == ValidationStatus.MALFORMED:
+            await self.disconnect_peer(peer_addr)
+            if self._increment_counter(peer_id, "malformed"):
+                ban_peer(peer_id, reason="malformed_threshold_exceeded", path=self.data_path)
+                logger.warning(
+                    "Banned peer %s: malformed message threshold (%d) exceeded",
+                    peer_id, self.malformed_threshold,
+                )
+
+        elif status == ValidationStatus.FAILED:
+            if self._increment_counter(peer_id, "failed"):
+                ban_peer(peer_id, reason="failed_threshold_exceeded", path=self.data_path)
+                await self.disconnect_peer(peer_addr)
+                logger.warning(
+                    "Banned and disconnected peer %s: failed message threshold (%d) exceeded",
+                    peer_id, self.failed_threshold,
+                )
+
+        elif status == ValidationStatus.INVALID:
+            if self._increment_counter(peer_id, "invalid"):
+                ban_peer(peer_id, reason="invalid_threshold_exceeded", path=self.data_path)
+                await self.disconnect_peer(peer_addr)
+                logger.warning(
+                    "Banned and disconnected peer %s: invalid message threshold (%d) exceeded",
+                    peer_id, self.invalid_threshold,
+                )
+
+    async def _decay_counters(self):
+        """
+        Half-life decay: every decay_interval_minutes minutes divide all per-peer
+        counters by 2 (integer floor division).  Runs for the lifetime of the node.
+        """
+        interval_seconds = self.decay_interval_minutes * 60
+        while True:
+            await asyncio.sleep(interval_seconds)
+            for counts in self._peer_counters.values():
+                counts["malformed"] //= 2
+                counts["failed"] //= 2
+                counts["invalid"] //= 2
+
+    # ── asyncio reader ───────────────────────────────────────────────────────
+
     async def _asyncio_reader(self):
         while True:
-            try: msg = await self.loop.run_in_executor(None, self._to_asyncio.get)
-            except Exception: continue
-            
+            try:
+                msg = await self.loop.run_in_executor(None, self._to_asyncio.get)
+            except Exception:
+                continue
+
             if msg[0] == "MSG":
                 data = msg[1]
-                msg_type, payload = data.get("type"), data.get("data")
-                if msg_type not in SUPPORTED_MESSAGE_TYPES or self._is_duplicate(msg_type, payload): continue
-                self._mark_seen(msg_type, payload)
-                if self._handler_callback: await self._handler_callback(data)
+                msg_type = data.get("type")
+                payload = data.get("data")
+                peer_addr = data.get("_peer_addr", "")
+                peer_id = (
+                    peer_addr[len("peer:"):] if peer_addr.startswith("peer:") else peer_addr
+                )
+
+                if msg_type not in SUPPORTED_MESSAGE_TYPES:
+                    continue
+                try:
+                    if self._is_duplicate(msg_type, payload):
+                        continue
+                    self._mark_seen(msg_type, payload)
+                except Exception:
+                    await self._handle_validation_status(peer_id, peer_addr, ValidationStatus.MALFORMED)
+                    continue
+
+                status = None
+                if self._handler_callback:
+                    status = await self._handler_callback(data)
+
+                # Only apply interception for content-bearing message types.
+                if msg_type in ("tx", "block") and status is not None:
+                    await self._handle_validation_status(peer_id, peer_addr, status)
+
+            elif msg[0] == "MALFORMED":
+                # JSON parse failure signalled from the Trio thread.
+                peer_addr = msg[1]
+                peer_id = (
+                    peer_addr[len("peer:"):] if peer_addr.startswith("peer:") else peer_addr
+                )
+                await self._handle_validation_status(peer_id, peer_addr, ValidationStatus.MALFORMED)
+
             elif msg[0] == "PEER_CONNECTED":
                 class MockWriter:
                     def write(self, data): self.data = data
@@ -119,44 +256,67 @@ class P2PNetwork:
                 if self._on_peer_connected:
                     writer = MockWriter()
                     await self._on_peer_connected(writer)
-                    if hasattr(writer, 'data'):
+                    if hasattr(writer, "data"):
                         try:
                             req = json.loads(writer.data.decode().strip())
                             await self._broadcast_raw(req)
-                        except Exception: pass
+                        except Exception:
+                            pass
+
+    # ── trio main ────────────────────────────────────────────────────────────
 
     async def _trio_main(self):
         host = new_host()
         listen_addr = Multiaddr(f"/ip4/{self.host_addr}/tcp/{self.port}")
         await host.get_network().listen(listen_addr)
         print(f"  Network Multiaddr: {listen_addr}/p2p/{host.get_id().to_string()}")
-        
+
         streams = []
 
         async def stream_handler(stream):
+            peer_id = str(stream.muxed_conn.peer_id)
+            addr = f"peer:{peer_id}"
+
+            # Reject banned peers before doing anything else.
+            if is_peer_banned(peer_id, path=self.data_path):
+                logger.warning("Rejected connection from banned peer %s", peer_id)
+                try:
+                    await stream.reset()
+                except Exception:
+                    pass
+                return
+
             streams.append(stream)
             with self._peer_count_lock:
                 self._peer_count += 1
-            peer_id = stream.muxed_conn.peer_id
-            addr = f"peer:{peer_id}"
             self._to_asyncio.put(("PEER_CONNECTED", None))
+
             try:
+                buffer = b""
                 while True:
                     data = await stream.read(4096)
-                    if not data: break
-                    for line in data.split(b'\n'):
-                        if not line: continue
+                    if not data:
+                        break
+                    buffer += data
+                    *lines, buffer = buffer.split(b"\n")
+                    for line in lines:
+                        if not line.strip():
+                            continue
                         try:
-                            msg = json.loads(line.decode().strip())
-                            msg["_peer_addr"] = addr
-                            self._to_asyncio.put(("MSG", msg))
-                        except Exception: pass
-            except Exception: pass
+                            parsed = json.loads(line.decode().strip())
+                            parsed["_peer_addr"] = addr
+                            self._to_asyncio.put(("MSG", parsed))
+                        except Exception:
+                            # Signal the asyncio side to apply MALFORMED policy.
+                            self._to_asyncio.put(("MALFORMED", addr))
+            except Exception:
+                pass
+
             if stream in streams:
                 streams.remove(stream)
                 with self._peer_count_lock:
                     self._peer_count -= 1
-            
+
         host.set_stream_handler(PROTOCOL_ID, stream_handler)
 
         async def check_queue():
@@ -164,7 +324,8 @@ class P2PNetwork:
                 try:
                     while not self._to_trio.empty():
                         cmd, arg = self._to_trio.get_nowait()
-                        if cmd == "STOP": return True
+                        if cmd == "STOP":
+                            return True
                         elif cmd == "CONNECT":
                             try:
                                 maddr = Multiaddr(arg)
@@ -177,27 +338,34 @@ class P2PNetwork:
                         elif cmd == "BROADCAST":
                             msg = (canonical_json_dumps(arg) + "\n").encode()
                             for s in list(streams):
-                                try: await s.write(msg)
-                                except Exception: pass
+                                try:
+                                    await s.write(msg)
+                                except Exception:
+                                    pass
                         elif cmd == "UNICAST":
                             target_addr, payload = arg
                             msg = (canonical_json_dumps(payload) + "\n").encode()
                             for s in list(streams):
-                                addr = f"peer:{s.muxed_conn.peer_id}"
-                                if addr == target_addr:
-                                    try: await s.write(msg)
-                                    except Exception: pass
+                                s_addr = f"peer:{s.muxed_conn.peer_id}"
+                                if s_addr == target_addr:
+                                    try:
+                                        await s.write(msg)
+                                    except Exception:
+                                        pass
                         elif cmd == "DISCONNECT":
                             for s in list(streams):
-                                addr = f"peer:{s.muxed_conn.peer_id}"
-                                if addr == arg:
-                                    try: await s.reset()
-                                    except Exception: pass
+                                s_addr = f"peer:{s.muxed_conn.peer_id}"
+                                if s_addr == arg:
+                                    try:
+                                        await s.reset()
+                                    except Exception:
+                                        pass
                                     if s in streams:
                                         streams.remove(s)
                                         with self._peer_count_lock:
                                             self._peer_count -= 1
-                except Exception: pass
+                except Exception:
+                    pass
                 await trio.sleep(0.1)
 
         async with trio.open_nursery() as nursery:

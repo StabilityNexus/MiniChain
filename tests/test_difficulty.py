@@ -1,6 +1,7 @@
 import unittest
 from minichain import Blockchain, Block
 from minichain.pow import mine_block
+from minichain.validators import ValidationStatus
 
 class TestEMADifficulty(unittest.TestCase):
     def test_difficulty_adjustment(self):
@@ -16,7 +17,7 @@ class TestEMADifficulty(unittest.TestCase):
         ts = chain.last_block.timestamp + 1
         block1 = Block(index=1, previous_hash=chain.last_block.hash, transactions=[], timestamp=ts, difficulty=chain.current_difficulty, state_root=chain.state.state_root())
         mined_block1 = mine_block(block1)
-        self.assertTrue(chain.add_block(mined_block1))
+        self.assertEqual(chain.add_block(mined_block1), ValidationStatus.VALID)
         self.assertEqual(chain.current_difficulty, 4)
         
         # Slow mining: timestamp 5000ms apart
@@ -24,7 +25,7 @@ class TestEMADifficulty(unittest.TestCase):
         ts = chain.last_block.timestamp + 5000
         block2 = Block(index=2, previous_hash=chain.last_block.hash, transactions=[], timestamp=ts, difficulty=chain.current_difficulty, state_root=chain.state.state_root())
         mined_block2 = mine_block(block2)
-        self.assertTrue(chain.add_block(mined_block2))
+        self.assertEqual(chain.add_block(mined_block2), ValidationStatus.VALID)
         self.assertEqual(chain.current_difficulty, 3)
 
     def test_reorg_difficulty_validation(self):
