@@ -484,7 +484,7 @@ async def cli_loop(sk, pk, chain, mempool, network, datadir: str | None = None):
             peer_id = parts[1]
             from minichain.persistence import ban_peer
             ban_peer(peer_id, reason="Manual ban via CLI", path=datadir or ".")
-            asyncio.create_task(network.disconnect_peer(f"peer:{peer_id}"))
+            await network.disconnect_peer(f"peer:{peer_id}")
             print(f"  ✅ Peer {peer_id} banned.")
 
         # ── unban ──

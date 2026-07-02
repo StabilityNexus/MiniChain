@@ -23,6 +23,7 @@ logger = logging.getLogger(__name__)
 
 SUPPORTED_MESSAGE_TYPES = {"hello", "tx", "block", "chain_request", "chain_response"}
 PROTOCOL_ID = TProtocol("/minichain/1.0.0")
+MAX_FRAME_BYTES = 1 * 1024 * 1024  # 1 MB
 
 # Misbehavior thresholds — all four are overridable per P2PNetwork instance.
 MALFORMED_THRESHOLD = 15     # N: accumulated malformed messages before ban
@@ -195,6 +196,11 @@ class P2PNetwork:
             for counts in self._peer_counters.values():
                 for key in counts:
                     counts[key] //= 2
+            self._peer_counters = {
+                peer_id: counts
+                for peer_id, counts in self._peer_counters.items()
+                if any(v > 0 for v in counts.values())
+            }
 
     # ── asyncio reader ───────────────────────────────────────────────────────
 
@@ -219,7 +225,6 @@ class P2PNetwork:
                 try:
                     if self._is_duplicate(msg_type, payload):
                         continue
-                    self._mark_seen(msg_type, payload)
                 except Exception:
                     await self._handle_validation_status(peer_id, peer_addr, ValidationStatus.MALFORMED)
                     continue
@@ -231,6 +236,12 @@ class P2PNetwork:
                 # Only apply interception for content-bearing message types.
                 if msg_type in ("tx", "block") and status is not None:
                     await self._handle_validation_status(peer_id, peer_addr, status)
+
+                if status is None or status == ValidationStatus.VALID:
+                    try:
+                        self._mark_seen(msg_type, payload)
+                    except Exception:
+                        pass
 
             elif msg[0] == "MALFORMED":
                 # JSON parse failure signalled from the Trio thread.
@@ -289,6 +300,9 @@ class P2PNetwork:
                     if not data:
                         break
                     buffer += data
+                    if len(buffer) > MAX_FRAME_BYTES:
+                        self._to_asyncio.put(("MALFORMED", addr))
+                        break
                     *lines, buffer = buffer.split(b"\n")
                     for line in lines:
                         if not line.strip():
