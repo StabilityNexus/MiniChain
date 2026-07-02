@@ -21,7 +21,7 @@ def genesis_file(tmp_path):
     pk = sk.verify_key.encode(encoder=HexEncoder).decode()
     data = {
         "timestamp": int(time.time()),
-        "difficulty": 0,
+        "difficulty": 1,
         "alloc": {
             pk: {"balance": 1000}
         }

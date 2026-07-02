@@ -70,6 +70,11 @@ class Blockchain:
         timestamp = config.get("timestamp")
         difficulty = config.get("difficulty")
         
+        self.target_block_time = config.get("target_block_time", 10000)
+        self.alpha = config.get("alpha", 0.1)
+        self.current_difficulty = difficulty
+        self.avg_block_time = self.target_block_time
+        
         genesis_block = Block(
             index=0,
             previous_hash="0",
@@ -128,6 +133,10 @@ class Blockchain:
                 logger.warning("Block %s rejected: %s", block.index, exc)
                 return False
 
+            if block.difficulty != self.current_difficulty:
+                logger.warning("Block %s rejected: Invalid difficulty. Expected %s, got %s", block.index, self.current_difficulty, block.difficulty)
+                return False
+
             # Validate transactions on a temporary state copy
             temp_state = self.state.copy()
             temp_state.chain_id = self.chain_id
@@ -160,6 +169,15 @@ class Blockchain:
             if block.state_root != temp_state.state_root():
                 logger.warning("Block %s rejected: Invalid state root. Expected %s, got %s", block.index, temp_state.state_root(), block.state_root)
                 return False
+
+            # Update EMA difficulty state
+            time_diff = block.timestamp - self.last_block.timestamp
+            self.avg_block_time = self.alpha * time_diff + (1 - self.alpha) * self.avg_block_time
+            
+            if self.avg_block_time > self.target_block_time:
+                self.current_difficulty = max(1, self.current_difficulty - 1)
+            elif self.avg_block_time < self.target_block_time:
+                self.current_difficulty += 1
 
             # All transactions valid → commit state and append block
             self.state = temp_state
@@ -198,10 +216,17 @@ class Blockchain:
             temp_state.chain_id = self.chain_id
             temp_state.restore(self._genesis_state_snapshot)
 
+            temp_difficulty = new_chain_list[0].difficulty
+            temp_avg_block_time = self.target_block_time
+
             # Verify and apply blocks 1 to N
             for i in range(1, len(new_chain_list)):
                 prev_block = new_chain_list[i-1]
                 block = new_chain_list[i]
+
+                if block.difficulty != temp_difficulty:
+                    logger.warning("Reorg failed at block %s: Invalid difficulty. Expected %s, got %s", block.index, temp_difficulty, block.difficulty)
+                    return False, []
 
                 try:
                     validate_block_link_and_hash(prev_block, block)
@@ -230,6 +255,14 @@ class Blockchain:
                     logger.warning("Reorg failed: Invalid state root at block %s", block.index)
                     return False, []
 
+                # Update EMA difficulty state for reorg validation
+                time_diff = block.timestamp - prev_block.timestamp
+                temp_avg_block_time = self.alpha * time_diff + (1 - self.alpha) * temp_avg_block_time
+                if temp_avg_block_time > self.target_block_time:
+                    temp_difficulty = max(1, temp_difficulty - 1)
+                elif temp_avg_block_time < self.target_block_time:
+                    temp_difficulty += 1
+
             # 4. Success! Compute orphaned transactions.
             old_txs = {tx.tx_id: tx for b in original_chain[1:] for tx in b.transactions}
             new_tx_ids = {tx.tx_id for b in new_chain_list[1:] for tx in b.transactions}
@@ -237,5 +270,7 @@ class Blockchain:
 
             self.chain = new_chain_list
             self.state = temp_state
+            self.current_difficulty = temp_difficulty
+            self.avg_block_time = temp_avg_block_time
             logger.info("Reorg successful! Switched to new chain tip: Block %s", self.last_block.index)
             return True, orphans
