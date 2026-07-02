@@ -54,21 +54,23 @@ class P2PNetwork:
 
         # Misbehavior tracking
         self.data_path = data_path
-        self.malformed_threshold = malformed_threshold
-        self.failed_threshold = failed_threshold
-        self.invalid_threshold = invalid_threshold
+        self.thresholds = {
+            "malformed": malformed_threshold,
+            "failed": failed_threshold,
+            "invalid": invalid_threshold,
+        }
         self.decay_interval_minutes = decay_interval_minutes
         # { peer_id_str -> {"malformed": int, "failed": int, "invalid": int} }
         self._peer_counters: dict = {}
 
         if self.decay_interval_minutes <= 0:
             raise ValueError(f"decay_interval_minutes must be positive, got {self.decay_interval_minutes}")
-        if self.malformed_threshold <= 0:
-            raise ValueError(f"malformed_threshold must be positive, got {self.malformed_threshold}")
-        if self.failed_threshold <= 0:
-            raise ValueError(f"failed_threshold must be positive, got {self.failed_threshold}")
-        if self.invalid_threshold <= 0:
-            raise ValueError(f"invalid_threshold must be positive, got {self.invalid_threshold}")
+        if self.thresholds["malformed"] <= 0:
+            raise ValueError(f"malformed_threshold must be positive, got {self.thresholds['malformed']}")
+        if self.thresholds["failed"] <= 0:
+            raise ValueError(f"failed_threshold must be positive, got {self.thresholds['failed']}")
+        if self.thresholds["invalid"] <= 0:
+            raise ValueError(f"invalid_threshold must be positive, got {self.thresholds['invalid']}")
 
     def register_handler(self, handler_callback):
         self._handler_callback = handler_callback
@@ -150,47 +152,37 @@ class P2PNetwork:
             self._peer_counters[peer_id] = {"malformed": 0, "failed": 0, "invalid": 0}
         self._peer_counters[peer_id][category] += 1
         counts = self._peer_counters[peer_id]
-        return (
-            counts["malformed"] >= self.malformed_threshold
-            or counts["failed"] >= self.failed_threshold
-            or counts["invalid"] >= self.invalid_threshold
-        )
+        return counts[category] >= self.thresholds[category]
 
     async def _handle_validation_status(
         self, peer_id: str, peer_addr: str, status: ValidationStatus
     ):
         """
         Apply misbehavior policy for a single ValidationStatus event:
-          MALFORMED → always disconnect; ban if counter >= N
-          FAILED    → drop silently; ban + disconnect if counter >= M
-          INVALID   → always ban + disconnect (L=1 means first occurrence triggers)
+          MALFORMED → always disconnect; ban if counter >= threshold
+          FAILED    → drop silently; ban + disconnect if counter >= threshold
+          INVALID   → always ban + disconnect (threshold configurable, default=1)
         """
-        if status == ValidationStatus.MALFORMED:
+        category = {
+            ValidationStatus.MALFORMED: "malformed",
+            ValidationStatus.FAILED: "failed",
+            ValidationStatus.INVALID: "invalid",
+        }.get(status)
+        if category is None:
+            return
+
+        exceeded = self._increment_counter(peer_id, category)
+
+        if exceeded:
+            ban_peer(peer_id, reason=f"{category}_threshold_exceeded", path=self.data_path)
+            logger.warning(
+                "Banned peer %s: %s threshold (%d) exceeded",
+                peer_id, category, self.thresholds[category],
+            )
+
+        always_disconnect = status in (ValidationStatus.MALFORMED, ValidationStatus.INVALID)
+        if always_disconnect or exceeded:
             await self.disconnect_peer(peer_addr)
-            if self._increment_counter(peer_id, "malformed"):
-                ban_peer(peer_id, reason="malformed_threshold_exceeded", path=self.data_path)
-                logger.warning(
-                    "Banned peer %s: malformed message threshold (%d) exceeded",
-                    peer_id, self.malformed_threshold,
-                )
-
-        elif status == ValidationStatus.FAILED:
-            if self._increment_counter(peer_id, "failed"):
-                ban_peer(peer_id, reason="failed_threshold_exceeded", path=self.data_path)
-                await self.disconnect_peer(peer_addr)
-                logger.warning(
-                    "Banned and disconnected peer %s: failed message threshold (%d) exceeded",
-                    peer_id, self.failed_threshold,
-                )
-
-        elif status == ValidationStatus.INVALID:
-            if self._increment_counter(peer_id, "invalid"):
-                ban_peer(peer_id, reason="invalid_threshold_exceeded", path=self.data_path)
-                await self.disconnect_peer(peer_addr)
-                logger.warning(
-                    "Banned and disconnected peer %s: invalid message threshold (%d) exceeded",
-                    peer_id, self.invalid_threshold,
-                )
 
     async def _decay_counters(self):
         """
@@ -201,9 +193,8 @@ class P2PNetwork:
         while True:
             await asyncio.sleep(interval_seconds)
             for counts in self._peer_counters.values():
-                counts["malformed"] //= 2
-                counts["failed"] //= 2
-                counts["invalid"] //= 2
+                for key in counts:
+                    counts[key] //= 2
 
     # ── asyncio reader ───────────────────────────────────────────────────────
 
