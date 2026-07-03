@@ -258,6 +258,68 @@ def _load_snapshot_from_sqlite(db_path: str) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# Banned Peers (Track 1)
+# ---------------------------------------------------------------------------
+
+import time
+
+def _ensure_banned_peers_table(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS banned_peers (peer_id TEXT PRIMARY KEY, reason TEXT, timestamp REAL)"
+    )
+
+def ban_peer(peer_id: str, reason: str, path: str = ".") -> None:
+    db_path = os.path.join(path, _DB_FILE)
+    os.makedirs(path, exist_ok=True)
+    conn = _connect(db_path)
+    try:
+        _ensure_banned_peers_table(conn)
+        with conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO banned_peers (peer_id, reason, timestamp) VALUES (?, ?, ?)",
+                (peer_id, reason, time.time())
+            )
+    finally:
+        conn.close()
+
+def unban_peer(peer_id: str, path: str = ".") -> None:
+    db_path = os.path.join(path, _DB_FILE)
+    if not os.path.exists(db_path):
+        return
+    conn = _connect(db_path)
+    try:
+        _ensure_banned_peers_table(conn)
+        with conn:
+            conn.execute("DELETE FROM banned_peers WHERE peer_id = ?", (peer_id,))
+    finally:
+        conn.close()
+
+def is_peer_banned(peer_id: str, path: str = ".") -> bool:
+    db_path = os.path.join(path, _DB_FILE)
+    if not os.path.exists(db_path):
+        return False
+    conn = _connect(db_path)
+    try:
+        _ensure_banned_peers_table(conn)
+        row = conn.execute("SELECT peer_id FROM banned_peers WHERE peer_id = ?", (peer_id,)).fetchone()
+        return row is not None
+    finally:
+        conn.close()
+
+def get_banned_peers(path: str = ".") -> list[dict[str, Any]]:
+    db_path = os.path.join(path, _DB_FILE)
+    if not os.path.exists(db_path):
+        return []
+    conn = _connect(db_path)
+    try:
+        _ensure_banned_peers_table(conn)
+        rows = conn.execute("SELECT peer_id, reason, timestamp FROM banned_peers ORDER BY timestamp DESC").fetchall()
+        return [{"peer_id": r["peer_id"], "reason": r["reason"], "timestamp": r["timestamp"]} for r in rows]
+    finally:
+        conn.close()
+
+
+# ---------------------------------------------------------------------------
 # Legacy JSON helpers
 # ---------------------------------------------------------------------------
 
