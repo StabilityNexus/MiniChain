@@ -77,29 +77,68 @@ MiniChain is a minimal fully functional blockchain implemented in Python.
   implementing MiniChain in Python aligns with MiniChain's educational goal.
 
 
-### Overview of Tasks
-
-* Develop a fully functional minimal blockchain in Python, with all the expected components:
-  peer-to-peer networking, consensus, mempool, ledger, ...
-
-* Bonus task: add smart contracts to the blockchain. 
-
-Candidates are expected to refine these tasks in their GSoC proposals. 
-It is encouraged that you develop an initial prototype during the application phase.
-
-### Requirements
-
-* Use [PyNaCl](https://pynacl.readthedocs.io/en/latest/) library for hashing, signing transactions and verifying signatures.
-* Use [Py-libp2p](https://github.com/libp2p/py-libp2p/tree/main) for p2p networking.
-* Implement Proof-of-Work as the consensus protocol.
-* Use accounts (instead of UTxO) as the accounting model for the ledger.
-* Use as few lines of code as possible without compromising readability and understandability.
-* For the bonus task, make Python itself be the language used for smart contracts, but watch out for security concerns related to executing arbitrary code from untrusted sources.
-
 ### Resources
 
 * Read this book:  https://www.marabu.dev/blockchain-foundations.pdf 
 
+---
+
+## Getting Started
+
+### Prerequisites
+
+- Python 3.10+
+- Install dependencies:
+  ```bash
+  pip install -r requirements.txt
+  ```
+
+### 1. Creating a New MiniChain
+To bootstrap a brand new blockchain network from scratch, simply start a node. By default, this creates a new Genesis block.
+```bash
+python main.py --port 9000 --datadir ./node1_data
+```
+*Note: Keep this terminal open to interact with the node via the CLI.*
+
+### 2. Connecting to an Existing Chain
+To connect a secondary node to the network, start a new instance on a different port and point it to the seed node using the `--connect` flag.
+```bash
+python main.py --port 9001 --connect 127.0.0.1:9000 --datadir ./node2_data
+```
+The node will automatically sync the blockchain state via the P2P network using the Fork-Choice rule.
+
+### 3. Mining Blocks
+To confirm pending transactions, you need to mine blocks. In the interactive CLI of your node, simply type:
+```text
+minichain> mine
+```
+This runs the Proof-of-Work algorithm, validates transactions, computes the new state root, updates your wallet with the block reward + fees, and broadcasts the block to all connected peers.
+
+---
+
+## Basic Operations (Interactive CLI)
+
+Once your node is running, you can perform basic blockchain operations directly in your terminal.
+
+**Making a Transfer**
+Send coins to another public key:
+```text
+minichain> send <receiver_address> <amount> <fee>
+```
+*Example: `send 8b3401abedb875aff7279b5ab58cb9a0c... 100 1`*
+
+**Checking Balances**
+View the state of all active accounts and contracts on the chain:
+```text
+minichain> balance
+```
+
+**Viewing Network State**
+```text
+minichain> chain   # View all blocks
+minichain> peers   # View connected P2P nodes
+minichain> address # View your own public key
+```
 
 ---
 
@@ -118,26 +157,28 @@ Check out the `/examples` directory for tutorials:
 
 ### Interacting via CLI
 Start the interactive node using `python main.py` and use the following commands:
-1. **Deploy:** `deploy <filepath> [amount] [gas_limit]`
-2. **Call:** `call <contract_address> <payload> [amount] [gas_limit]`
+1. **Deploy:** `deploy <filepath> [amount] [fee]`
+2. **Call:** `call <contract_address> <payload> [amount] [fee]`
+
+Example deployment:
+```text
+minichain> deploy examples/counter.py 0 100
+```
 
 ---
 
-## Tech Stack
+## JSON-RPC 2.0 Server
 
-TODO:
+MiniChain automatically spins up a JSON-RPC 2.0 server alongside the P2P node. By default, it binds to `port 8545` (the standard EVM RPC port). External wallets and dApps can use this to interact with the chain asynchronously.
 
----
+**Example Request (Get Block Number):**
+```bash
+curl -X POST http://127.0.0.1:8545/ \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc": "2.0", "method": "mc_blockNumber", "id": 1}'
+```
 
-## Getting Started
-
-### Prerequisites
-
-TODO
-
-### Installation
-
-TODO
+Available endpoints include: `mc_blockNumber`, `mc_getBlockByNumber`, `mc_getBalance`, and `mc_sendTransaction`.
 
 ---
 
