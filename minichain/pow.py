@@ -21,7 +21,7 @@ def mine_block(
 ):
     """Mines a block using Proof-of-Work without mutating input block until success."""
 
-    difficulty = difficulty if difficulty is not None else block.difficulty
+    difficulty = difficulty or block.difficulty
     if not isinstance(difficulty, int) or difficulty <= 0:
         raise ValueError("Difficulty must be a positive integer.")
 

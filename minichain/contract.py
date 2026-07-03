@@ -157,26 +157,7 @@ class ContractMachine:
         }
 
         try:
-            # Execute in a subprocess with timeout
-            queue = multiprocessing.Queue()
-            p = multiprocessing.Process(
-                target=_safe_exec_worker,
-                args=(code, globals_for_exec, context, queue, gas_limit)
-            )
-            p.start()
-            p.join(timeout=10)  # 10 second timeout
-
-            if p.is_alive():
-                p.kill()
-                p.join()
-                logger.error("Contract execution timed out")
-                return {"success": False, "gas_used": gas_limit, "error": "Execution timed out"}
-
-            try:
-                result = queue.get(timeout=1)
-            except Exception:
-                logger.error("Contract execution crashed without result")
-                return {"success": False, "gas_used": gas_limit, "error": "Crashed"}
+            result = self._run_in_sandbox(code, globals_for_exec, context, gas_limit)
             
             if result["status"] != "success":
                 logger.error("Contract Execution Failed: %s", result.get('error'))
@@ -194,6 +175,27 @@ class ContractMachine:
         except Exception as e:
             logger.error("Contract Execution Failed", exc_info=True)
             return {"success": False, "gas_used": gas_limit, "error": "System Error"}
+
+    def _run_in_sandbox(self, code, globals_for_exec, context, gas_limit):
+        queue = multiprocessing.Queue()
+        p = multiprocessing.Process(
+            target=_safe_exec_worker,
+            args=(code, globals_for_exec, context, queue, gas_limit)
+        )
+        p.start()
+        p.join(timeout=10)  # 10 second timeout
+
+        if p.is_alive():
+            p.kill()
+            p.join()
+            logger.error("Contract execution timed out")
+            return {"status": "error", "gas_used": gas_limit, "error": "Execution timed out"}
+
+        try:
+            return queue.get(timeout=1)
+        except Exception:
+            logger.error("Contract execution crashed without result")
+            return {"status": "error", "gas_used": gas_limit, "error": "Crashed"}
 
     def _validate_code_ast(self, code):
         """Reject code that uses double underscores or introspection."""

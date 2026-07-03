@@ -1,6 +1,5 @@
 import pytest
 import aiohttp
-import asyncio
 from minichain.chain import Blockchain
 from minichain.mempool import Mempool
 from minichain.p2p import P2PNetwork

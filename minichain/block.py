@@ -152,30 +152,21 @@ class Block:
         )
         block.nonce = int(payload.get("nonce", 0))  
         block.hash = payload.get("hash")
-      
+        block.verify_roots(payload)
+        return block
+
+    def verify_roots(self, payload: dict):
         # Verify the block hash
-        expected_hash = block.compute_hash()
-        if block.hash is not None and block.hash != expected_hash:
+        expected_hash = self.compute_hash()
+        if self.hash is not None and self.hash != expected_hash:
             raise ValueError("block hash does not match header")
 
         # Recalculate and verify the Merkle root!
-        if "merkle_root" in payload and payload["merkle_root"] != block.merkle_root:
+        if "merkle_root" in payload and payload["merkle_root"] != self.merkle_root:
             raise ValueError("merkle_root does not match transactions")
             
         if "receipt_root" in payload:
-            expected_receipt_root = calculate_receipt_root(block.receipts)
+            expected_receipt_root = calculate_receipt_root(self.receipts)
             if payload["receipt_root"] != expected_receipt_root:
                 raise ValueError("receipt_root does not match receipts")
-                
-        return block
-
-    @property
-    def canonical_payload(self) -> bytes:
-        """Returns the full block (header + body) as canonical bytes for networking."""
-        # Sanity checks to prevent broadcasting invalid blocks
-        if self.hash is None:
-            raise ValueError("block hash is missing")
-        if self.hash != self.compute_hash():
-            raise ValueError("block hash does not match header")
-        
-        return canonical_json_bytes(self.to_dict())
+

@@ -268,55 +268,39 @@ def _ensure_banned_peers_table(conn: sqlite3.Connection) -> None:
         "CREATE TABLE IF NOT EXISTS banned_peers (peer_id TEXT PRIMARY KEY, reason TEXT, timestamp REAL)"
     )
 
-def ban_peer(peer_id: str, reason: str, path: str = ".") -> None:
+def _execute_banned_peers_query(path: str, query: str, params: tuple = (), fetchone: bool = False, fetchall: bool = False, require_exists: bool = True):
     db_path = os.path.join(path, _DB_FILE)
-    os.makedirs(path, exist_ok=True)
+    if require_exists and not os.path.exists(db_path):
+        return [] if fetchall else None
+    
+    if not require_exists:
+        os.makedirs(path, exist_ok=True)
+        
     conn = _connect(db_path)
     try:
         _ensure_banned_peers_table(conn)
         with conn:
-            conn.execute(
-                "INSERT OR REPLACE INTO banned_peers (peer_id, reason, timestamp) VALUES (?, ?, ?)",
-                (peer_id, reason, time.time())
-            )
+            cur = conn.execute(query, params)
+            if fetchall: return cur.fetchall()
+            if fetchone: return cur.fetchone()
     finally:
         conn.close()
+
+def ban_peer(peer_id: str, reason: str, path: str = ".") -> None:
+    _execute_banned_peers_query(
+        path, 
+        "INSERT OR REPLACE INTO banned_peers (peer_id, reason, timestamp) VALUES (?, ?, ?)", 
+        (peer_id, reason, time.time()), 
+        require_exists=False
+    )
 
 def unban_peer(peer_id: str, path: str = ".") -> None:
-    db_path = os.path.join(path, _DB_FILE)
-    if not os.path.exists(db_path):
-        return
-    conn = _connect(db_path)
-    try:
-        _ensure_banned_peers_table(conn)
-        with conn:
-            conn.execute("DELETE FROM banned_peers WHERE peer_id = ?", (peer_id,))
-    finally:
-        conn.close()
+    _execute_banned_peers_query(path, "DELETE FROM banned_peers WHERE peer_id = ?", (peer_id,))
 
-def is_peer_banned(peer_id: str, path: str = ".") -> bool:
-    db_path = os.path.join(path, _DB_FILE)
-    if not os.path.exists(db_path):
-        return False
-    conn = _connect(db_path)
-    try:
-        _ensure_banned_peers_table(conn)
-        row = conn.execute("SELECT peer_id FROM banned_peers WHERE peer_id = ?", (peer_id,)).fetchone()
-        return row is not None
-    finally:
-        conn.close()
 
 def get_banned_peers(path: str = ".") -> list[dict[str, Any]]:
-    db_path = os.path.join(path, _DB_FILE)
-    if not os.path.exists(db_path):
-        return []
-    conn = _connect(db_path)
-    try:
-        _ensure_banned_peers_table(conn)
-        rows = conn.execute("SELECT peer_id, reason, timestamp FROM banned_peers ORDER BY timestamp DESC").fetchall()
-        return [{"peer_id": r["peer_id"], "reason": r["reason"], "timestamp": r["timestamp"]} for r in rows]
-    finally:
-        conn.close()
+    rows = _execute_banned_peers_query(path, "SELECT peer_id, reason, timestamp FROM banned_peers ORDER BY timestamp DESC", fetchall=True)
+    return [{"peer_id": r["peer_id"], "reason": r["reason"], "timestamp": r["timestamp"]} for r in rows] if rows else []
 
 
 # ---------------------------------------------------------------------------

@@ -45,7 +45,8 @@ def test_block_serialization_determinism():
     block1.hash = block1.compute_hash()
     block2.hash = block2.compute_hash()
 
-    assert block1.canonical_payload == block2.canonical_payload, "Identical blocks must have identical payloads"
+    from minichain.serialization import canonical_json_bytes
+    assert canonical_json_bytes(block1.to_dict()) == canonical_json_bytes(block2.to_dict()), "Identical blocks must have identical payloads"
     assert block1.compute_hash() == block2.compute_hash(), "Identical blocks must have identical hashes"
     
     print("✅ Success: Block serialization is cross-instance deterministic!\n")

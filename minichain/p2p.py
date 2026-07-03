@@ -57,19 +57,21 @@ class P2PNetwork:
         self._to_trio.put(("CONNECT", maddr_str))
         return True
 
-    def _message_id(self, msg_type, payload):
-        if msg_type == "tx": return canonical_json_hash(payload)
-        if msg_type == "block": return payload["hash"]
-        return None
+    def _get_seen_set_and_id(self, msg_type, payload):
+        if msg_type == "tx":
+            return self._seen_tx_ids, canonical_json_hash(payload)
+        elif msg_type == "block":
+            return self._seen_block_hashes, payload.get("hash")
+        return None, None
 
     def _is_duplicate(self, msg_type, payload):
-        mid = self._message_id(msg_type, payload)
-        if not mid: return False
-        return mid in (self._seen_tx_ids if msg_type == "tx" else self._seen_block_hashes)
+        seen_set, mid = self._get_seen_set_and_id(msg_type, payload)
+        return mid in seen_set if mid else False
 
     def _mark_seen(self, msg_type, payload):
-        mid = self._message_id(msg_type, payload)
-        if mid: (self._seen_tx_ids if msg_type == "tx" else self._seen_block_hashes).add(mid)
+        seen_set, mid = self._get_seen_set_and_id(msg_type, payload)
+        if mid:
+            seen_set.add(mid)
 
     async def _broadcast_raw(self, payload: dict):
         self._to_trio.put(("BROADCAST", payload))
@@ -87,11 +89,7 @@ class P2PNetwork:
         self._mark_seen("block", payload["data"])
         await self._broadcast_raw(payload)
 
-    async def broadcast_chain_request(self):
-        await self._broadcast_raw({"type": "chain_request", "data": {}})
 
-    async def send_chain_response(self, blocks_dicts, peer_stream=None):
-        await self._broadcast_raw({"type": "chain_response", "data": {"blocks": blocks_dicts}})
 
     async def disconnect_peer(self, peer_addr):
         self._to_trio.put(("DISCONNECT", peer_addr))

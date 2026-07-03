@@ -37,9 +37,9 @@ class Transaction:
         self._sealed = False
 
     def to_dict(self):
-        return {"sender": self.sender, "receiver": self.receiver, "amount": self.amount, "fee": self.fee,
-                "nonce": self.nonce, "data": self.data, "chain_id": self.chain_id, "timestamp": self.timestamp,
-                "signature": self.signature}
+        d = self.to_signing_dict()
+        d["signature"] = self.signature
+        return d
 
     def to_signing_dict(self):
         return {"sender": self.sender, "receiver": self.receiver, "amount": self.amount, "fee": self.fee,

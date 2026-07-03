@@ -1,6 +1,7 @@
 from .block import Block, calculate_receipt_root
 from .state import State
 from .pow import calculate_hash
+from .validators import ValidationStatus
 import logging
 import threading
 import json
@@ -120,13 +121,49 @@ class Blockchain:
                 chain_list = self.chain
         return sum(2 ** (block.difficulty or 1) for block in chain_list)
 
+    def _validate_and_apply_block(self, temp_state, prev_block, block, temp_avg_block_time, temp_difficulty, is_reorg=False):
+        receipts = []
+        for tx in block.transactions:
+            status, receipt = temp_state.validate_and_apply_with_status(tx)
+            if status != ValidationStatus.VALID:
+                logger.warning("Block %s rejected: Transaction failed validation", block.index)
+                return temp_avg_block_time, temp_difficulty, status
+            receipts.append(receipt)
+
+        total_fees = sum(getattr(r, 'gas_used', 0) for r in receipts)
+        if block.miner:
+            temp_state.credit_mining_reward(block.miner, reward=temp_state.DEFAULT_MINING_REWARD + total_fees)
+
+        computed_receipt_root = calculate_receipt_root(receipts)
+        if block.receipt_root != computed_receipt_root:
+            logger.warning("Block %s rejected: Invalid receipt root. Expected %s, got %s", block.index, computed_receipt_root, block.receipt_root)
+            return temp_avg_block_time, temp_difficulty, ValidationStatus.INVALID
+
+        if not is_reorg:
+            if [r.to_dict() for r in block.receipts] != [r.to_dict() for r in receipts]:
+                logger.warning("Block %s rejected: Receipts payload mismatch", block.index)
+                return temp_avg_block_time, temp_difficulty, ValidationStatus.INVALID
+
+        if block.state_root != temp_state.state_root():
+            logger.warning("Block %s rejected: Invalid state root. Expected %s, got %s", block.index, temp_state.state_root(), block.state_root)
+            return temp_avg_block_time, temp_difficulty, ValidationStatus.INVALID
+
+        time_diff = block.timestamp - prev_block.timestamp
+        new_avg_block_time = self.alpha * time_diff + (1 - self.alpha) * temp_avg_block_time
+        
+        new_difficulty = temp_difficulty
+        if new_avg_block_time > self.target_block_time:
+            new_difficulty = max(1, temp_difficulty - 1)
+        elif new_avg_block_time < self.target_block_time:
+            new_difficulty += 1
+
+        return new_avg_block_time, new_difficulty, ValidationStatus.VALID
+
     def add_block(self, block):
         """
         Validates and adds a block to the chain if all transactions succeed.
         Uses a copied State to ensure atomic validation.
         """
-        from .validators import ValidationStatus
-
         with self._lock:
             try:
                 validate_block_link_and_hash(self.last_block, block)
@@ -141,46 +178,17 @@ class Blockchain:
             # Validate transactions on a temporary state copy
             temp_state = self.state.copy()
             temp_state.chain_id = self.chain_id
-            receipts = []
-
-            for tx in block.transactions:
-                status, receipt = temp_state.validate_and_apply_with_status(tx)
-
-                # Reject block if any transaction fails mathematical validation
-                if status != ValidationStatus.VALID:
-                    logger.warning("Block %s rejected: Transaction failed validation", block.index)
-                    return status
-                    
-                receipts.append(receipt)
-
-            total_fees = sum(getattr(r, 'gas_used', 0) for r in receipts)
-            if block.miner:
-                temp_state.credit_mining_reward(block.miner, reward=temp_state.DEFAULT_MINING_REWARD + total_fees)
-                
-            computed_receipt_root = calculate_receipt_root(receipts)
-            if block.receipt_root != computed_receipt_root:
-                logger.warning("Block %s rejected: Invalid receipt root. Expected %s, got %s", block.index, computed_receipt_root, block.receipt_root)
-                return ValidationStatus.INVALID
-
-            if [r.to_dict() for r in block.receipts] != [r.to_dict() for r in receipts]:
-                logger.warning("Block %s rejected: Receipts payload mismatch", block.index)
-                return ValidationStatus.INVALID
-
-            # Verify state root
-            if block.state_root != temp_state.state_root():
-                logger.warning("Block %s rejected: Invalid state root. Expected %s, got %s", block.index, temp_state.state_root(), block.state_root)
-                return ValidationStatus.INVALID
-
-            # Update EMA difficulty state
-            time_diff = block.timestamp - self.last_block.timestamp
-            self.avg_block_time = self.alpha * time_diff + (1 - self.alpha) * self.avg_block_time
             
-            if self.avg_block_time > self.target_block_time:
-                self.current_difficulty = max(1, self.current_difficulty - 1)
-            elif self.avg_block_time < self.target_block_time:
-                self.current_difficulty += 1
+            new_avg, new_diff, status = self._validate_and_apply_block(
+                temp_state, self.last_block, block, self.avg_block_time, self.current_difficulty, is_reorg=False
+            )
+            
+            if status != ValidationStatus.VALID:
+                return status
 
             # All transactions valid → commit state and append block
+            self.avg_block_time = new_avg
+            self.current_difficulty = new_diff
             self.state = temp_state
             self.chain.append(block)
             return ValidationStatus.VALID
@@ -235,35 +243,15 @@ class Blockchain:
                     logger.warning("Reorg failed at block %s: %s", block.index, exc)
                     return False, []
 
-                receipts = []
-                for tx in block.transactions:
-                    from .validators import ValidationStatus
-                    status, receipt = temp_state.validate_and_apply_with_status(tx)
-                    if status != ValidationStatus.VALID:
-                        logger.warning("Reorg failed: Transaction validation failed in block %s", block.index)
-                        return False, []
-                    receipts.append(receipt)
-
-                total_fees = sum(getattr(r, 'gas_used', 0) for r in receipts)
-                if block.miner:
-                    temp_state.credit_mining_reward(block.miner, reward=temp_state.DEFAULT_MINING_REWARD + total_fees)
-
-                computed_receipt_root = calculate_receipt_root(receipts)
-                if block.receipt_root != computed_receipt_root:
-                    logger.warning("Reorg failed: Invalid receipt root at block %s. Expected %s, got %s", block.index, computed_receipt_root, block.receipt_root)
+                new_avg, new_diff, status = self._validate_and_apply_block(
+                    temp_state, prev_block, block, temp_avg_block_time, temp_difficulty, is_reorg=True
+                )
+                if status != ValidationStatus.VALID:
+                    logger.warning("Reorg failed at block %s", block.index)
                     return False, []
-
-                if block.state_root != temp_state.state_root():
-                    logger.warning("Reorg failed: Invalid state root at block %s", block.index)
-                    return False, []
-
-                # Update EMA difficulty state for reorg validation
-                time_diff = block.timestamp - prev_block.timestamp
-                temp_avg_block_time = self.alpha * time_diff + (1 - self.alpha) * temp_avg_block_time
-                if temp_avg_block_time > self.target_block_time:
-                    temp_difficulty = max(1, temp_difficulty - 1)
-                elif temp_avg_block_time < self.target_block_time:
-                    temp_difficulty += 1
+                
+                temp_avg_block_time = new_avg
+                temp_difficulty = new_diff
 
             # 4. Success! Compute orphaned transactions.
             old_txs = {tx.tx_id: tx for b in original_chain[1:] for tx in b.transactions}

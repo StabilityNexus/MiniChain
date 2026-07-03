@@ -1,6 +1,4 @@
 import unittest
-import sys
-import os
 
 from minichain import State, Transaction
 from nacl.signing import SigningKey

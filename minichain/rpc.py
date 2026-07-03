@@ -42,6 +42,37 @@ class JSONRPCServer:
             response = await self._process_single(req_data)
             return web.json_response(response)
 
+    def _rpc_blockNumber(self, params):
+        return self.chain.last_block.index
+
+    def _rpc_getBlockByNumber(self, params):
+        if not params:
+            raise ValueError("Missing block number")
+        idx = params[0]
+        if idx == "latest":
+            block = self.chain.last_block
+        else:
+            idx = int(idx)
+            block = self.chain.chain[idx] if 0 <= idx < len(self.chain.chain) else None
+        return block.to_dict() if block else None
+
+    def _rpc_getBalance(self, params):
+        if not params:
+            raise ValueError("Missing address")
+        account = self.chain.state.get_account(params[0])
+        return account["balance"] if account else 0
+
+    def _rpc_sendTransaction(self, params):
+        if not params:
+            raise ValueError("Missing transaction payload")
+        tx = Transaction.from_dict(params[0])
+        if not tx.verify():
+            raise ValueError("Invalid signature")
+        if self.mempool.add_transaction(tx):
+            asyncio.create_task(self.network.broadcast_transaction(tx))
+            return tx.tx_id
+        raise ValueError("Transaction rejected by Mempool")
+
     async def _process_single(self, req):
         if not isinstance(req, dict) or "method" not in req or req.get("jsonrpc") != "2.0":
             return {"jsonrpc": "2.0", "error": {"code": -32600, "message": "Invalid Request"}, "id": req.get("id") if isinstance(req, dict) else None}
@@ -50,43 +81,18 @@ class JSONRPCServer:
         params = req.get("params", [])
         req_id = req.get("id")
 
-        try:
-            if method == "mc_blockNumber":
-                result = self.chain.last_block.index
-            elif method == "mc_getBlockByNumber":
-                if not params:
-                    raise ValueError("Missing block number")
-                idx = params[0]
-                if idx == "latest":
-                    block = self.chain.last_block
-                else:
-                    idx = int(idx)
-                    if idx < 0 or idx >= len(self.chain.chain):
-                        block = None
-                    else:
-                        block = self.chain.chain[idx]
-                result = block.to_dict() if block else None
-            elif method == "mc_getBalance":
-                if not params:
-                    raise ValueError("Missing address")
-                address = params[0]
-                account = self.chain.state.get_account(address)
-                result = account["balance"] if account else 0
-            elif method == "mc_sendTransaction":
-                if not params:
-                    raise ValueError("Missing transaction payload")
-                tx_data = params[0]
-                tx = Transaction.from_dict(tx_data)
-                if not tx.verify():
-                    raise ValueError("Invalid signature")
-                if self.mempool.add_transaction(tx):
-                    asyncio.create_task(self.network.broadcast_transaction(tx))
-                    result = tx.tx_id
-                else:
-                    raise ValueError("Transaction rejected by Mempool")
-            else:
-                return {"jsonrpc": "2.0", "error": {"code": -32601, "message": f"Method not found: {method}"}, "id": req_id}
+        METHODS = {
+            "mc_blockNumber": self._rpc_blockNumber,
+            "mc_getBlockByNumber": self._rpc_getBlockByNumber,
+            "mc_getBalance": self._rpc_getBalance,
+            "mc_sendTransaction": self._rpc_sendTransaction,
+        }
 
+        try:
+            if method not in METHODS:
+                return {"jsonrpc": "2.0", "error": {"code": -32601, "message": f"Method not found: {method}"}, "id": req_id}
+                
+            result = METHODS[method](params)
             return {"jsonrpc": "2.0", "result": result, "id": req_id}
         except Exception as e:
             logger.error("RPC Error processing %s: %s", method, e)

@@ -91,7 +91,6 @@ class State:
         Validate and apply a transaction.
         Returns: Receipt|None
         """
-        # Semantic validation: amount must be an integer and non-negative
         if not isinstance(tx.amount, int) or tx.amount < 0:
             return None
         return self.apply_transaction(tx)
@@ -104,23 +103,22 @@ class State:
         from .validators import ValidationStatus
         if not isinstance(tx.amount, int) or tx.amount < 0:
             return ValidationStatus.MALFORMED, None
-            
-        status = self.verify_transaction_logic(tx)
-        if status != ValidationStatus.VALID:
-            return status, None
-            
-        # We know it's valid, so apply_transaction will succeed and return a Receipt
-        return ValidationStatus.VALID, self.apply_transaction(tx)
+        return self._apply_transaction_internal(tx)
 
     def apply_transaction(self, tx):
         """
         Applies transaction and mutates state.
         Returns: Receipt object if mathematically valid, None if invalid.
         """
+        _, receipt = self._apply_transaction_internal(tx)
+        return receipt
+
+    def _apply_transaction_internal(self, tx):
         from .validators import ValidationStatus
+        
         status = self.verify_transaction_logic(tx)
         if status != ValidationStatus.VALID:
-            return None
+            return status, None
 
         sender = self.accounts[tx.sender]
 
@@ -140,10 +138,10 @@ class State:
             if existing and existing.get("code"):
                 # Restore sender balance on failure, but keep nonce incremented
                 sender['balance'] += tx.amount
-                return Receipt(tx.tx_id, status=0, error_message="Contract collision", gas_used=gas_used)
+                return status, Receipt(tx.tx_id, status=0, error_message="Contract collision", gas_used=gas_used)
 
             self.create_contract(contract_address, tx.data, initial_balance=tx.amount)
-            return Receipt(tx.tx_id, status=1, contract_address=contract_address, gas_used=gas_used)
+            return status, Receipt(tx.tx_id, status=1, contract_address=contract_address, gas_used=gas_used)
 
         # LOGIC BRANCH 2: Contract Call
         # If data is provided (non-empty), treat as contract call
@@ -155,7 +153,7 @@ class State:
             if not receiver or not receiver.get("code"):
                 # Rollback sender balance on failure, but keep nonce incremented
                 sender['balance'] += tx.amount # Refund amount
-                return Receipt(tx.tx_id, status=0, error_message="Contract not found", gas_used=gas_limit)
+                return status, Receipt(tx.tx_id, status=0, error_message="Contract not found", gas_used=gas_limit)
 
             # Credit contract balance
             receiver['balance'] += tx.amount
@@ -177,7 +175,7 @@ class State:
                 # Rollback transfer if execution fails, but keep nonce incremented
                 receiver['balance'] -= tx.amount
                 sender['balance'] += tx.amount # Refund amount
-                return Receipt(tx.tx_id, status=0, error_message=result.get("error", "Execution failed"), gas_used=gas_used)
+                return status, Receipt(tx.tx_id, status=0, error_message=result.get("error", "Execution failed"), gas_used=gas_used)
 
             transfers = result.get("transfers", [])
             total_transferred_out = sum(t["amount"] for t in transfers)
@@ -186,7 +184,7 @@ class State:
                 # Rollback transfer if execution attempts to spend more than balance
                 receiver['balance'] -= tx.amount
                 sender['balance'] += tx.amount # Refund amount
-                return Receipt(tx.tx_id, status=0, error_message="Insufficient contract balance for transfers", gas_used=gas_used)
+                return status, Receipt(tx.tx_id, status=0, error_message="Insufficient contract balance for transfers", gas_used=gas_used)
 
             # Execution & transfers valid: commit state changes atomically
             self.update_contract_storage(tx.receiver, result["storage"])
@@ -196,12 +194,12 @@ class State:
                 target_acc = self.get_account(t["to"])
                 target_acc['balance'] += t["amount"]
 
-            return Receipt(tx.tx_id, status=1, gas_used=gas_used)
+            return status, Receipt(tx.tx_id, status=1, gas_used=gas_used)
 
         # LOGIC BRANCH 3: Regular Transfer
         receiver = self.get_account(tx.receiver)
         receiver['balance'] += tx.amount
-        return Receipt(tx.tx_id, status=1, gas_used=getattr(tx, 'fee', 0))
+        return status, Receipt(tx.tx_id, status=1, gas_used=getattr(tx, 'fee', 0))
 
     def derive_contract_address(self, sender, nonce):
         raw = f"{sender}:{nonce}".encode()
@@ -222,13 +220,7 @@ class State:
         else:
             raise KeyError(f"Contract address not found: {address}")
 
-    def update_contract_storage_partial(self, address, updates):
-        if address not in self.accounts:
-            raise KeyError(f"Contract address not found: {address}")
-        if isinstance(updates, dict):
-            self.accounts[address]['storage'].update(updates)
-        else:
-            raise ValueError("Updates must be a dictionary")
+
 
     def credit_mining_reward(self, miner_address, reward=None):
         reward = reward if reward is not None else self.DEFAULT_MINING_REWARD
