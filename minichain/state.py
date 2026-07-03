@@ -43,26 +43,27 @@ class State:
         return self.accounts[address]
 
     def verify_transaction_logic(self, tx):
+        from .validators import ValidationStatus
         if not tx.verify():
             logger.error("Error: Invalid signature for tx from %s...", tx.sender[:8])
-            return False
+            return ValidationStatus.INVALID
 
         if getattr(tx, "chain_id", None) != self.chain_id:
             logger.error("Error: Invalid chain_id in tx from %s...", tx.sender[:8])
-            return False
+            return ValidationStatus.INVALID
 
         sender_acc = self.get_account(tx.sender)
 
         total_cost = tx.amount + getattr(tx, 'fee', 0)
         if sender_acc['balance'] < total_cost:
             logger.warning("Invalid tx %s: insufficient balance", tx.tx_id)
-            return False
+            return ValidationStatus.FAILED
 
         if sender_acc['nonce'] != tx.nonce:
             logger.error("Error: Invalid nonce. Expected %s, got %s", sender_acc['nonce'], tx.nonce)
-            return False
+            return ValidationStatus.FAILED
 
-        return True
+        return ValidationStatus.VALID
 
     def copy(self):
         """
@@ -88,22 +89,37 @@ class State:
     def validate_and_apply(self, tx):
         """
         Validate and apply a transaction.
-        Returns the same success/failure shape as apply_transaction().
-        NOTE: Delegates to apply_transaction. Callers should use this for
-        semantic validation entry points.
+        Returns: Receipt|None
         """
         # Semantic validation: amount must be an integer and non-negative
         if not isinstance(tx.amount, int) or tx.amount < 0:
             return None
-        # Further checks can be added here
         return self.apply_transaction(tx)
+
+    def validate_and_apply_with_status(self, tx):
+        """
+        Validate and apply a transaction, bubbling up the precise ValidationStatus.
+        Returns: (ValidationStatus, Receipt|None)
+        """
+        from .validators import ValidationStatus
+        if not isinstance(tx.amount, int) or tx.amount < 0:
+            return ValidationStatus.MALFORMED, None
+            
+        status = self.verify_transaction_logic(tx)
+        if status != ValidationStatus.VALID:
+            return status, None
+            
+        # We know it's valid, so apply_transaction will succeed and return a Receipt
+        return ValidationStatus.VALID, self.apply_transaction(tx)
 
     def apply_transaction(self, tx):
         """
         Applies transaction and mutates state.
         Returns: Receipt object if mathematically valid, None if invalid.
         """
-        if not self.verify_transaction_logic(tx):
+        from .validators import ValidationStatus
+        status = self.verify_transaction_logic(tx)
+        if status != ValidationStatus.VALID:
             return None
 
         sender = self.accounts[tx.sender]

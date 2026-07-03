@@ -13,7 +13,7 @@ def calculate_hash(block_dict):
 
 def mine_block(
     block,
-    difficulty=4,
+    difficulty=None,
     max_nonce=10_000_000,
     timeout_seconds=None,
     logger=None,
@@ -21,6 +21,7 @@ def mine_block(
 ):
     """Mines a block using Proof-of-Work without mutating input block until success."""
 
+    difficulty = difficulty if difficulty is not None else block.difficulty
     if not isinstance(difficulty, int) or difficulty <= 0:
         raise ValueError("Difficulty must be a positive integer.")
 

@@ -92,6 +92,7 @@ def mine_and_process_block(chain, mempool, miner_pk):
         receipt_root=calculate_receipt_root(receipts),
         receipts=receipts,
         miner=miner_pk,
+        difficulty=chain.current_difficulty,
     )
 
     mined_block = mine_block(block)
@@ -455,6 +456,37 @@ async def cli_loop(sk, pk, chain, mempool, network):
             for b in chain.chain:
                 tx_count = len(b.transactions) if b.transactions else 0
                 print(f"    Block #{b.index}  hash={b.hash[:16]}...  txs={tx_count}")
+
+        # ── list-banned ──
+        elif cmd == "list-banned":
+            from minichain.persistence import get_banned_peers
+            banned = get_banned_peers()
+            if not banned:
+                print("  No peers are currently banned.")
+            else:
+                print(f"  {len(banned)} banned peer(s):")
+                for p in banned:
+                    print(f"    - {p['peer_id']} (Reason: {p['reason']}, Time: {p['timestamp']})")
+
+        # ── ban ──
+        elif cmd == "ban":
+            if len(parts) < 2:
+                print("  Usage: ban <peer_id>")
+                continue
+            peer_id = parts[1]
+            from minichain.persistence import ban_peer
+            ban_peer(peer_id, reason="Manual ban via CLI")
+            print(f"  ✅ Peer {peer_id} banned.")
+
+        # ── unban ──
+        elif cmd == "unban":
+            if len(parts) < 2:
+                print("  Usage: unban <peer_id>")
+                continue
+            peer_id = parts[1]
+            from minichain.persistence import unban_peer
+            unban_peer(peer_id)
+            print(f"  ✅ Peer {peer_id} unbanned.")
 
         # ── help ──
         elif cmd == "help":
