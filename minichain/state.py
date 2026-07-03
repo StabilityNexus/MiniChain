@@ -127,12 +127,7 @@ class State:
         if status != ValidationStatus.VALID:
             return status, None
 
-    def _apply_validated_tx(self, tx):
-        """
-        Apply a transaction that has already passed verify_transaction_logic.
-        Mutates state and returns a Receipt.  Never call this directly — use
-        apply_transaction() or validate_and_apply_with_status() instead.
-        """
+
         sender = self.accounts[tx.sender]
 
         total_cost = tx.amount + getattr(tx, 'fee', 0)
