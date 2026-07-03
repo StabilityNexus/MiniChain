@@ -502,7 +502,6 @@ async def cli_loop(sk, pk, chain, mempool, network, datadir: str | None = None):
         cmd = parts[0].lower()
 
         if cmd in ("quit", "exit", "q"):
-=======
             break
         elif cmd in COMMANDS:
             await COMMANDS[cmd](parts)

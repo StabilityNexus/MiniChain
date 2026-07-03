@@ -302,6 +302,10 @@ def get_banned_peers(path: str = ".") -> list[dict[str, Any]]:
     rows = _execute_banned_peers_query(path, "SELECT peer_id, reason, timestamp FROM banned_peers ORDER BY timestamp DESC", fetchall=True)
     return [{"peer_id": r["peer_id"], "reason": r["reason"], "timestamp": r["timestamp"]} for r in rows] if rows else []
 
+def is_peer_banned(peer_id: str, path: str = ".") -> bool:
+    row = _execute_banned_peers_query(path, "SELECT peer_id FROM banned_peers WHERE peer_id = ?", (peer_id,), fetchone=True)
+    return row is not None
+
 
 # ---------------------------------------------------------------------------
 # Legacy JSON helpers
