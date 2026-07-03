@@ -27,7 +27,7 @@ from nacl.encoding import HexEncoder
 
 from minichain import Transaction, Blockchain, Block, State, Mempool, P2PNetwork, mine_block
 from minichain.rpc import JSONRPCServer
-from minichain.validators import is_valid_receiver
+from minichain.validators import is_valid_receiver, ValidationStatus
 from minichain.block import calculate_receipt_root
 
 
@@ -97,7 +97,7 @@ def mine_and_process_block(chain, mempool, miner_pk):
 
     mined_block = mine_block(block)
 
-    if chain.add_block(mined_block):
+    if chain.add_block(mined_block) == ValidationStatus.VALID:
         logger.info("✅ Block #%d mined and added (%d txs)", mined_block.index, len(mineable_txs))
         mempool.remove_transactions(mineable_txs)
         return mined_block
@@ -117,6 +117,7 @@ def mine_and_process_block(chain, mempool, miner_pk):
 
 def make_network_handler(chain, mempool, network):
     """Return an async callback that processes incoming P2P messages."""
+    from minichain.validators import ValidationStatus
 
     async def handler(data):
         msg_type = data.get("type")
@@ -148,24 +149,30 @@ def make_network_handler(chain, mempool, network):
         elif msg_type == "tx":
             try:
                 tx = Transaction.from_dict(payload)
-                if getattr(tx, "chain_id", None) != chain.chain_id:
-                    logger.warning("Invalid chain_id in tx from %s", peer_addr)
-                    return
-                if mempool.add_transaction(tx):
-                    logger.info("📥 Received tx from %s... (amount=%s)", tx.sender[:8], tx.amount)
             except Exception as e:
                 logger.warning("Invalid tx payload from %s: %s", peer_addr, e)
+                return ValidationStatus.MALFORMED
+
+            if getattr(tx, "chain_id", None) != chain.chain_id:
+                logger.warning("Invalid chain_id in tx from %s", peer_addr)
+                return ValidationStatus.INVALID
+
+            if mempool.add_transaction(tx):
+                logger.info("📥 Received tx from %s... (amount=%s)", tx.sender[:8], tx.amount)
+                return ValidationStatus.VALID
+            else:
+                return ValidationStatus.FAILED
 
         elif msg_type == "block":
             try:
                 block = Block.from_dict(payload)
             except Exception as e:
                 logger.warning("Invalid block payload from %s: %s", peer_addr, e)
-                return
+                return ValidationStatus.MALFORMED
 
-            if chain.add_block(block):
+            status = chain.add_block(block)
+            if status == ValidationStatus.VALID:
                 logger.info("📥 Received Block #%d — added to chain", block.index)
-
                 # Drop only confirmed transactions so higher nonces can remain queued.
                 mempool.remove_transactions(block.transactions)
             else:
@@ -178,6 +185,7 @@ def make_network_handler(chain, mempool, network):
                     # For a fork, request the full chain to use resolve_conflicts
                     req = {"type": "chain_request", "data": {"start_index": 0, "limit": 1000000}} # Request full chain for reorg
                     asyncio.create_task(network._broadcast_raw(req))
+            return status
 
         elif msg_type == "chain_request":
             start_index = payload.get("start_index", 0)
@@ -221,7 +229,7 @@ def make_network_handler(chain, mempool, network):
                     for block in new_chain:
                         if block.index <= chain.last_block.index:
                             continue # Ignore already known blocks
-                        if chain.add_block(block):
+                        if chain.add_block(block) == ValidationStatus.VALID:
                             logger.info("📥 Synced Block #%d", block.index)
                             mempool.remove_transactions(block.transactions)
                         else:
@@ -265,7 +273,7 @@ HELP_TEXT = """
 """
 
 
-async def cli_loop(sk, pk, chain, mempool, network):
+async def cli_loop(sk, pk, chain, mempool, network, datadir: str | None = None):
     """Read commands from stdin asynchronously."""
     loop = asyncio.get_event_loop()
     print(HELP_TEXT)
@@ -426,7 +434,7 @@ async def cli_loop(sk, pk, chain, mempool, network):
         # ── list-banned ──
         elif cmd == "list-banned":
             from minichain.persistence import get_banned_peers
-            banned = get_banned_peers()
+            banned = get_banned_peers(path=datadir or ".")
             if not banned:
                 print("  No peers are currently banned.")
             else:
@@ -441,7 +449,8 @@ async def cli_loop(sk, pk, chain, mempool, network):
                 continue
             peer_id = parts[1]
             from minichain.persistence import ban_peer
-            ban_peer(peer_id, reason="Manual ban via CLI")
+            ban_peer(peer_id, reason="Manual ban via CLI", path=datadir or ".")
+            await network.disconnect_peer(f"peer:{peer_id}")
             print(f"  ✅ Peer {peer_id} banned.")
 
         # ── unban ──
@@ -451,7 +460,7 @@ async def cli_loop(sk, pk, chain, mempool, network):
                 continue
             peer_id = parts[1]
             from minichain.persistence import unban_peer
-            unban_peer(peer_id)
+            unban_peer(peer_id, path=datadir or ".")
             print(f"  ✅ Peer {peer_id} unbanned.")
 
         # ── help ──
@@ -493,7 +502,7 @@ async def run_node(port: int, host: str, connect_to: str | None, fund: int, data
         chain = Blockchain()
 
     mempool = Mempool()
-    network = P2PNetwork()
+    network = P2PNetwork(data_path=datadir or ".")
 
     handler = make_network_handler(chain, mempool, network)
     network.register_handler(handler)
@@ -534,7 +543,7 @@ async def run_node(port: int, host: str, connect_to: str | None, fund: int, data
         await network.connect_to_peer(connect_to)
 
     try:
-        await cli_loop(sk, pk, chain, mempool, network)
+        await cli_loop(sk, pk, chain, mempool, network, datadir)
     finally:
         # Save chain to disk on shutdown
         if datadir:

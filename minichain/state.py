@@ -91,8 +91,11 @@ class State:
         Validate and apply a transaction.
         Returns: Receipt|None
         """
-        # Semantic validation: amount must be an integer and non-negative
+        # Semantic validation: amount and fee must be non-negative integers
         if not isinstance(tx.amount, int) or tx.amount < 0:
+            return None
+        fee = getattr(tx, "fee", 0)
+        if not isinstance(fee, int) or fee < 0:
             return None
         return self.apply_transaction(tx)
 
@@ -104,24 +107,38 @@ class State:
         from .validators import ValidationStatus
         if not isinstance(tx.amount, int) or tx.amount < 0:
             return ValidationStatus.MALFORMED, None
-            
+        fee = getattr(tx, "fee", 0)
+        if not isinstance(fee, int) or fee < 0:
+            return ValidationStatus.MALFORMED, None
+
         status = self.verify_transaction_logic(tx)
         if status != ValidationStatus.VALID:
             return status, None
-            
-        # We know it's valid, so apply_transaction will succeed and return a Receipt
-        return ValidationStatus.VALID, self.apply_transaction(tx)
+
+        # verify_transaction_logic already passed — skip the second call inside apply_transaction.
+        return ValidationStatus.VALID, self._apply_validated_tx(tx)
 
     def apply_transaction(self, tx):
         """
-        Applies transaction and mutates state.
-        Returns: Receipt object if mathematically valid, None if invalid.
+        Validates and applies a transaction.
+        Returns: Receipt object if valid, None if invalid.
         """
-        from .validators import ValidationStatus
-        status = self.verify_transaction_logic(tx)
-        if status != ValidationStatus.VALID:
+        if not isinstance(tx.amount, int) or tx.amount < 0:
             return None
+        fee = getattr(tx, "fee", 0)
+        if not isinstance(fee, int) or fee < 0:
+            return None
+        from .validators import ValidationStatus
+        if self.verify_transaction_logic(tx) != ValidationStatus.VALID:
+            return None
+        return self._apply_validated_tx(tx)
 
+    def _apply_validated_tx(self, tx):
+        """
+        Apply a transaction that has already passed verify_transaction_logic.
+        Mutates state and returns a Receipt.  Never call this directly — use
+        apply_transaction() or validate_and_apply_with_status() instead.
+        """
         sender = self.accounts[tx.sender]
 
         total_cost = tx.amount + getattr(tx, 'fee', 0)

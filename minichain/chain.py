@@ -253,6 +253,10 @@ class Blockchain:
                     logger.warning("Reorg failed: Invalid receipt root at block %s. Expected %s, got %s", block.index, computed_receipt_root, block.receipt_root)
                     return False, []
 
+                if [r.to_dict() for r in block.receipts] != [r.to_dict() for r in receipts]:
+                    logger.warning("Reorg failed: Receipt payload mismatch at block %s", block.index)
+                    return False, []
+
                 if block.state_root != temp_state.state_root():
                     logger.warning("Reorg failed: Invalid state root at block %s", block.index)
                     return False, []

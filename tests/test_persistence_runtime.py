@@ -12,7 +12,7 @@ from minichain.persistence import load, save
 
 
 class FakeNetwork:
-    def __init__(self):
+    def __init__(self, **kwargs):
         self.handler = None
         self.peer_count = 0
         self._on_peer_connected = None
@@ -84,7 +84,7 @@ class TestPersistenceRuntime(unittest.IsolatedAsyncioTestCase):
         chain = self._chain_with_tx()
         save(chain, self.tmpdir)
 
-        async def fake_cli_loop(sk, pk, loaded_chain, mempool, network):
+        async def fake_cli_loop(sk, pk, loaded_chain, mempool, network, datadir=None):
             self.assertEqual(len(loaded_chain.chain), len(chain.chain))
             self.assertEqual(loaded_chain.last_block.hash, chain.last_block.hash)
             self.assertEqual(loaded_chain.state.accounts, chain.state.accounts)
@@ -103,7 +103,7 @@ class TestPersistenceRuntime(unittest.IsolatedAsyncioTestCase):
     async def test_run_node_saves_sqlite_snapshot_on_shutdown(self):
         fixed_sk, fixed_pk = _make_keypair()
 
-        async def fake_cli_loop(sk, pk, chain, mempool, network):
+        async def fake_cli_loop(sk, pk, chain, mempool, network, datadir=None):
             self.assertEqual(pk, fixed_pk)
             self.assertEqual(chain.state.get_account(pk)["balance"], 25)
 
