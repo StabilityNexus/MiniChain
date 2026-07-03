@@ -109,7 +109,7 @@ class TestPersistenceRuntime(unittest.IsolatedAsyncioTestCase):
 
         with patch.object(main_module, "P2PNetwork", FakeNetwork), patch.object(
             main_module, "cli_loop", fake_cli_loop
-        ), patch.object(main_module, "create_wallet", return_value=(fixed_sk, fixed_pk)):
+        ), patch.object(main_module, "load_or_create_wallet", return_value=(fixed_sk, fixed_pk)):
             await main_module.run_node(
                 port=9401,
                 host="127.0.0.1",
