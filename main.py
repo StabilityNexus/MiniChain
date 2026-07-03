@@ -26,7 +26,7 @@ from nacl.encoding import HexEncoder
 
 from minichain import Transaction, Blockchain, Block, Mempool, P2PNetwork, mine_block
 from minichain.rpc import JSONRPCServer
-from minichain.validators import is_valid_receiver
+from minichain.validators import is_valid_receiver, ValidationStatus
 from minichain.block import calculate_receipt_root
 
 
@@ -96,7 +96,7 @@ def mine_and_process_block(chain, mempool, miner_pk):
 
     mined_block = mine_block(block)
 
-    if chain.add_block(mined_block):
+    if chain.add_block(mined_block) == ValidationStatus.VALID:
         logger.info("✅ Block #%d mined and added (%d txs)", mined_block.index, len(mineable_txs))
         mempool.remove_transactions(mineable_txs)
         return mined_block
@@ -116,6 +116,7 @@ def mine_and_process_block(chain, mempool, miner_pk):
 
 def make_network_handler(chain, mempool, network):
     """Return an async callback that processes incoming P2P messages."""
+    from minichain.validators import ValidationStatus
 
     async def handle_hello(payload, peer_addr):
         peer_chain_id = payload.get("chain_id")
@@ -443,7 +444,7 @@ async def cli_loop(sk, pk, chain, mempool, network, datadir: str | None = None):
 
     async def cmd_list_banned(parts):
         from minichain.persistence import get_banned_peers
-        banned = get_banned_peers()
+        banned = get_banned_peers(path=datadir or ".")
         if not banned:
             print("  No peers are currently banned.")
         else:
@@ -457,7 +458,8 @@ async def cli_loop(sk, pk, chain, mempool, network, datadir: str | None = None):
             return
         peer_id = parts[1]
         from minichain.persistence import ban_peer
-        ban_peer(peer_id, reason="Manual ban via CLI")
+        ban_peer(peer_id, reason="Manual ban via CLI", path=datadir or ".")
+        await network.disconnect_peer(f"peer:{peer_id}")
         print(f"  ✅ Peer {peer_id} banned.")
 
     async def cmd_unban(parts):
@@ -466,7 +468,7 @@ async def cli_loop(sk, pk, chain, mempool, network, datadir: str | None = None):
             return
         peer_id = parts[1]
         from minichain.persistence import unban_peer
-        unban_peer(peer_id)
+        unban_peer(peer_id, path=datadir or ".")
         print(f"  ✅ Peer {peer_id} unbanned.")
 
     async def cmd_help(parts):
@@ -500,6 +502,7 @@ async def cli_loop(sk, pk, chain, mempool, network, datadir: str | None = None):
         cmd = parts[0].lower()
 
         if cmd in ("quit", "exit", "q"):
+=======
             break
         elif cmd in COMMANDS:
             await COMMANDS[cmd](parts)
@@ -534,7 +537,7 @@ async def run_node(port: int, host: str, connect_to: str | None, fund: int, data
         chain = Blockchain()
 
     mempool = Mempool()
-    network = P2PNetwork()
+    network = P2PNetwork(data_path=datadir or ".")
 
     handler = make_network_handler(chain, mempool, network)
     network.register_handler(handler)
@@ -575,7 +578,7 @@ async def run_node(port: int, host: str, connect_to: str | None, fund: int, data
         await network.connect_to_peer(connect_to)
 
     try:
-        await cli_loop(sk, pk, chain, mempool, network)
+        await cli_loop(sk, pk, chain, mempool, network, datadir)
     finally:
         # Save chain to disk on shutdown
         if datadir:
