@@ -25,6 +25,10 @@ def validate_block_link_and_hash(previous_block, block):
     if block.hash != expected_hash:
         raise ValueError(f"invalid hash {block.hash}")
 
+    if not block.hash.startswith("0" * block.difficulty):
+        raise ValueError(
+            f"invalid PoW: hash {block.hash} does not satisfy difficulty {block.difficulty}"
+        )
 
 class Blockchain:
     """
