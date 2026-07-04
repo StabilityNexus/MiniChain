@@ -10,6 +10,10 @@ import sys
 logger = logging.getLogger(__name__)
 
 
+class InvalidProofOfWorkError(ValueError):
+    pass
+
+
 def validate_block_link_and_hash(previous_block, block):
     if block.previous_hash != previous_block.hash:
         raise ValueError(
@@ -26,7 +30,7 @@ def validate_block_link_and_hash(previous_block, block):
         raise ValueError(f"invalid hash {block.hash}")
 
     if not block.hash.startswith("0" * block.difficulty):
-        raise ValueError(
+        raise InvalidProofOfWorkError(
             f"invalid PoW: hash {block.hash} does not satisfy difficulty {block.difficulty}"
         )
 
@@ -143,11 +147,13 @@ class Blockchain:
 
         try:
             validate_block_link_and_hash(prev_block, block)
+        except InvalidProofOfWorkError as exc:
+            logger.warning("Block %s rejected: %s", block.index, exc)
+            return ValidationStatus.INVALID, difficulty, avg_block_time
         except ValueError as exc:
             logger.warning("Block %s rejected: %s", block.index, exc)
             status = ValidationStatus.INVALID if "hash" in str(exc) else ValidationStatus.FAILED
             return status, difficulty, avg_block_time
-
         if block.difficulty != difficulty:
             logger.warning("Block %s rejected: Invalid difficulty. Expected %s, got %s", block.index, difficulty, block.difficulty)
             return ValidationStatus.INVALID, difficulty, avg_block_time
