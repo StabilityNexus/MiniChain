@@ -18,9 +18,7 @@ def validate_block_link_and_hash(previous_block, block):
         )
 
     if block.index != previous_block.index + 1:
-        raise ValueError(
-            f"invalid index {block.index} != {previous_block.index + 1}"
-        )
+        raise ValueError(f"invalid index {block.index} != {previous_block.index + 1}")
 
     expected_hash = calculate_hash(block.to_header_dict())
     if block.hash != expected_hash:
@@ -52,30 +50,36 @@ class Blockchain:
                 logger.error("Failed to load genesis config: %s", e)
                 sys.exit(1)
         else:
-            logger.error("Failed to load genesis config: file %s does not exist.", genesis_path)
+            logger.error(
+                "Failed to load genesis config: file %s does not exist.", genesis_path
+            )
             sys.exit(1)
-        
+
         # Apply genesis allocations
         alloc = config.get("alloc", {})
         for address, data in alloc.items():
             balance = data.get("balance", 0)
             if not isinstance(balance, int) or balance < 0:
-                logger.error("Invalid genesis balance for %s: %s. Must be a non-negative integer.", address, balance)
+                logger.error(
+                    "Invalid genesis balance for %s: %s. Must be a non-negative integer.",
+                    address,
+                    balance,
+                )
                 sys.exit(1)
             account = self.state.get_account(address)
-            account['balance'] = balance
+            account["balance"] = balance
 
         self.chain_id = config.get("chain_id", "minichain-default")
         self.state.chain_id = self.chain_id
 
         timestamp = config.get("timestamp")
         difficulty = config.get("difficulty")
-        
+
         self.target_block_time = config.get("target_block_time", 10000)
         self.alpha = config.get("alpha", 0.1)
         self.current_difficulty = difficulty
         self.avg_block_time = self.target_block_time
-        
+
         genesis_block = Block(
             index=0,
             previous_hash="0",
@@ -84,22 +88,26 @@ class Blockchain:
             difficulty=difficulty,
             state_root=self.state.state_root(),
             receipt_root=None,
-            receipts=[]
+            receipts=[],
         )
-        
+
         computed_hash = calculate_hash(genesis_block.to_header_dict())
         config_hash = config.get("hash")
-        
+
         if config_hash:
             if config_hash != computed_hash:
-                logger.error("Genesis hash mismatch. Config hash: %s, Computed hash: %s", config_hash, computed_hash)
+                logger.error(
+                    "Genesis hash mismatch. Config hash: %s, Computed hash: %s",
+                    config_hash,
+                    computed_hash,
+                )
                 sys.exit(1)
             genesis_block.hash = config_hash
         else:
             genesis_block.hash = computed_hash
-            
+
         self.chain.append(genesis_block)
-        
+
         # Snapshot the state exactly after genesis allocation for clean reorg rebuilds
         self._genesis_state_snapshot = self.state.snapshot()
 
@@ -108,7 +116,7 @@ class Blockchain:
         """
         Returns the most recent block in the chain.
         """
-        with self._lock: # Acquire lock for thread-safe access
+        with self._lock:  # Acquire lock for thread-safe access
             return self.chain[-1]
 
     def get_total_work(self, chain_list=None):
@@ -121,36 +129,62 @@ class Blockchain:
                 chain_list = self.chain
         return sum(2 ** (block.difficulty or 1) for block in chain_list)
 
-    def _validate_and_apply_block(self, temp_state, prev_block, block, temp_avg_block_time, temp_difficulty, is_reorg=False):
+    def _validate_and_apply_block(
+        self,
+        temp_state,
+        prev_block,
+        block,
+        temp_avg_block_time,
+        temp_difficulty,
+        is_reorg=False,
+    ):
         receipts = []
         for tx in block.transactions:
             status, receipt = temp_state.validate_and_apply_with_status(tx)
             if status != ValidationStatus.VALID:
-                logger.warning("Block %s rejected: Transaction failed validation", block.index)
+                logger.warning(
+                    "Block %s rejected: Transaction failed validation", block.index
+                )
                 return temp_avg_block_time, temp_difficulty, status
             receipts.append(receipt)
 
-        total_fees = sum(getattr(r, 'gas_used', 0) for r in receipts)
+        total_fees = sum(getattr(r, "gas_used", 0) for r in receipts)
         if block.miner:
-            temp_state.credit_mining_reward(block.miner, reward=temp_state.DEFAULT_MINING_REWARD + total_fees)
+            temp_state.credit_mining_reward(
+                block.miner, reward=temp_state.DEFAULT_MINING_REWARD + total_fees
+            )
 
         computed_receipt_root = calculate_receipt_root(receipts)
         if block.receipt_root != computed_receipt_root:
-            logger.warning("Block %s rejected: Invalid receipt root. Expected %s, got %s", block.index, computed_receipt_root, block.receipt_root)
+            logger.warning(
+                "Block %s rejected: Invalid receipt root. Expected %s, got %s",
+                block.index,
+                computed_receipt_root,
+                block.receipt_root,
+            )
             return temp_avg_block_time, temp_difficulty, ValidationStatus.INVALID
 
         if not is_reorg:
             if [r.to_dict() for r in block.receipts] != [r.to_dict() for r in receipts]:
-                logger.warning("Block %s rejected: Receipts payload mismatch", block.index)
+                logger.warning(
+                    "Block %s rejected: Receipts payload mismatch", block.index
+                )
                 return temp_avg_block_time, temp_difficulty, ValidationStatus.INVALID
 
         if block.state_root != temp_state.state_root():
-            logger.warning("Block %s rejected: Invalid state root. Expected %s, got %s", block.index, temp_state.state_root(), block.state_root)
+            logger.warning(
+                "Block %s rejected: Invalid state root. Expected %s, got %s",
+                block.index,
+                temp_state.state_root(),
+                block.state_root,
+            )
             return temp_avg_block_time, temp_difficulty, ValidationStatus.INVALID
 
         time_diff = block.timestamp - prev_block.timestamp
-        new_avg_block_time = self.alpha * time_diff + (1 - self.alpha) * temp_avg_block_time
-        
+        new_avg_block_time = (
+            self.alpha * time_diff + (1 - self.alpha) * temp_avg_block_time
+        )
+
         new_difficulty = temp_difficulty
         if new_avg_block_time > self.target_block_time:
             new_difficulty = max(1, temp_difficulty - 1)
@@ -169,20 +203,34 @@ class Blockchain:
                 validate_block_link_and_hash(self.last_block, block)
             except ValueError as exc:
                 logger.warning("Block %s rejected: %s", block.index, exc)
-                return ValidationStatus.INVALID if "hash" in str(exc) else ValidationStatus.FAILED
+                return (
+                    ValidationStatus.INVALID
+                    if "hash" in str(exc)
+                    else ValidationStatus.FAILED
+                )
 
             if block.difficulty != self.current_difficulty:
-                logger.warning("Block %s rejected: Invalid difficulty. Expected %s, got %s", block.index, self.current_difficulty, block.difficulty)
+                logger.warning(
+                    "Block %s rejected: Invalid difficulty. Expected %s, got %s",
+                    block.index,
+                    self.current_difficulty,
+                    block.difficulty,
+                )
                 return ValidationStatus.INVALID
 
             # Validate transactions on a temporary state copy
             temp_state = self.state.copy()
             temp_state.chain_id = self.chain_id
-            
+
             new_avg, new_diff, status = self._validate_and_apply_block(
-                temp_state, self.last_block, block, self.avg_block_time, self.current_difficulty, is_reorg=False
+                temp_state,
+                self.last_block,
+                block,
+                self.avg_block_time,
+                self.current_difficulty,
+                is_reorg=False,
             )
-            
+
             if status != ValidationStatus.VALID:
                 return status
 
@@ -207,7 +255,11 @@ class Blockchain:
             new_work = self.get_total_work(new_chain_list)
 
             if new_work <= current_work:
-                logger.debug("Incoming chain (work: %s) is not heavier than local chain (work: %s). Rejecting.", new_work, current_work)
+                logger.debug(
+                    "Incoming chain (work: %s) is not heavier than local chain (work: %s). Rejecting.",
+                    new_work,
+                    current_work,
+                )
                 return False, []
 
             # 1. Verify genesis block matches
@@ -215,7 +267,11 @@ class Blockchain:
                 logger.warning("Reorg failed: Genesis hash mismatch.")
                 return False, []
 
-            logger.info("Incoming chain is heavier (%s > %s). Attempting reorg...", new_work, current_work)
+            logger.info(
+                "Incoming chain is heavier (%s > %s). Attempting reorg...",
+                new_work,
+                current_work,
+            )
 
             # 2. Snapshot current chain in case reorg fails validation
             original_chain = list(self.chain)
@@ -230,11 +286,16 @@ class Blockchain:
 
             # Verify and apply blocks 1 to N
             for i in range(1, len(new_chain_list)):
-                prev_block = new_chain_list[i-1]
+                prev_block = new_chain_list[i - 1]
                 block = new_chain_list[i]
 
                 if block.difficulty != temp_difficulty:
-                    logger.warning("Reorg failed at block %s: Invalid difficulty. Expected %s, got %s", block.index, temp_difficulty, block.difficulty)
+                    logger.warning(
+                        "Reorg failed at block %s: Invalid difficulty. Expected %s, got %s",
+                        block.index,
+                        temp_difficulty,
+                        block.difficulty,
+                    )
                     return False, []
 
                 try:
@@ -244,17 +305,24 @@ class Blockchain:
                     return False, []
 
                 new_avg, new_diff, status = self._validate_and_apply_block(
-                    temp_state, prev_block, block, temp_avg_block_time, temp_difficulty, is_reorg=True
+                    temp_state,
+                    prev_block,
+                    block,
+                    temp_avg_block_time,
+                    temp_difficulty,
+                    is_reorg=True,
                 )
                 if status != ValidationStatus.VALID:
                     logger.warning("Reorg failed at block %s", block.index)
                     return False, []
-                
+
                 temp_avg_block_time = new_avg
                 temp_difficulty = new_diff
 
             # 4. Success! Compute orphaned transactions.
-            old_txs = {tx.tx_id: tx for b in original_chain[1:] for tx in b.transactions}
+            old_txs = {
+                tx.tx_id: tx for b in original_chain[1:] for tx in b.transactions
+            }
             new_tx_ids = {tx.tx_id for b in new_chain_list[1:] for tx in b.transactions}
             orphans = [tx for tx_id, tx in old_txs.items() if tx_id not in new_tx_ids]
 
@@ -262,5 +330,8 @@ class Blockchain:
             self.state = temp_state
             self.current_difficulty = temp_difficulty
             self.avg_block_time = temp_avg_block_time
-            logger.info("Reorg successful! Switched to new chain tip: Block %s", self.last_block.index)
+            logger.info(
+                "Reorg successful! Switched to new chain tip: Block %s",
+                self.last_block.index,
+            )
             return True, orphans

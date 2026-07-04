@@ -25,7 +25,12 @@ class State:
         trie = Trie()
         # Sort items to ensure deterministic insertion order if necessary (though MPT is order-independent)
         for addr, acc in sorted(self.accounts.items()):
-            if acc.get('balance', 0) == 0 and acc.get('nonce', 0) == 0 and not acc.get('code') and not acc.get('storage'):
+            if (
+                acc.get("balance", 0) == 0
+                and acc.get("nonce", 0) == 0
+                and not acc.get("code")
+                and not acc.get("storage")
+            ):
                 continue
             trie.put(addr, json.dumps(acc, sort_keys=True))
         return trie.root_hash()
@@ -35,15 +40,16 @@ class State:
     def get_account(self, address):
         if address not in self.accounts:
             self.accounts[address] = {
-                'balance': 0,
-                'nonce': 0,
-                'code': None,
-                'storage': {}
+                "balance": 0,
+                "nonce": 0,
+                "code": None,
+                "storage": {},
             }
         return self.accounts[address]
 
     def verify_transaction_logic(self, tx):
         from .validators import ValidationStatus
+
         if not tx.verify():
             logger.error("Error: Invalid signature for tx from %s...", tx.sender[:8])
             return ValidationStatus.INVALID
@@ -54,13 +60,17 @@ class State:
 
         sender_acc = self.get_account(tx.sender)
 
-        total_cost = tx.amount + getattr(tx, 'fee', 0)
-        if sender_acc['balance'] < total_cost:
+        total_cost = tx.amount + getattr(tx, "fee", 0)
+        if sender_acc["balance"] < total_cost:
             logger.warning("Invalid tx %s: insufficient balance", tx.tx_id)
             return ValidationStatus.FAILED
 
-        if sender_acc['nonce'] != tx.nonce:
-            logger.error("Error: Invalid nonce. Expected %s, got %s", sender_acc['nonce'], tx.nonce)
+        if sender_acc["nonce"] != tx.nonce:
+            logger.error(
+                "Error: Invalid nonce. Expected %s, got %s",
+                sender_acc["nonce"],
+                tx.nonce,
+            )
             return ValidationStatus.FAILED
 
         return ValidationStatus.VALID
@@ -70,7 +80,9 @@ class State:
         Return an independent copy of state for transactional validation.
         """
         new_state = copy.deepcopy(self)
-        new_state.contract_machine = ContractMachine(new_state) # Reinitialize contract_machine
+        new_state.contract_machine = ContractMachine(
+            new_state
+        )  # Reinitialize contract_machine
         new_state.chain_id = self.chain_id
         return new_state
 
@@ -105,6 +117,7 @@ class State:
         Returns: (ValidationStatus, Receipt|None)
         """
         from .validators import ValidationStatus
+
         if not isinstance(tx.amount, int) or tx.amount < 0:
             return ValidationStatus.MALFORMED, None
         fee = getattr(tx, "fee", 0)
@@ -122,92 +135,113 @@ class State:
 
     def _apply_transaction_internal(self, tx):
         from .validators import ValidationStatus
-        
+
         status = self.verify_transaction_logic(tx)
         if status != ValidationStatus.VALID:
             return status, None
 
-
         sender = self.accounts[tx.sender]
 
-        total_cost = tx.amount + getattr(tx, 'fee', 0)
-        
+        total_cost = tx.amount + getattr(tx, "fee", 0)
+
         # Deduct funds and increment nonce
-        sender['balance'] -= total_cost
-        sender['nonce'] += 1
+        sender["balance"] -= total_cost
+        sender["nonce"] += 1
 
         # LOGIC BRANCH 1: Contract Deployment
         if tx.receiver is None or tx.receiver == "":
             contract_address = self.derive_contract_address(tx.sender, tx.nonce)
-            gas_used = getattr(tx, 'fee', 0)
+            gas_used = getattr(tx, "fee", 0)
 
             # Prevent redeploy collision
             existing = self.accounts.get(contract_address)
             if existing and existing.get("code"):
                 # Restore sender balance on failure, but keep nonce incremented
-                sender['balance'] += tx.amount
-                return status, Receipt(tx.tx_id, status=0, error_message="Contract collision", gas_used=gas_used)
+                sender["balance"] += tx.amount
+                return status, Receipt(
+                    tx.tx_id,
+                    status=0,
+                    error_message="Contract collision",
+                    gas_used=gas_used,
+                )
 
             self.create_contract(contract_address, tx.data, initial_balance=tx.amount)
-            return status, Receipt(tx.tx_id, status=1, contract_address=contract_address, gas_used=gas_used)
+            return status, Receipt(
+                tx.tx_id, status=1, contract_address=contract_address, gas_used=gas_used
+            )
 
         # LOGIC BRANCH 2: Contract Call
         # If data is provided (non-empty), treat as contract call
         if tx.data:
             receiver = self.accounts.get(tx.receiver)
-            gas_limit = getattr(tx, 'fee', 0)
+            gas_limit = getattr(tx, "fee", 0)
 
             # Fail if contract does not exist or has no code
             if not receiver or not receiver.get("code"):
                 # Rollback sender balance on failure, but keep nonce incremented
-                sender['balance'] += tx.amount # Refund amount
-                return status, Receipt(tx.tx_id, status=0, error_message="Contract not found", gas_used=gas_limit)
+                sender["balance"] += tx.amount  # Refund amount
+                return status, Receipt(
+                    tx.tx_id,
+                    status=0,
+                    error_message="Contract not found",
+                    gas_used=gas_limit,
+                )
 
             # Credit contract balance
-            receiver['balance'] += tx.amount
+            receiver["balance"] += tx.amount
 
             result = self.contract_machine.execute(
                 contract_address=tx.receiver,
                 sender_address=tx.sender,
                 payload=tx.data,
                 amount=tx.amount,
-                gas_limit=gas_limit
+                gas_limit=gas_limit,
             )
 
             gas_used = result.get("gas_used", gas_limit)
             gas_refund = gas_limit - gas_used
             if gas_refund > 0:
-                sender['balance'] += gas_refund
+                sender["balance"] += gas_refund
 
             if not result.get("success"):
                 # Rollback transfer if execution fails, but keep nonce incremented
-                receiver['balance'] -= tx.amount
-                sender['balance'] += tx.amount # Refund amount
-                return status, Receipt(tx.tx_id, status=0, error_message=result.get("error", "Execution failed"), gas_used=gas_used)
+                receiver["balance"] -= tx.amount
+                sender["balance"] += tx.amount  # Refund amount
+                return status, Receipt(
+                    tx.tx_id,
+                    status=0,
+                    error_message=result.get("error", "Execution failed"),
+                    gas_used=gas_used,
+                )
 
             transfers = result.get("transfers", [])
             total_transferred_out = sum(t["amount"] for t in transfers)
 
-            if total_transferred_out > receiver['balance']:
+            if total_transferred_out > receiver["balance"]:
                 # Rollback transfer if execution attempts to spend more than balance
-                receiver['balance'] -= tx.amount
-                sender['balance'] += tx.amount # Refund amount
-                return status, Receipt(tx.tx_id, status=0, error_message="Insufficient contract balance for transfers", gas_used=gas_used)
+                receiver["balance"] -= tx.amount
+                sender["balance"] += tx.amount  # Refund amount
+                return status, Receipt(
+                    tx.tx_id,
+                    status=0,
+                    error_message="Insufficient contract balance for transfers",
+                    gas_used=gas_used,
+                )
 
             # Execution & transfers valid: commit state changes atomically
             self.update_contract_storage(tx.receiver, result["storage"])
-            
-            receiver['balance'] -= total_transferred_out
+
+            receiver["balance"] -= total_transferred_out
             for t in transfers:
                 target_acc = self.get_account(t["to"])
-                target_acc['balance'] += t["amount"]
+                target_acc["balance"] += t["amount"]
 
             return status, Receipt(tx.tx_id, status=1, gas_used=gas_used)
 
         # LOGIC BRANCH 3: Regular Transfer
         receiver = self.get_account(tx.receiver)
-        receiver['balance'] += tx.amount
-        return status, Receipt(tx.tx_id, status=1, gas_used=getattr(tx, 'fee', 0))
+        receiver["balance"] += tx.amount
+        return status, Receipt(tx.tx_id, status=1, gas_used=getattr(tx, "fee", 0))
 
     def derive_contract_address(self, sender, nonce):
         raw = f"{sender}:{nonce}".encode()
@@ -215,22 +249,20 @@ class State:
 
     def create_contract(self, contract_address, code, initial_balance=0):
         self.accounts[contract_address] = {
-            'balance': initial_balance,
-            'nonce': 0,
-            'code': code,
-            'storage': {}
+            "balance": initial_balance,
+            "nonce": 0,
+            "code": code,
+            "storage": {},
         }
         return contract_address
 
     def update_contract_storage(self, address, new_storage):
         if address in self.accounts:
-            self.accounts[address]['storage'] = new_storage
+            self.accounts[address]["storage"] = new_storage
         else:
             raise KeyError(f"Contract address not found: {address}")
-
-
 
     def credit_mining_reward(self, miner_address, reward=None):
         reward = reward if reward is not None else self.DEFAULT_MINING_REWARD
         account = self.get_account(miner_address)
-        account['balance'] += reward
+        account["balance"] += reward

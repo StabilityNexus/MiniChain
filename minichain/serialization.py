@@ -4,7 +4,9 @@ import json
 
 def canonical_json_dumps(payload) -> str:
     """Serialize payloads deterministically for signing and hashing."""
-    return json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return json.dumps(
+        payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+    )
 
 
 def canonical_json_bytes(payload) -> bytes:

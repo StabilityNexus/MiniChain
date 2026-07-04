@@ -129,6 +129,7 @@ def _verify_chain_integrity(blocks: list[Block]) -> None:
     if genesis.index != 0:
         raise ValueError("Invalid genesis block")
     from .pow import calculate_hash
+
     if genesis.hash != calculate_hash(genesis.to_header_dict()):
         raise ValueError("Invalid genesis block hash")
 
@@ -154,8 +155,7 @@ def _connect(db_path: str) -> sqlite3.Connection:
 
 
 def _initialize_schema(conn: sqlite3.Connection) -> None:
-    conn.executescript(
-        """
+    conn.executescript("""
         CREATE TABLE IF NOT EXISTS blocks (
             height INTEGER PRIMARY KEY,
             block_json TEXT NOT NULL
@@ -170,8 +170,7 @@ def _initialize_schema(conn: sqlite3.Connection) -> None:
             key TEXT PRIMARY KEY,
             value TEXT NOT NULL
         );
-        """
-    )
+        """)
 
 
 def _require_schema(conn: sqlite3.Connection) -> None:
@@ -248,8 +247,7 @@ def _load_snapshot_from_sqlite(db_path: str) -> dict[str, Any]:
     try:
         chain = [json.loads(row["block_json"]) for row in block_rows]
         state = {
-            row["address"]: json.loads(row["account_json"])
-            for row in account_rows
+            row["address"]: json.loads(row["account_json"]) for row in account_rows
         }
     except json.JSONDecodeError as exc:
         raise ValueError(f"Invalid persisted JSON payload in '{db_path}'") from exc
@@ -263,47 +261,83 @@ def _load_snapshot_from_sqlite(db_path: str) -> dict[str, Any]:
 
 import time
 
+
 def _ensure_banned_peers_table(conn: sqlite3.Connection) -> None:
     conn.execute(
         "CREATE TABLE IF NOT EXISTS banned_peers (peer_id TEXT PRIMARY KEY, reason TEXT, timestamp REAL)"
     )
 
-def _execute_banned_peers_query(path: str, query: str, params: tuple = (), fetchone: bool = False, fetchall: bool = False, require_exists: bool = True):
+
+def _execute_banned_peers_query(
+    path: str,
+    query: str,
+    params: tuple = (),
+    fetchone: bool = False,
+    fetchall: bool = False,
+    require_exists: bool = True,
+):
     db_path = os.path.join(path, _DB_FILE)
     if require_exists and not os.path.exists(db_path):
         return [] if fetchall else None
-    
+
     if not require_exists:
         os.makedirs(path, exist_ok=True)
-        
+
     conn = _connect(db_path)
     try:
         _ensure_banned_peers_table(conn)
         with conn:
             cur = conn.execute(query, params)
-            if fetchall: return cur.fetchall()
-            if fetchone: return cur.fetchone()
+            if fetchall:
+                return cur.fetchall()
+            if fetchone:
+                return cur.fetchone()
     finally:
         conn.close()
 
+
 def ban_peer(peer_id: str, reason: str, path: str = ".") -> None:
     _execute_banned_peers_query(
-        path, 
-        "INSERT OR REPLACE INTO banned_peers (peer_id, reason, timestamp) VALUES (?, ?, ?)", 
-        (peer_id, reason, time.time()), 
-        require_exists=False
+        path,
+        "INSERT OR REPLACE INTO banned_peers (peer_id, reason, timestamp) VALUES (?, ?, ?)",
+        (peer_id, reason, time.time()),
+        require_exists=False,
     )
 
+
 def unban_peer(peer_id: str, path: str = ".") -> None:
-    _execute_banned_peers_query(path, "DELETE FROM banned_peers WHERE peer_id = ?", (peer_id,))
+    _execute_banned_peers_query(
+        path, "DELETE FROM banned_peers WHERE peer_id = ?", (peer_id,)
+    )
 
 
 def get_banned_peers(path: str = ".") -> list[dict[str, Any]]:
-    rows = _execute_banned_peers_query(path, "SELECT peer_id, reason, timestamp FROM banned_peers ORDER BY timestamp DESC", fetchall=True)
-    return [{"peer_id": r["peer_id"], "reason": r["reason"], "timestamp": r["timestamp"]} for r in rows] if rows else []
+    rows = _execute_banned_peers_query(
+        path,
+        "SELECT peer_id, reason, timestamp FROM banned_peers ORDER BY timestamp DESC",
+        fetchall=True,
+    )
+    return (
+        [
+            {
+                "peer_id": r["peer_id"],
+                "reason": r["reason"],
+                "timestamp": r["timestamp"],
+            }
+            for r in rows
+        ]
+        if rows
+        else []
+    )
+
 
 def is_peer_banned(peer_id: str, path: str = ".") -> bool:
-    row = _execute_banned_peers_query(path, "SELECT peer_id FROM banned_peers WHERE peer_id = ?", (peer_id,), fetchone=True)
+    row = _execute_banned_peers_query(
+        path,
+        "SELECT peer_id FROM banned_peers WHERE peer_id = ?",
+        (peer_id,),
+        fetchone=True,
+    )
     return row is not None
 
 
@@ -315,6 +349,3 @@ def is_peer_banned(peer_id: str, path: str = ".") -> bool:
 def _read_legacy_json(filepath: str) -> dict[str, Any]:
     with open(filepath, "r", encoding="utf-8") as f:
         return json.load(f)
-
-
-

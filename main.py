@@ -29,7 +29,6 @@ from minichain.rpc import JSONRPCServer
 from minichain.validators import is_valid_receiver, ValidationStatus
 from minichain.block import calculate_receipt_root
 
-
 logger = logging.getLogger(__name__)
 
 TRUSTED_PEERS = set()
@@ -40,6 +39,7 @@ LOCALHOST_PEERS = {"127.0.0.1", "::1", "localhost", "0:0:0:0:0:0:0:1"}
 # Wallet helpers
 # ──────────────────────────────────────────────
 
+
 def create_wallet():
     sk = SigningKey.generate()
     pk = sk.verify_key.encode(encoder=HexEncoder).decode()
@@ -49,6 +49,7 @@ def create_wallet():
 # ──────────────────────────────────────────────
 # Block mining
 # ──────────────────────────────────────────────
+
 
 def mine_and_process_block(chain, mempool, miner_pk):
     """Mine pending transactions into a new block."""
@@ -67,7 +68,7 @@ def mine_and_process_block(chain, mempool, miner_pk):
         if tx.nonce < expected_nonce:
             stale_txs.append(tx)
             continue
-            
+
         receipt = temp_state.validate_and_apply(tx)
         if receipt is not None:
             mineable_txs.append(tx)
@@ -80,8 +81,10 @@ def mine_and_process_block(chain, mempool, miner_pk):
         logger.info("No mineable transactions in current queue window.")
         return None
 
-    total_fees = sum(getattr(r, 'gas_used', 0) for r in receipts)
-    temp_state.credit_mining_reward(miner_pk, reward=temp_state.DEFAULT_MINING_REWARD + total_fees)
+    total_fees = sum(getattr(r, "gas_used", 0) for r in receipts)
+    temp_state.credit_mining_reward(
+        miner_pk, reward=temp_state.DEFAULT_MINING_REWARD + total_fees
+    )
 
     block = Block(
         index=chain.last_block.index + 1,
@@ -97,7 +100,11 @@ def mine_and_process_block(chain, mempool, miner_pk):
     mined_block = mine_block(block)
 
     if chain.add_block(mined_block) == ValidationStatus.VALID:
-        logger.info("✅ Block #%d mined and added (%d txs)", mined_block.index, len(mineable_txs))
+        logger.info(
+            "✅ Block #%d mined and added (%d txs)",
+            mined_block.index,
+            len(mineable_txs),
+        )
         mempool.remove_transactions(mineable_txs)
         return mined_block
     else:
@@ -106,13 +113,16 @@ def mine_and_process_block(chain, mempool, miner_pk):
         for tx in pending_txs:
             if mempool.add_transaction(tx):
                 restored += 1
-        logger.info("Mempool: Restored %d/%d txs after rejection", restored, len(pending_txs))
+        logger.info(
+            "Mempool: Restored %d/%d txs after rejection", restored, len(pending_txs)
+        )
         return None
 
 
 # ──────────────────────────────────────────────
 # Network message handler
 # ──────────────────────────────────────────────
+
 
 def make_network_handler(chain, mempool, network):
     """Return an async callback that processes incoming P2P messages."""
@@ -122,7 +132,12 @@ def make_network_handler(chain, mempool, network):
         peer_chain_id = payload.get("chain_id")
         peer_gen_hash = payload.get("genesis_hash")
         if peer_chain_id != chain.chain_id:
-            logger.warning("🔒 Disconnecting peer %s: chain_id mismatch (got %s, expected %s)", peer_addr, peer_chain_id, chain.chain_id)
+            logger.warning(
+                "🔒 Disconnecting peer %s: chain_id mismatch (got %s, expected %s)",
+                peer_addr,
+                peer_chain_id,
+                chain.chain_id,
+            )
             asyncio.create_task(network.disconnect_peer(peer_addr))
             return
         if peer_gen_hash != chain.chain[0].hash:
@@ -133,8 +148,16 @@ def make_network_handler(chain, mempool, network):
         logger.info("🔄 Handshake successful with %s", peer_addr)
         peer_tip = payload.get("latest_block_index", 0)
         if peer_tip > chain.last_block.index:
-            logger.info("📡 Peer %s is ahead (%d > %d). Initiating chunked sync...", peer_addr, peer_tip, chain.last_block.index)
-            req = {"type": "chain_request", "data": {"start_index": chain.last_block.index + 1, "limit": 500}}
+            logger.info(
+                "📡 Peer %s is ahead (%d > %d). Initiating chunked sync...",
+                peer_addr,
+                peer_tip,
+                chain.last_block.index,
+            )
+            req = {
+                "type": "chain_request",
+                "data": {"start_index": chain.last_block.index + 1, "limit": 500},
+            }
             asyncio.create_task(network._broadcast_raw(req))
 
     async def handle_tx(payload, peer_addr):
@@ -144,7 +167,9 @@ def make_network_handler(chain, mempool, network):
                 logger.warning("Invalid chain_id in tx from %s", peer_addr)
                 return
             if mempool.add_transaction(tx):
-                logger.info("📥 Received tx from %s... (amount=%s)", tx.sender[:8], tx.amount)
+                logger.info(
+                    "📥 Received tx from %s... (amount=%s)", tx.sender[:8], tx.amount
+                )
         except Exception as e:
             logger.warning("Invalid tx payload from %s: %s", peer_addr, e)
 
@@ -160,26 +185,42 @@ def make_network_handler(chain, mempool, network):
             mempool.remove_transactions(block.transactions)
         else:
             if block.index > chain.last_block.index + 1:
-                logger.warning("📥 Received Block #%s — ahead of us (tip: %s). Requesting chunked sync...", block.index, chain.last_block.index)
-                req = {"type": "chain_request", "data": {"start_index": chain.last_block.index + 1, "limit": 500}}
+                logger.warning(
+                    "📥 Received Block #%s — ahead of us (tip: %s). Requesting chunked sync...",
+                    block.index,
+                    chain.last_block.index,
+                )
+                req = {
+                    "type": "chain_request",
+                    "data": {"start_index": chain.last_block.index + 1, "limit": 500},
+                }
                 asyncio.create_task(network._broadcast_raw(req))
             else:
-                logger.warning("📥 Received Block #%s — rejected. Fork detected, trigger reorg sync.", block.index)
-                req = {"type": "chain_request", "data": {"start_index": 0, "limit": 1000000}}
+                logger.warning(
+                    "📥 Received Block #%s — rejected. Fork detected, trigger reorg sync.",
+                    block.index,
+                )
+                req = {
+                    "type": "chain_request",
+                    "data": {"start_index": 0, "limit": 1000000},
+                }
                 asyncio.create_task(network._broadcast_raw(req))
 
     async def handle_chain_request(payload, peer_addr):
         start_index = payload.get("start_index", 0)
         limit = payload.get("limit", 500)
         logger.info("📡 Peer requested blocks from %d (limit %d).", start_index, limit)
-        
+
         if start_index < len(chain.chain):
             blocks_slice = chain.chain[start_index : start_index + limit]
             blocks_dicts = [b.to_dict() for b in blocks_slice]
         else:
             blocks_dicts = []
-            
-        resp_payload = {"type": "chain_response", "data": {"blocks": blocks_dicts, "requested_limit": limit}}
+
+        resp_payload = {
+            "type": "chain_response",
+            "data": {"blocks": blocks_dicts, "requested_limit": limit},
+        }
         asyncio.create_task(network._unicast_raw(peer_addr, resp_payload))
 
     async def handle_chain_response(payload, peer_addr):
@@ -199,7 +240,10 @@ def make_network_handler(chain, mempool, network):
             if new_chain[0].index == 0:
                 success, orphans = chain.resolve_conflicts(new_chain)
                 if success:
-                    logger.info("🔄 Reorg complete! Restoring %d orphaned txs to mempool.", len(orphans))
+                    logger.info(
+                        "🔄 Reorg complete! Restoring %d orphaned txs to mempool.",
+                        len(orphans),
+                    )
                     for tx in orphans:
                         mempool.add_transaction(tx)
             else:
@@ -211,16 +255,25 @@ def make_network_handler(chain, mempool, network):
                         logger.info("📥 Synced Block #%d", block.index)
                         mempool.remove_transactions(block.transactions)
                     else:
-                        logger.warning("❌ Sync failed at Block #%d. Fork detected. Requesting full chain.", block.index)
-                        req = {"type": "chain_request", "data": {"start_index": 0, "limit": 1000000}}
+                        logger.warning(
+                            "❌ Sync failed at Block #%d. Fork detected. Requesting full chain.",
+                            block.index,
+                        )
+                        req = {
+                            "type": "chain_request",
+                            "data": {"start_index": 0, "limit": 1000000},
+                        }
                         asyncio.create_task(network._broadcast_raw(req))
                         all_added = False
                         break
-                        
+
                 if all_added and len(new_chain) == requested_limit:
                     next_index = chain.last_block.index + 1
                     logger.info("📡 Requesting next batch from index %d", next_index)
-                    req = {"type": "chain_request", "data": {"start_index": next_index, "limit": requested_limit}}
+                    req = {
+                        "type": "chain_request",
+                        "data": {"start_index": next_index, "limit": requested_limit},
+                    }
                     asyncio.create_task(network._broadcast_raw(req))
 
     HANDLERS = {
@@ -245,25 +298,25 @@ def make_network_handler(chain, mempool, network):
     return handler
 
 
-
 # ──────────────────────────────────────────────
 # Interactive CLI
 # ──────────────────────────────────────────────
 
-C_CYAN = '\033[96m'
-C_BLUE = '\033[94m'
-C_YELLOW = '\033[38;2;255;205;0m' # Golden Wallet (#FFCD00)
-C_GREEN = '\033[38;2;0;132;61m'    # Baggy Green (#00843D)
-C_RED = '\033[91m'
-C_RESET = '\033[0m'
-C_BOLD = '\033[1m'
+C_CYAN = "\033[96m"
+C_BLUE = "\033[94m"
+C_YELLOW = "\033[38;2;255;205;0m"  # Golden Wallet (#FFCD00)
+C_GREEN = "\033[38;2;0;132;61m"  # Baggy Green (#00843D)
+C_RED = "\033[91m"
+C_RESET = "\033[0m"
+C_BOLD = "\033[1m"
+
 
 def gradient_text(text: str, c1: tuple[int, int, int], c2: tuple[int, int, int]) -> str:
     """Applies a smooth horizontal color gradient to text."""
-    lines = text.strip('\n').split('\n')
+    lines = text.strip("\n").split("\n")
     out = []
     max_len = max(len(line) for line in lines) if lines else 1
-    
+
     for line in lines:
         line_out = ""
         for i, char in enumerate(line):
@@ -274,6 +327,7 @@ def gradient_text(text: str, c1: tuple[int, int, int], c2: tuple[int, int, int])
             line_out += f"\033[38;2;{r};{g};{b}m{char}"
         out.append(line_out + C_RESET)
     return "\n".join(out)
+
 
 RAW_LOGO = r"""
 ███╗   ███╗██╗███╗   ██╗██╗ ██████╗██╗  ██╗ █████╗ ██╗███╗   ██╗
@@ -317,7 +371,9 @@ async def cli_loop(sk, pk, chain, mempool, network, datadir: str | None = None):
         for addr, acc in accounts.items():
             tag = f" {C_GREEN}(you){C_RESET}" if addr == pk else ""
             contract_tag = f" {C_CYAN}[Contract]{C_RESET}" if acc.get("code") else ""
-            print(f"  {C_BOLD}{addr[:12]}...{C_RESET}  balance={C_YELLOW}{acc['balance']}{C_RESET}  nonce={acc['nonce']}{tag}{contract_tag}")
+            print(
+                f"  {C_BOLD}{addr[:12]}...{C_RESET}  balance={C_YELLOW}{acc['balance']}{C_RESET}  nonce={acc['nonce']}{tag}{contract_tag}"
+            )
 
     async def cmd_send(parts):
         if len(parts) < 3:
@@ -341,14 +397,25 @@ async def cli_loop(sk, pk, chain, mempool, network, datadir: str | None = None):
             return
 
         nonce = chain.state.get_account(pk).get("nonce", 0)
-        tx = Transaction(sender=pk, receiver=receiver, amount=amount, nonce=nonce, fee=fee, chain_id=chain.chain_id)
+        tx = Transaction(
+            sender=pk,
+            receiver=receiver,
+            amount=amount,
+            nonce=nonce,
+            fee=fee,
+            chain_id=chain.chain_id,
+        )
         tx.sign(sk)
 
         if mempool.add_transaction(tx):
             await network.broadcast_transaction(tx)
-            print(f"  {C_GREEN}✅ Tx sent:{C_RESET} {amount} coins → {receiver[:12]}...")
+            print(
+                f"  {C_GREEN}✅ Tx sent:{C_RESET} {amount} coins → {receiver[:12]}..."
+            )
         else:
-            print(f"  {C_RED}❌ Transaction rejected{C_RESET} (invalid sig, duplicate, or mempool full).")
+            print(
+                f"  {C_RED}❌ Transaction rejected{C_RESET} (invalid sig, duplicate, or mempool full)."
+            )
 
     async def cmd_deploy(parts):
         if len(parts) < 2:
@@ -361,7 +428,7 @@ async def cli_loop(sk, pk, chain, mempool, network, datadir: str | None = None):
         except FileNotFoundError:
             print(f"  File not found: {filepath}")
             return
-        
+
         try:
             amount = int(parts[2]) if len(parts) > 2 else 0
             fee = int(parts[3]) if len(parts) > 3 else 0
@@ -374,7 +441,15 @@ async def cli_loop(sk, pk, chain, mempool, network, datadir: str | None = None):
             return
 
         nonce = chain.state.get_account(pk).get("nonce", 0)
-        tx = Transaction(sender=pk, receiver=None, amount=amount, nonce=nonce, fee=fee, data=code, chain_id=chain.chain_id)
+        tx = Transaction(
+            sender=pk,
+            receiver=None,
+            amount=amount,
+            nonce=nonce,
+            fee=fee,
+            data=code,
+            chain_id=chain.chain_id,
+        )
         tx.sign(sk)
 
         if mempool.add_transaction(tx):
@@ -392,7 +467,7 @@ async def cli_loop(sk, pk, chain, mempool, network, datadir: str | None = None):
             print("  Invalid receiver format. Expected 40 or 64 hex characters.")
             return
         payload = parts[2]
-        
+
         try:
             amount = int(parts[3]) if len(parts) > 3 else 0
             fee = int(parts[4]) if len(parts) > 4 else 0
@@ -405,12 +480,22 @@ async def cli_loop(sk, pk, chain, mempool, network, datadir: str | None = None):
             return
 
         nonce = chain.state.get_account(pk).get("nonce", 0)
-        tx = Transaction(sender=pk, receiver=receiver, amount=amount, nonce=nonce, fee=fee, data=payload, chain_id=chain.chain_id)
+        tx = Transaction(
+            sender=pk,
+            receiver=receiver,
+            amount=amount,
+            nonce=nonce,
+            fee=fee,
+            data=payload,
+            chain_id=chain.chain_id,
+        )
         tx.sign(sk)
 
         if mempool.add_transaction(tx):
             await network.broadcast_transaction(tx)
-            print(f"  ✅ Call Tx sent to {receiver[:12]}... (payload='{payload}'). Mine a block to confirm.")
+            print(
+                f"  ✅ Call Tx sent to {receiver[:12]}... (payload='{payload}'). Mine a block to confirm."
+            )
         else:
             print("  ❌ Call Transaction rejected.")
 
@@ -444,13 +529,16 @@ async def cli_loop(sk, pk, chain, mempool, network, datadir: str | None = None):
 
     async def cmd_list_banned(parts):
         from minichain.persistence import get_banned_peers
+
         banned = get_banned_peers(path=datadir or ".")
         if not banned:
             print("  No peers are currently banned.")
         else:
             print(f"  {len(banned)} banned peer(s):")
             for p in banned:
-                print(f"    - {p['peer_id']} (Reason: {p['reason']}, Time: {p['timestamp']})")
+                print(
+                    f"    - {p['peer_id']} (Reason: {p['reason']}, Time: {p['timestamp']})"
+                )
 
     async def cmd_ban(parts):
         if len(parts) < 2:
@@ -458,6 +546,7 @@ async def cli_loop(sk, pk, chain, mempool, network, datadir: str | None = None):
             return
         peer_id = parts[1]
         from minichain.persistence import ban_peer
+
         ban_peer(peer_id, reason="Manual ban via CLI", path=datadir or ".")
         await network.disconnect_peer(f"peer:{peer_id}")
         print(f"  ✅ Peer {peer_id} banned.")
@@ -468,6 +557,7 @@ async def cli_loop(sk, pk, chain, mempool, network, datadir: str | None = None):
             return
         peer_id = parts[1]
         from minichain.persistence import unban_peer
+
         unban_peer(peer_id, path=datadir or ".")
         print(f"  ✅ Peer {peer_id} unbanned.")
 
@@ -492,7 +582,9 @@ async def cli_loop(sk, pk, chain, mempool, network, datadir: str | None = None):
 
     while True:
         try:
-            raw = await loop.run_in_executor(None, lambda: input(f"{C_CYAN}minichain>{C_RESET} "))
+            raw = await loop.run_in_executor(
+                None, lambda: input(f"{C_CYAN}minichain>{C_RESET} ")
+            )
         except (EOFError, KeyboardInterrupt):
             break
 
@@ -513,7 +605,10 @@ async def cli_loop(sk, pk, chain, mempool, network, datadir: str | None = None):
 # Main entry point
 # ──────────────────────────────────────────────
 
-async def run_node(port: int, host: str, connect_to: str | None, fund: int, datadir: str | None):
+
+async def run_node(
+    port: int, host: str, connect_to: str | None, fund: int, datadir: str | None
+):
     """Boot the node, optionally connect to a peer, then enter the CLI."""
     sk, pk = create_wallet()
 
@@ -522,6 +617,7 @@ async def run_node(port: int, host: str, connect_to: str | None, fund: int, data
     if datadir:
         try:
             from minichain.persistence import load, persistence_exists
+
             if persistence_exists(datadir):
                 chain = load(datadir)
                 logger.info("Restored chain from '%s'", datadir)
@@ -540,21 +636,27 @@ async def run_node(port: int, host: str, connect_to: str | None, fund: int, data
 
     handler = make_network_handler(chain, mempool, network)
     network.register_handler(handler)
-    
+
     rpc_server = JSONRPCServer(chain, mempool, network)
 
     # When a new peer connects, send our hello so they can handshake
     async def on_peer_connected(writer):
         import json as _json
-        sync_msg = _json.dumps({
-            "type": "hello",
-            "data": {
-                "chain_id": chain.chain_id,
-                "genesis_hash": chain.chain[0].hash,
-                "latest_block_index": chain.last_block.index,
-                "latest_block_hash": chain.last_block.hash
-            }
-        }) + "\n"
+
+        sync_msg = (
+            _json.dumps(
+                {
+                    "type": "hello",
+                    "data": {
+                        "chain_id": chain.chain_id,
+                        "genesis_hash": chain.chain[0].hash,
+                        "latest_block_index": chain.last_block.index,
+                        "latest_block_hash": chain.last_block.hash,
+                    },
+                }
+            )
+            + "\n"
+        )
         writer.write(sync_msg.encode())
         await writer.drain()
         logger.info("🔄 Sent hello handshake to new peer")
@@ -562,7 +664,7 @@ async def run_node(port: int, host: str, connect_to: str | None, fund: int, data
     network.register_on_peer_connected(on_peer_connected)
 
     await network.start(port=port, host=host)
-    
+
     # Start RPC server on a port correlated to the node port (e.g. 8545 if P2P is 9000)
     rpc_port = 8545 + (port - 9000)
     await rpc_server.start(host="127.0.0.1", port=rpc_port)
@@ -583,22 +685,45 @@ async def run_node(port: int, host: str, connect_to: str | None, fund: int, data
         if datadir:
             try:
                 from minichain.persistence import save
+
                 save(chain, datadir)
                 logger.info("Chain saved to '%s'", datadir)
             except Exception as e:
                 logger.error("Failed to save chain during shutdown: %s", e)
-        
+
         await rpc_server.stop()
         await network.stop()
 
 
 def main():
     parser = argparse.ArgumentParser(description="MiniChain Node — Testnet Demo")
-    parser.add_argument("--host", type=str, default="127.0.0.1", help="Host/IP to bind the P2P server (default: 127.0.0.1)")
-    parser.add_argument("--port", type=int, default=9000, help="TCP port to listen on (default: 9000)")
-    parser.add_argument("--connect", type=str, default=None, help="Peer address to connect to (multiaddr)")
-    parser.add_argument("--fund", type=int, default=100, help="Initial coins to fund this wallet (default: 100)")
-    parser.add_argument("--datadir", type=str, default=None, help="Directory to save/load blockchain state (enables persistence)")
+    parser.add_argument(
+        "--host",
+        type=str,
+        default="127.0.0.1",
+        help="Host/IP to bind the P2P server (default: 127.0.0.1)",
+    )
+    parser.add_argument(
+        "--port", type=int, default=9000, help="TCP port to listen on (default: 9000)"
+    )
+    parser.add_argument(
+        "--connect",
+        type=str,
+        default=None,
+        help="Peer address to connect to (multiaddr)",
+    )
+    parser.add_argument(
+        "--fund",
+        type=int,
+        default=100,
+        help="Initial coins to fund this wallet (default: 100)",
+    )
+    parser.add_argument(
+        "--datadir",
+        type=str,
+        default=None,
+        help="Directory to save/load blockchain state (enables persistence)",
+    )
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -608,7 +733,9 @@ def main():
     )
 
     try:
-        asyncio.run(run_node(args.port, args.host, args.connect, args.fund, args.datadir))
+        asyncio.run(
+            run_node(args.port, args.host, args.connect, args.fund, args.datadir)
+        )
     except KeyboardInterrupt:
         print("\nNode shut down.")
 

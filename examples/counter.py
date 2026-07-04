@@ -1,6 +1,6 @@
 # Counter Smart Contract Example
-# 
-# This is a simple counter contract designed to demonstrate the basic 
+#
+# This is a simple counter contract designed to demonstrate the basic
 # structure of smart contracts in MiniChain.
 #
 # Available built-ins in the MiniChain Sandbox:
@@ -14,21 +14,21 @@
 #
 # NOTE: The sandbox does NOT allow imports, print(), or any double-underscore methods.
 
-if msg['data'] == 'increment':
+if msg["data"] == "increment":
     # Retrieve the current counter value, defaulting to 0 if it doesn't exist
-    current_value = storage.get('counter', 0)
-    
+    current_value = storage.get("counter", 0)
+
     # Increment the counter
-    storage['counter'] = current_value + 1
+    storage["counter"] = current_value + 1
 
-elif msg['data'] == 'decrement':
-    current_value = storage.get('counter', 0)
-    storage['counter'] = current_value - 1
+elif msg["data"] == "decrement":
+    current_value = storage.get("counter", 0)
+    storage["counter"] = current_value - 1
 
-elif msg['data'] == 'reset':
+elif msg["data"] == "reset":
     # You can restrict who can reset the counter by checking the sender!
     # (Just an example, anyone can call this one)
-    storage['counter'] = 0
+    storage["counter"] = 0
 
 else:
     # If the payload doesn't match any known command, raise an exception.

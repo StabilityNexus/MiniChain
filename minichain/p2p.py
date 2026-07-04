@@ -12,6 +12,7 @@ import trio
 import queue
 
 from libp2p import new_host
+
 TProtocol = str
 from libp2p.peer.peerinfo import info_from_p2p_addr
 from multiaddr import Multiaddr
@@ -26,9 +27,9 @@ PROTOCOL_ID = TProtocol("/minichain/1.0.0")
 MAX_FRAME_BYTES = 1 * 1024 * 1024  # 1 MB
 
 # Misbehavior thresholds — all four are overridable per P2PNetwork instance.
-MALFORMED_THRESHOLD = 15     # N: accumulated malformed messages before ban
-FAILED_THRESHOLD = 15        # M: accumulated failed messages before ban
-INVALID_THRESHOLD = 1        # L: accumulated invalid messages before ban (1 = immediate)
+MALFORMED_THRESHOLD = 15  # N: accumulated malformed messages before ban
+FAILED_THRESHOLD = 15  # M: accumulated failed messages before ban
+INVALID_THRESHOLD = 1  # L: accumulated invalid messages before ban (1 = immediate)
 DECAY_INTERVAL_MINUTES = 10  # T: counter half-life period in minutes
 
 
@@ -65,13 +66,21 @@ class P2PNetwork:
         self._peer_counters: dict = {}
 
         if self.decay_interval_minutes <= 0:
-            raise ValueError(f"decay_interval_minutes must be positive, got {self.decay_interval_minutes}")
+            raise ValueError(
+                f"decay_interval_minutes must be positive, got {self.decay_interval_minutes}"
+            )
         if self.thresholds["malformed"] <= 0:
-            raise ValueError(f"malformed_threshold must be positive, got {self.thresholds['malformed']}")
+            raise ValueError(
+                f"malformed_threshold must be positive, got {self.thresholds['malformed']}"
+            )
         if self.thresholds["failed"] <= 0:
-            raise ValueError(f"failed_threshold must be positive, got {self.thresholds['failed']}")
+            raise ValueError(
+                f"failed_threshold must be positive, got {self.thresholds['failed']}"
+            )
         if self.thresholds["invalid"] <= 0:
-            raise ValueError(f"invalid_threshold must be positive, got {self.thresholds['invalid']}")
+            raise ValueError(
+                f"invalid_threshold must be positive, got {self.thresholds['invalid']}"
+            )
 
     def register_handler(self, handler_callback):
         self._handler_callback = handler_callback
@@ -129,8 +138,6 @@ class P2PNetwork:
         self._mark_seen("block", payload["data"])
         await self._broadcast_raw(payload)
 
-
-
     async def disconnect_peer(self, peer_addr):
         self._to_trio.put(("DISCONNECT", peer_addr))
 
@@ -173,13 +180,20 @@ class P2PNetwork:
         exceeded = self._increment_counter(peer_id, category)
 
         if exceeded:
-            ban_peer(peer_id, reason=f"{category}_threshold_exceeded", path=self.data_path)
+            ban_peer(
+                peer_id, reason=f"{category}_threshold_exceeded", path=self.data_path
+            )
             logger.warning(
                 "Banned peer %s: %s threshold (%d) exceeded",
-                peer_id, category, self.thresholds[category],
+                peer_id,
+                category,
+                self.thresholds[category],
             )
 
-        always_disconnect = status in (ValidationStatus.MALFORMED, ValidationStatus.INVALID)
+        always_disconnect = status in (
+            ValidationStatus.MALFORMED,
+            ValidationStatus.INVALID,
+        )
         if always_disconnect or exceeded:
             await self.disconnect_peer(peer_addr)
 
@@ -215,7 +229,9 @@ class P2PNetwork:
                 payload = data.get("data")
                 peer_addr = data.get("_peer_addr", "")
                 peer_id = (
-                    peer_addr[len("peer:"):] if peer_addr.startswith("peer:") else peer_addr
+                    peer_addr[len("peer:") :]
+                    if peer_addr.startswith("peer:")
+                    else peer_addr
                 )
 
                 if msg_type not in SUPPORTED_MESSAGE_TYPES:
@@ -224,7 +240,9 @@ class P2PNetwork:
                     if self._is_duplicate(msg_type, payload):
                         continue
                 except Exception:
-                    await self._handle_validation_status(peer_id, peer_addr, ValidationStatus.MALFORMED)
+                    await self._handle_validation_status(
+                        peer_id, peer_addr, ValidationStatus.MALFORMED
+                    )
                     continue
 
                 status = None
@@ -245,14 +263,23 @@ class P2PNetwork:
                 # JSON parse failure signalled from the Trio thread.
                 peer_addr = msg[1]
                 peer_id = (
-                    peer_addr[len("peer:"):] if peer_addr.startswith("peer:") else peer_addr
+                    peer_addr[len("peer:") :]
+                    if peer_addr.startswith("peer:")
+                    else peer_addr
                 )
-                await self._handle_validation_status(peer_id, peer_addr, ValidationStatus.MALFORMED)
+                await self._handle_validation_status(
+                    peer_id, peer_addr, ValidationStatus.MALFORMED
+                )
 
             elif msg[0] == "PEER_CONNECTED":
+
                 class MockWriter:
-                    def write(self, data): self.data = data
-                    async def drain(self): pass
+                    def write(self, data):
+                        self.data = data
+
+                    async def drain(self):
+                        pass
+
                 if self._on_peer_connected:
                     writer = MockWriter()
                     await self._on_peer_connected(writer)
@@ -334,8 +361,12 @@ class P2PNetwork:
                                 maddr = Multiaddr(arg)
                                 info = info_from_p2p_addr(maddr)
                                 await host.connect(info)
-                                stream = await host.new_stream(info.peer_id, [PROTOCOL_ID])
-                                host.get_network().nursery.start_soon(stream_handler, stream)
+                                stream = await host.new_stream(
+                                    info.peer_id, [PROTOCOL_ID]
+                                )
+                                host.get_network().nursery.start_soon(
+                                    stream_handler, stream
+                                )
                             except Exception as e:
                                 logger.error(f"Dial error: {e}")
                         elif cmd == "BROADCAST":
@@ -372,8 +403,10 @@ class P2PNetwork:
                 await trio.sleep(0.1)
 
         async with trio.open_nursery() as nursery:
+
             async def run_monitor():
                 if await check_queue():
                     await host.close()
                     nursery.cancel_scope.cancel()
+
             nursery.start_soon(run_monitor)

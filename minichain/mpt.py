@@ -7,6 +7,7 @@ class Trie:
     A Merkle Patricia Trie (MPT) for MiniChain backed by the `trie` library.
     Provides O(log N) state verification via cryptographic state roots.
     """
+
     def __init__(self):
         self._trie = HexaryTrie({})
 

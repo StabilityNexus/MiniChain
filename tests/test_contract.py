@@ -142,7 +142,7 @@ raise Exception("boom")
         receipt = self.state.apply_transaction(tx_deploy)
         self.assertIsNotNone(receipt)
         self.assertEqual(receipt.status, 1)
-        contract_addr = receipt.contract_address 
+        contract_addr = receipt.contract_address
         self.assertTrue(isinstance(contract_addr, str))
 
         # Verify balance and nonce after deploy
@@ -153,28 +153,28 @@ raise Exception("boom")
 
     def test_out_of_gas(self):
         """Contract with infinite loop should run out of gas and revert."""
-        
+
         code = "while True: pass"
-        
+
         # 1. Deploy code
         tx_deploy = Transaction(self.pk, None, 0, 0, fee=500, data=code)
         tx_deploy.sign(self.sk)
         receipt_deploy = self.state.apply_transaction(tx_deploy)
         self.assertEqual(receipt_deploy.status, 1)
         contract_addr = receipt_deploy.contract_address
-        
+
         # 2. Call code with specific fee (gas limit)
         tx_call = Transaction(self.pk, contract_addr, 0, 1, fee=1000, data="loop")
         tx_call.sign(self.sk)
-        
+
         balance_before = self.state.get_account(self.pk)["balance"]
-        
+
         receipt_call = self.state.apply_transaction(tx_call)
-        
+
         self.assertEqual(receipt_call.status, 0)
         self.assertEqual(receipt_call.error_message, "Out of gas!")
         self.assertEqual(receipt_call.gas_used, 1000)
-        
+
         balance_after = self.state.get_account(self.pk)["balance"]
         # Entire fee should be deducted because gas was completely consumed
         self.assertEqual(balance_after, balance_before - 1000)
@@ -184,14 +184,16 @@ raise Exception("boom")
         code = "import os\nstorage['x'] = 1"
         tx_deploy = Transaction(self.pk, None, 0, 0, fee=500, data=code)
         tx_deploy.sign(self.sk)
-        
-        receipt_deploy = self.state.apply_transaction(tx_deploy)
-        self.assertEqual(receipt_deploy.status, 1) # Deploy succeeds, saves code
 
-        tx_call = Transaction(self.pk, receipt_deploy.contract_address, 0, 1, fee=500, data="call")
+        receipt_deploy = self.state.apply_transaction(tx_deploy)
+        self.assertEqual(receipt_deploy.status, 1)  # Deploy succeeds, saves code
+
+        tx_call = Transaction(
+            self.pk, receipt_deploy.contract_address, 0, 1, fee=500, data="call"
+        )
         tx_call.sign(self.sk)
         receipt_call = self.state.apply_transaction(tx_call)
-        
+
         self.assertIsNotNone(receipt_call)
         self.assertEqual(receipt_call.status, 0)
         self.assertEqual(receipt_call.error_message, "AST Validation Failed")
@@ -202,11 +204,13 @@ raise Exception("boom")
         code = "f = open('critical_file.txt', 'w')\nf.write('hacked')"
         tx_deploy = Transaction(self.pk, None, 0, 0, fee=500, data=code)
         tx_deploy.sign(self.sk)
-        
+
         receipt_deploy = self.state.apply_transaction(tx_deploy)
         self.assertEqual(receipt_deploy.status, 1)
 
-        tx_call = Transaction(self.pk, receipt_deploy.contract_address, 0, 1, fee=500, data="call")
+        tx_call = Transaction(
+            self.pk, receipt_deploy.contract_address, 0, 1, fee=500, data="call"
+        )
         tx_call.sign(self.sk)
         receipt_call = self.state.apply_transaction(tx_call)
 

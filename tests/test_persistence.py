@@ -14,7 +14,6 @@ from nacl.signing import SigningKey
 from minichain import Block, Blockchain, Transaction, mine_block
 from minichain.persistence import load, persistence_exists, save
 
-
 DB_FILE = "data.db"
 LEGACY_FILE = "data.json"
 
@@ -46,6 +45,7 @@ class TestPersistence(unittest.TestCase):
         receipt = temp_state.validate_and_apply(tx)
 
         from minichain.block import calculate_receipt_root
+
         block = Block(
             index=1,
             previous_hash=bc.last_block.hash,
@@ -103,7 +103,9 @@ class TestPersistence(unittest.TestCase):
         self.assertEqual(original_receipt.status, loaded_receipt.status)
         self.assertEqual(original_receipt.gas_used, loaded_receipt.gas_used)
         self.assertEqual(original_receipt.error_message, loaded_receipt.error_message)
-        self.assertEqual(original_receipt.contract_address, loaded_receipt.contract_address)
+        self.assertEqual(
+            original_receipt.contract_address, loaded_receipt.contract_address
+        )
 
     def test_genesis_only_chain(self):
         bc = Blockchain()
@@ -130,7 +132,9 @@ class TestPersistence(unittest.TestCase):
         save(bc, path=self.tmpdir)
         db_path = os.path.join(self.tmpdir, DB_FILE)
         with sqlite3.connect(db_path) as conn:
-            row = conn.execute("SELECT block_json FROM blocks WHERE height = 1").fetchone()
+            row = conn.execute(
+                "SELECT block_json FROM blocks WHERE height = 1"
+            ).fetchone()
             payload = json.loads(row[0])
             payload["hash"] = "deadbeef" * 8
             conn.execute(
@@ -145,7 +149,9 @@ class TestPersistence(unittest.TestCase):
         save(bc, path=self.tmpdir)
         db_path = os.path.join(self.tmpdir, DB_FILE)
         with sqlite3.connect(db_path) as conn:
-            row = conn.execute("SELECT block_json FROM blocks WHERE height = 1").fetchone()
+            row = conn.execute(
+                "SELECT block_json FROM blocks WHERE height = 1"
+            ).fetchone()
             payload = json.loads(row[0])
             payload["previous_hash"] = "0" * 64 + "ff"
             conn.execute(
@@ -160,7 +166,9 @@ class TestPersistence(unittest.TestCase):
         save(bc, path=self.tmpdir)
         db_path = os.path.join(self.tmpdir, DB_FILE)
         with sqlite3.connect(db_path) as conn:
-            conn.execute("UPDATE blocks SET block_json = ? WHERE height = 0", ("{bad-json",))
+            conn.execute(
+                "UPDATE blocks SET block_json = ? WHERE height = 0", ("{bad-json",)
+            )
         with self.assertRaises(ValueError):
             load(path=self.tmpdir)
 
@@ -199,7 +207,9 @@ class TestPersistence(unittest.TestCase):
         save(bc, path=self.tmpdir)
         db_path = os.path.join(self.tmpdir, DB_FILE)
         with sqlite3.connect(db_path) as conn:
-            row = conn.execute("SELECT block_json FROM blocks WHERE height = 0").fetchone()
+            row = conn.execute(
+                "SELECT block_json FROM blocks WHERE height = 0"
+            ).fetchone()
             payload = json.loads(row[0])
             payload.pop("hash", None)
             conn.execute(
@@ -241,6 +251,7 @@ class TestPersistence(unittest.TestCase):
         receipt2 = temp_state.validate_and_apply(tx2)
 
         from minichain.block import calculate_receipt_root
+
         block2 = Block(
             index=len(restored.chain),
             previous_hash=restored.last_block.hash,
