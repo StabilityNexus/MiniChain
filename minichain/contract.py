@@ -19,7 +19,7 @@ class GasMeter:
                 raise OutOfGasException("Out of gas!")
         return self.trace_calls
 
-import json # Moved to module-level import
+import json
 logger = logging.getLogger(__name__)
 
 def _safe_exec_worker(code, globals_dict, context_dict, result_queue, gas_limit):
@@ -209,17 +209,12 @@ class ContractMachine:
                 if isinstance(node, (ast.Import, ast.ImportFrom)):
                     logger.warning("Rejected contract code with import statement.")
                     return False
-                if isinstance(node, ast.Call):
-                    if isinstance(node.func, ast.Name) and node.func.id == 'type':
-                        logger.warning("Rejected type() call.")
-                        return False
-                if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id in {"getattr", "setattr", "delattr"}:
+                if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id in {"type", "getattr", "setattr", "delattr"}:
                     logger.warning("Rejected direct call to %s.", node.func.id)
                     return False
-                if isinstance(node, ast.Constant) and isinstance(node.value, str):
-                    if "__" in node.value:
-                        logger.warning("Rejected string literal with double-underscore.")
-                        return False
+                if isinstance(node, ast.Constant) and isinstance(node.value, str) and "__" in node.value:
+                    logger.warning("Rejected string literal with double-underscore.")
+                    return False
                 if isinstance(node, ast.JoinedStr): # f-strings
                     logger.warning("Rejected f-string usage.")
                     return False

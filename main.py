@@ -18,6 +18,7 @@ Commands (type in the terminal while the node is running):
 
 import argparse
 import asyncio
+import json
 import logging
 import re
 import sys
@@ -45,6 +46,36 @@ def create_wallet():
     sk = SigningKey.generate()
     pk = sk.verify_key.encode(encoder=HexEncoder).decode()
     return sk, pk
+
+
+def request_chain(network, start_index, limit):
+    """Broadcast a chain_request for blocks starting at start_index."""
+    req = {"type": "chain_request", "data": {"start_index": start_index, "limit": limit}}
+    asyncio.create_task(network._broadcast_raw(req))
+
+
+def parse_amount_fee(parts, start):
+    """Parse optional non-negative amount/fee at parts[start] and parts[start+1].
+    Returns (amount, fee), or None if invalid (a message is printed for the user)."""
+    try:
+        amount = int(parts[start]) if len(parts) > start else 0
+        fee = int(parts[start + 1]) if len(parts) > start + 1 else 0
+    except ValueError:
+        print("  Amount and fee must be integers.")
+        return None
+    if amount < 0 or fee < 0:
+        print("  Amount and fee cannot be negative.")
+        return None
+    return amount, fee
+
+
+async def submit_and_broadcast(mempool, network, tx, ok_msg, reject_msg):
+    """Add a signed tx to the mempool and broadcast it, printing the outcome."""
+    if mempool.add_transaction(tx):
+        await network.broadcast_transaction(tx)
+        print(ok_msg)
+    else:
+        print(reject_msg)
 
 
 # ──────────────────────────────────────────────
@@ -117,7 +148,6 @@ def mine_and_process_block(chain, mempool, miner_pk):
 
 def make_network_handler(chain, mempool, network):
     """Return an async callback that processes incoming P2P messages."""
-    from minichain.validators import ValidationStatus
 
     async def handler(data):
         msg_type = data.get("type")
@@ -143,8 +173,7 @@ def make_network_handler(chain, mempool, network):
             peer_tip = payload.get("latest_block_index", 0)
             if peer_tip > chain.last_block.index:
                 logger.info("📡 Peer %s is ahead (%d > %d). Initiating chunked sync...", peer_addr, peer_tip, chain.last_block.index)
-                req = {"type": "chain_request", "data": {"start_index": chain.last_block.index + 1, "limit": 500}}
-                asyncio.create_task(network._broadcast_raw(req))
+                request_chain(network, chain.last_block.index + 1, 500)
 
         elif msg_type == "tx":
             try:
@@ -178,13 +207,11 @@ def make_network_handler(chain, mempool, network):
             else:
                 if block.index > chain.last_block.index + 1:
                     logger.warning("📥 Received Block #%s — ahead of us (tip: %s). Requesting chunked sync...", block.index, chain.last_block.index)
-                    req = {"type": "chain_request", "data": {"start_index": chain.last_block.index + 1, "limit": 500}}
-                    asyncio.create_task(network._broadcast_raw(req))
+                    request_chain(network, chain.last_block.index + 1, 500)
                 else:
                     logger.warning("📥 Received Block #%s — rejected. Fork detected, trigger reorg sync.", block.index)
                     # For a fork, request the full chain to use resolve_conflicts
-                    req = {"type": "chain_request", "data": {"start_index": 0, "limit": 1000000}} # Request full chain for reorg
-                    asyncio.create_task(network._broadcast_raw(req))
+                    request_chain(network, 0, 1000000)
             return status
 
         elif msg_type == "chain_request":
@@ -234,17 +261,15 @@ def make_network_handler(chain, mempool, network):
                             mempool.remove_transactions(block.transactions)
                         else:
                             logger.warning("❌ Sync failed at Block #%d. Fork detected. Requesting full chain.", block.index)
-                            req = {"type": "chain_request", "data": {"start_index": 0, "limit": 1000000}}
-                            asyncio.create_task(network._broadcast_raw(req))
+                            request_chain(network, 0, 1000000)
                             all_added = False
                             break
-                            
+
                     # If we added all blocks and we hit the limit, request next batch
                     if all_added and len(new_chain) == requested_limit:
                         next_index = chain.last_block.index + 1
                         logger.info("📡 Requesting next batch from index %d", next_index)
-                        req = {"type": "chain_request", "data": {"start_index": next_index, "limit": requested_limit}}
-                        asyncio.create_task(network._broadcast_raw(req))
+                        request_chain(network, next_index, requested_limit)
 
     return handler
 
@@ -360,11 +385,11 @@ async def cli_loop(sk, pk, chain, mempool, network, datadir: str | None = None):
             tx = Transaction(sender=pk, receiver=receiver, amount=amount, nonce=nonce, fee=fee, chain_id=chain.chain_id)
             tx.sign(sk)
 
-            if mempool.add_transaction(tx):
-                await network.broadcast_transaction(tx)
-                print(f"  {C_GREEN}✅ Tx sent:{C_RESET} {amount} coins → {receiver[:12]}...")
-            else:
-                print(f"  {C_RED}❌ Transaction rejected{C_RESET} (invalid sig, duplicate, or mempool full).")
+            await submit_and_broadcast(
+                mempool, network, tx,
+                f"  {C_GREEN}✅ Tx sent:{C_RESET} {amount} coins → {receiver[:12]}...",
+                f"  {C_RED}❌ Transaction rejected{C_RESET} (invalid sig, duplicate, or mempool full).",
+            )
 
         # ── deploy ──
         elif cmd == "deploy":
@@ -379,26 +404,20 @@ async def cli_loop(sk, pk, chain, mempool, network, datadir: str | None = None):
                 print(f"  File not found: {filepath}")
                 continue
             
-            try:
-                amount = int(parts[2]) if len(parts) > 2 else 0
-                fee = int(parts[3]) if len(parts) > 3 else 0
-            except ValueError:
-                print("  Amount and fee must be integers.")
+            parsed = parse_amount_fee(parts, 2)
+            if parsed is None:
                 continue
-
-            if amount < 0 or fee < 0:
-                print("  Amount and fee cannot be negative.")
-                continue
+            amount, fee = parsed
 
             nonce = chain.state.get_account(pk).get("nonce", 0)
             tx = Transaction(sender=pk, receiver=None, amount=amount, nonce=nonce, fee=fee, data=code, chain_id=chain.chain_id)
             tx.sign(sk)
 
-            if mempool.add_transaction(tx):
-                await network.broadcast_transaction(tx)
-                print(f"  ✅ Deploy Tx sent (nonce={nonce}). Mine a block to confirm.")
-            else:
-                print("  ❌ Deploy Transaction rejected.")
+            await submit_and_broadcast(
+                mempool, network, tx,
+                f"  ✅ Deploy Tx sent (nonce={nonce}). Mine a block to confirm.",
+                "  ❌ Deploy Transaction rejected.",
+            )
 
         # ── call ──
         elif cmd == "call":
@@ -410,27 +429,21 @@ async def cli_loop(sk, pk, chain, mempool, network, datadir: str | None = None):
                 print("  Invalid receiver format. Expected 40 or 64 hex characters.")
                 continue
             payload = parts[2]
-            
-            try:
-                amount = int(parts[3]) if len(parts) > 3 else 0
-                fee = int(parts[4]) if len(parts) > 4 else 0
-            except ValueError:
-                print("  Amount and fee must be integers.")
-                continue
 
-            if amount < 0 or fee < 0:
-                print("  Amount and fee cannot be negative.")
+            parsed = parse_amount_fee(parts, 3)
+            if parsed is None:
                 continue
+            amount, fee = parsed
 
             nonce = chain.state.get_account(pk).get("nonce", 0)
             tx = Transaction(sender=pk, receiver=receiver, amount=amount, nonce=nonce, fee=fee, data=payload, chain_id=chain.chain_id)
             tx.sign(sk)
 
-            if mempool.add_transaction(tx):
-                await network.broadcast_transaction(tx)
-                print(f"  ✅ Call Tx sent to {receiver[:12]}... (payload='{payload}'). Mine a block to confirm.")
-            else:
-                print("  ❌ Call Transaction rejected.")
+            await submit_and_broadcast(
+                mempool, network, tx,
+                f"  ✅ Call Tx sent to {receiver[:12]}... (payload='{payload}'). Mine a block to confirm.",
+                "  ❌ Call Transaction rejected.",
+            )
 
         # ── mine ──
         elif cmd == "mine":
@@ -545,8 +558,7 @@ async def run_node(port: int, host: str, connect_to: str | None, fund: int, data
 
     # When a new peer connects, send our hello so they can handshake
     async def on_peer_connected(writer):
-        import json as _json
-        sync_msg = _json.dumps({
+        sync_msg = json.dumps({
             "type": "hello",
             "data": {
                 "chain_id": chain.chain_id,

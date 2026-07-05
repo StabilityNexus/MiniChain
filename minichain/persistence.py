@@ -14,10 +14,13 @@ The public API intentionally stays the same:
 
 from __future__ import annotations
 
+import copy
 import json
 import logging
 import os
 import sqlite3
+import time
+from contextlib import contextmanager
 from typing import Any
 
 from .block import Block
@@ -48,7 +51,7 @@ def save(blockchain: Blockchain, path: str = ".") -> None:
 
     with blockchain._lock:
         chain_data = [block.to_dict() for block in blockchain.chain]
-        state_data = json.loads(json.dumps(blockchain.state.accounts))
+        state_data = copy.deepcopy(blockchain.state.accounts)
 
     _save_snapshot_to_sqlite(db_path, {"chain": chain_data, "state": state_data})
 
@@ -214,10 +217,11 @@ def _save_snapshot_to_sqlite(db_path: str, snapshot: dict[str, Any]) -> None:
 
 
 def _load_snapshot_from_sqlite(db_path: str) -> dict[str, Any]:
+    invalid = f"Invalid SQLite persistence data in '{db_path}'"
     try:
         conn = _connect(db_path)
     except sqlite3.DatabaseError as exc:
-        raise ValueError(f"Invalid SQLite persistence data in '{db_path}'") from exc
+        raise ValueError(invalid) from exc
 
     try:
         _require_schema(conn)
@@ -232,18 +236,18 @@ def _load_snapshot_from_sqlite(db_path: str) -> dict[str, Any]:
             ("chain_length",),
         ).fetchone()
     except sqlite3.DatabaseError as exc:
-        raise ValueError(f"Invalid SQLite persistence data in '{db_path}'") from exc
+        raise ValueError(invalid) from exc
     finally:
         conn.close()
 
     if chain_length_row is None:
-        raise ValueError(f"Invalid SQLite persistence data in '{db_path}'")
+        raise ValueError(invalid)
     try:
         expected_chain_length = int(chain_length_row["value"])
     except (TypeError, ValueError) as exc:
-        raise ValueError(f"Invalid SQLite persistence data in '{db_path}'") from exc
+        raise ValueError(invalid) from exc
     if expected_chain_length != len(block_rows):
-        raise ValueError(f"Invalid SQLite persistence data in '{db_path}'")
+        raise ValueError(invalid)
 
     try:
         chain = [json.loads(row["block_json"]) for row in block_rows]
@@ -261,62 +265,59 @@ def _load_snapshot_from_sqlite(db_path: str) -> dict[str, Any]:
 # Banned Peers (Track 1)
 # ---------------------------------------------------------------------------
 
-import time
 
 def _ensure_banned_peers_table(conn: sqlite3.Connection) -> None:
     conn.execute(
         "CREATE TABLE IF NOT EXISTS banned_peers (peer_id TEXT PRIMARY KEY, reason TEXT, timestamp REAL)"
     )
 
-def ban_peer(peer_id: str, reason: str, path: str = ".") -> None:
+
+@contextmanager
+def _banned_peers_conn(path: str, create: bool):
+    """
+    Yield a connection with the banned_peers table ensured, always closing it.
+    When *create* is False and no DB exists yet, yields None so read-only callers
+    can short-circuit without touching the filesystem.
+    """
     db_path = os.path.join(path, _DB_FILE)
-    os.makedirs(path, exist_ok=True)
+    if not create and not os.path.exists(db_path):
+        yield None
+        return
+    if create:
+        os.makedirs(path, exist_ok=True)
     conn = _connect(db_path)
     try:
         _ensure_banned_peers_table(conn)
-        with conn:
-            conn.execute(
-                "INSERT OR REPLACE INTO banned_peers (peer_id, reason, timestamp) VALUES (?, ?, ?)",
-                (peer_id, reason, time.time())
-            )
+        yield conn
     finally:
         conn.close()
+
+def ban_peer(peer_id: str, reason: str, path: str = ".") -> None:
+    with _banned_peers_conn(path, create=True) as conn, conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO banned_peers (peer_id, reason, timestamp) VALUES (?, ?, ?)",
+            (peer_id, reason, time.time())
+        )
 
 def unban_peer(peer_id: str, path: str = ".") -> None:
-    db_path = os.path.join(path, _DB_FILE)
-    if not os.path.exists(db_path):
-        return
-    conn = _connect(db_path)
-    try:
-        _ensure_banned_peers_table(conn)
+    with _banned_peers_conn(path, create=False) as conn:
+        if conn is None:
+            return
         with conn:
             conn.execute("DELETE FROM banned_peers WHERE peer_id = ?", (peer_id,))
-    finally:
-        conn.close()
 
 def is_peer_banned(peer_id: str, path: str = ".") -> bool:
-    db_path = os.path.join(path, _DB_FILE)
-    if not os.path.exists(db_path):
-        return False
-    conn = _connect(db_path)
-    try:
-        _ensure_banned_peers_table(conn)
-        row = conn.execute("SELECT peer_id FROM banned_peers WHERE peer_id = ?", (peer_id,)).fetchone()
-        return row is not None
-    finally:
-        conn.close()
+    with _banned_peers_conn(path, create=False) as conn:
+        if conn is None:
+            return False
+        return conn.execute("SELECT peer_id FROM banned_peers WHERE peer_id = ?", (peer_id,)).fetchone() is not None
 
 def get_banned_peers(path: str = ".") -> list[dict[str, Any]]:
-    db_path = os.path.join(path, _DB_FILE)
-    if not os.path.exists(db_path):
-        return []
-    conn = _connect(db_path)
-    try:
-        _ensure_banned_peers_table(conn)
+    with _banned_peers_conn(path, create=False) as conn:
+        if conn is None:
+            return []
         rows = conn.execute("SELECT peer_id, reason, timestamp FROM banned_peers ORDER BY timestamp DESC").fetchall()
         return [{"peer_id": r["peer_id"], "reason": r["reason"], "timestamp": r["timestamp"]} for r in rows]
-    finally:
-        conn.close()
 
 
 # ---------------------------------------------------------------------------

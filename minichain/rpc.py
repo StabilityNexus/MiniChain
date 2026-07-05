@@ -34,13 +34,8 @@ class JSONRPCServer:
             return web.json_response({"jsonrpc": "2.0", "error": {"code": -32700, "message": "Parse error"}, "id": None})
 
         if isinstance(req_data, list):
-            responses = []
-            for req in req_data:
-                responses.append(await self._process_single(req))
-            return web.json_response(responses)
-        else:
-            response = await self._process_single(req_data)
-            return web.json_response(response)
+            return web.json_response([await self._process_single(req) for req in req_data])
+        return web.json_response(await self._process_single(req_data))
 
     async def _process_single(self, req):
         if not isinstance(req, dict) or "method" not in req or req.get("jsonrpc") != "2.0":
