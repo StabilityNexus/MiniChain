@@ -6,6 +6,7 @@ import threading
 import json
 import os
 import sys
+import time
 
 logger = logging.getLogger(__name__)
 
@@ -24,6 +25,17 @@ def validate_block_link_and_hash(previous_block, block):
     expected_hash = calculate_hash(block.to_header_dict())
     if block.hash != expected_hash:
         raise ValueError(f"invalid hash {block.hash}")
+
+    target = "0" * (block.difficulty or 1)
+    if not block.hash.startswith(target):
+        raise ValueError(f"invalid Proof of Work: hash {block.hash} does not satisfy difficulty {block.difficulty}")
+
+    if block.timestamp <= previous_block.timestamp:
+        raise ValueError(f"invalid timestamp: {block.timestamp} is not strictly greater than previous block timestamp {previous_block.timestamp}")
+
+    max_allowed_time = int(time.time() * 1000) + 15000
+    if block.timestamp > max_allowed_time:
+        raise ValueError(f"invalid timestamp: {block.timestamp} is too far in the future (max allowed: {max_allowed_time})")
 
 
 class Blockchain:
