@@ -34,4 +34,3 @@ def test_resolve_conflicts_rejects_invalid_pow():
 
     assert success is False
     assert len(chain.chain) == 1
-    
