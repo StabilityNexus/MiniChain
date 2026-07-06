@@ -22,6 +22,8 @@ import json
 import logging
 import re
 import sys
+import os
+import json
 
 from nacl.signing import SigningKey
 from nacl.encoding import HexEncoder
@@ -42,9 +44,38 @@ LOCALHOST_PEERS = {"127.0.0.1", "::1", "localhost", "0:0:0:0:0:0:0:1"}
 # Wallet helpers
 # ──────────────────────────────────────────────
 
-def create_wallet():
+def load_or_create_wallet(datadir: str | None):
+    path = datadir or "."
+    keystore_path = os.path.join(path, "keystore.json")
+
+    # Security Warning:
+    # Keys are currently stored in unencrypted raw hex format for minimality.
+    # In a production environment, this file should be encrypted with a "spending password"
+    # so that the private key only lives in memory when decrypted by the user.
+    if os.path.exists(keystore_path):
+        try:
+            with open(keystore_path, "r") as f:
+                data = json.load(f)
+                sk_hex = data.get("private_key")
+                if sk_hex:
+                    sk = SigningKey(bytes.fromhex(sk_hex))
+                    pk = sk.verify_key.encode(encoder=HexEncoder).decode()
+                    logger.info("Loaded existing wallet from %s", keystore_path)
+                    return sk, pk
+        except Exception as e:
+            logger.warning("Failed to load keystore: %s", e)
+
     sk = SigningKey.generate()
     pk = sk.verify_key.encode(encoder=HexEncoder).decode()
+    
+    os.makedirs(path, exist_ok=True)
+    try:
+        with open(keystore_path, "w") as f:
+            json.dump({"private_key": sk.encode(encoder=HexEncoder).decode()}, f)
+        logger.info("Created new wallet at %s", keystore_path)
+    except Exception as e:
+        logger.warning("Failed to save keystore: %s", e)
+
     return sk, pk
 
 
@@ -325,6 +356,8 @@ HELP_TEXT = f"""
 {C_CYAN}║{C_RESET}  {C_GREEN}peers{C_RESET}                   - show connected peers              {C_CYAN}║{C_RESET}
 {C_CYAN}║{C_RESET}  {C_GREEN}connect <multiaddr>{C_RESET}     - connect to a peer                 {C_CYAN}║{C_RESET}
 {C_CYAN}║{C_RESET}  {C_GREEN}address{C_RESET}                 - show your public key              {C_CYAN}║{C_RESET}
+{C_CYAN}║{C_RESET}  {C_GREEN}export_key{C_RESET}              - show your private key             {C_CYAN}║{C_RESET}
+{C_CYAN}║{C_RESET}  {C_GREEN}import_key <hex>{C_RESET}        - import a private key              {C_CYAN}║{C_RESET}
 {C_CYAN}║{C_RESET}  {C_GREEN}chain{C_RESET}                   - show chain summary                {C_CYAN}║{C_RESET}
 {C_CYAN}║{C_RESET}  {C_GREEN}help{C_RESET}                    - show this help                    {C_CYAN}║{C_RESET}
 {C_CYAN}║{C_RESET}  {C_GREEN}quit{C_RESET}                    - shut down                         {C_CYAN}║{C_RESET}
@@ -336,7 +369,11 @@ async def cli_loop(sk, pk, chain, mempool, network, datadir: str | None = None):
     """Read commands from stdin asynchronously."""
     loop = asyncio.get_event_loop()
     print(HELP_TEXT)
-    print(f"  {C_YELLOW}Your address:{C_RESET} {C_BOLD}{pk}{C_RESET}\n")
+    
+    def print_prompt_info(current_pk):
+        print(f"  {C_YELLOW}Your address:{C_RESET} {C_BOLD}{current_pk}{C_RESET}\n")
+    
+    print_prompt_info(pk)
 
     while True:
         try:
@@ -471,6 +508,34 @@ async def cli_loop(sk, pk, chain, mempool, network, datadir: str | None = None):
         elif cmd == "address":
             print(f"  {pk}")
 
+        # ── export_key ──
+        elif cmd == "export_key":
+            sk_hex = sk.encode(encoder=HexEncoder).decode()
+            print(f"  {C_YELLOW}Private Key:{C_RESET} {sk_hex}")
+            print(f"  {C_RED}Warning: Never share this key!{C_RESET}")
+
+        # ── import_key ──
+        elif cmd == "import_key":
+            if len(parts) < 2:
+                print("  Usage: import_key <hex_private_key>")
+                continue
+            
+            try:
+                new_sk = SigningKey(bytes.fromhex(parts[1]))
+                new_pk = new_sk.verify_key.encode(encoder=HexEncoder).decode()
+                
+                path = datadir or "."
+                keystore_path = os.path.join(path, "keystore.json")
+                os.makedirs(path, exist_ok=True)
+                with open(keystore_path, "w") as f:
+                    json.dump({"private_key": new_sk.encode(encoder=HexEncoder).decode()}, f)
+                
+                sk, pk = new_sk, new_pk
+                print(f"  {C_GREEN}✅ Key imported successfully!{C_RESET}")
+                print_prompt_info(pk)
+            except Exception as e:
+                print(f"  {C_RED}❌ Failed to import key: {e}{C_RESET}")
+
         # ── chain ──
         elif cmd == "chain":
             print(f"  Chain length: {len(chain.chain)} blocks")
@@ -528,7 +593,7 @@ async def cli_loop(sk, pk, chain, mempool, network, datadir: str | None = None):
 
 async def run_node(port: int, host: str, connect_to: str | None, fund: int, datadir: str | None):
     """Boot the node, optionally connect to a peer, then enter the CLI."""
-    sk, pk = create_wallet()
+    sk, pk = load_or_create_wallet(datadir)
 
     # Load existing chain from disk, or start fresh
     chain = None
@@ -610,7 +675,7 @@ def main():
     parser.add_argument("--port", type=int, default=9000, help="TCP port to listen on (default: 9000)")
     parser.add_argument("--connect", type=str, default=None, help="Peer address to connect to (multiaddr)")
     parser.add_argument("--fund", type=int, default=100, help="Initial coins to fund this wallet (default: 100)")
-    parser.add_argument("--datadir", type=str, default=None, help="Directory to save/load blockchain state (enables persistence)")
+    parser.add_argument("--datadir", type=str, default=".minichain", help="Directory to save/load blockchain state (enables persistence)")
     args = parser.parse_args()
 
     logging.basicConfig(
