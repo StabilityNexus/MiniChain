@@ -86,36 +86,28 @@ class State:
         """
         self.accounts = copy.deepcopy(snapshot_data)
 
-    def validate_and_apply(self, tx):
-        """
-        Validate and apply a transaction.
-        Returns: Receipt|None
-        """
-        # Semantic validation: amount and fee must be non-negative integers
+    @staticmethod
+    def _amounts_well_formed(tx):
+        """Semantic guard: amount and fee must be non-negative integers."""
         if not isinstance(tx.amount, int) or tx.amount < 0:
-            return None
+            return False
         fee = getattr(tx, "fee", 0)
-        if not isinstance(fee, int) or fee < 0:
-            return None
-        return self.apply_transaction(tx)
+        return isinstance(fee, int) and fee >= 0
 
     def validate_and_apply_with_status(self, tx):
         """
         Validate and apply a transaction, bubbling up the precise ValidationStatus.
+        This is the single core path; the other entry points delegate to it.
         Returns: (ValidationStatus, Receipt|None)
         """
         from .validators import ValidationStatus
-        if not isinstance(tx.amount, int) or tx.amount < 0:
-            return ValidationStatus.MALFORMED, None
-        fee = getattr(tx, "fee", 0)
-        if not isinstance(fee, int) or fee < 0:
+        if not self._amounts_well_formed(tx):
             return ValidationStatus.MALFORMED, None
 
         status = self.verify_transaction_logic(tx)
         if status != ValidationStatus.VALID:
             return status, None
 
-        # verify_transaction_logic already passed — skip the second call inside apply_transaction.
         return ValidationStatus.VALID, self._apply_validated_tx(tx)
 
     def apply_transaction(self, tx):
@@ -123,15 +115,10 @@ class State:
         Validates and applies a transaction.
         Returns: Receipt object if valid, None if invalid.
         """
-        if not isinstance(tx.amount, int) or tx.amount < 0:
-            return None
-        fee = getattr(tx, "fee", 0)
-        if not isinstance(fee, int) or fee < 0:
-            return None
-        from .validators import ValidationStatus
-        if self.verify_transaction_logic(tx) != ValidationStatus.VALID:
-            return None
-        return self._apply_validated_tx(tx)
+        return self.validate_and_apply_with_status(tx)[1]
+
+    # Backwards-compatible alias for the receipt-only entry point.
+    validate_and_apply = apply_transaction
 
     def _apply_validated_tx(self, tx):
         """
@@ -177,6 +164,11 @@ class State:
             # Credit contract balance
             receiver['balance'] += tx.amount
 
+            # Undo the value transfer while keeping the nonce increment (used on failure paths).
+            def revert_transfer():
+                receiver['balance'] -= tx.amount
+                sender['balance'] += tx.amount
+
             result = self.contract_machine.execute(
                 contract_address=tx.receiver,
                 sender_address=tx.sender,
@@ -191,18 +183,14 @@ class State:
                 sender['balance'] += gas_refund
 
             if not result.get("success"):
-                # Rollback transfer if execution fails, but keep nonce incremented
-                receiver['balance'] -= tx.amount
-                sender['balance'] += tx.amount # Refund amount
+                revert_transfer()
                 return Receipt(tx.tx_id, status=0, error_message=result.get("error", "Execution failed"), gas_used=gas_used)
 
             transfers = result.get("transfers", [])
             total_transferred_out = sum(t["amount"] for t in transfers)
 
             if total_transferred_out > receiver['balance']:
-                # Rollback transfer if execution attempts to spend more than balance
-                receiver['balance'] -= tx.amount
-                sender['balance'] += tx.amount # Refund amount
+                revert_transfer()
                 return Receipt(tx.tx_id, status=0, error_message="Insufficient contract balance for transfers", gas_used=gas_used)
 
             # Execution & transfers valid: commit state changes atomically

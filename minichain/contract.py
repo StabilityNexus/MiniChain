@@ -19,7 +19,7 @@ class GasMeter:
                 raise OutOfGasException("Out of gas!")
         return self.trace_calls
 
-import json # Moved to module-level import
+import json
 logger = logging.getLogger(__name__)
 
 def _safe_exec_worker(code, globals_dict, context_dict, result_queue, gas_limit):
@@ -99,6 +99,11 @@ class ContractMachine:
     def __init__(self, state):
         self.state = state
 
+    @staticmethod
+    def _fail(error, gas_used=0):
+        """Uniform failure result for execute()."""
+        return {"success": False, "gas_used": gas_used, "error": error}
+
     def execute(self, contract_address, sender_address, payload, amount, gas_limit):
         """
         Executes the contract code associated with the contract_address.
@@ -107,7 +112,7 @@ class ContractMachine:
 
         account = self.state.get_account(contract_address)
         if not account:
-            return {"success": False, "gas_used": 0, "error": "Account not found"}
+            return self._fail("Account not found")
 
         code = account.get("code")
 
@@ -115,11 +120,11 @@ class ContractMachine:
         storage = dict(account.get("storage", {}))
 
         if not code:
-            return {"success": False, "gas_used": 0, "error": "No code"}
+            return self._fail("No code")
 
         # AST Validation to prevent introspection
         if not self._validate_code_ast(code):
-            return {"success": False, "gas_used": 0, "error": "AST Validation Failed"}
+            return self._fail("AST Validation Failed")
 
         # Restricted builtins (explicit allowlist)
         safe_builtins = {
@@ -131,7 +136,7 @@ class ContractMachine:
             "min": min,
             "max": max,
             "abs": abs,
-                "str": str, # Keeping str for basic functionality, relying on AST checks for safety
+            "str": str, # Keeping str for basic functionality, relying on AST checks for safety
             "bool": bool,
             "float": float,
             "list": list,
@@ -170,30 +175,30 @@ class ContractMachine:
                 p.kill()
                 p.join()
                 logger.error("Contract execution timed out")
-                return {"success": False, "gas_used": gas_limit, "error": "Execution timed out"}
+                return self._fail("Execution timed out", gas_limit)
 
             try:
                 result = queue.get(timeout=1)
             except Exception:
                 logger.error("Contract execution crashed without result")
-                return {"success": False, "gas_used": gas_limit, "error": "Crashed"}
-            
+                return self._fail("Crashed", gas_limit)
+
             if result["status"] != "success":
                 logger.error("Contract Execution Failed: %s", result.get('error'))
-                return {"success": False, "gas_used": result.get("gas_used", gas_limit), "error": result.get('error')}
+                return self._fail(result.get('error'), result.get("gas_used", gas_limit))
 
             # Validate storage is JSON serializable
             try:
                 json.dumps(result["storage"])
             except (TypeError, ValueError):
                 logger.error("Contract storage not JSON serializable")
-                return {"success": False, "gas_used": result.get("gas_used", gas_limit), "error": "Storage not JSON serializable"}
+                return self._fail("Storage not JSON serializable", result.get("gas_used", gas_limit))
 
             return {"success": True, "gas_used": result["gas_used"], "transfers": result.get("transfers", []), "storage": result["storage"], "error": None}
 
         except Exception as e:
             logger.error("Contract Execution Failed", exc_info=True)
-            return {"success": False, "gas_used": gas_limit, "error": "System Error"}
+            return self._fail("System Error", gas_limit)
 
     def _validate_code_ast(self, code):
         """Reject code that uses double underscores or introspection."""
@@ -209,17 +214,12 @@ class ContractMachine:
                 if isinstance(node, (ast.Import, ast.ImportFrom)):
                     logger.warning("Rejected contract code with import statement.")
                     return False
-                if isinstance(node, ast.Call):
-                    if isinstance(node.func, ast.Name) and node.func.id == 'type':
-                        logger.warning("Rejected type() call.")
-                        return False
-                if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id in {"getattr", "setattr", "delattr"}:
+                if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id in {"type", "getattr", "setattr", "delattr"}:
                     logger.warning("Rejected direct call to %s.", node.func.id)
                     return False
-                if isinstance(node, ast.Constant) and isinstance(node.value, str):
-                    if "__" in node.value:
-                        logger.warning("Rejected string literal with double-underscore.")
-                        return False
+                if isinstance(node, ast.Constant) and isinstance(node.value, str) and "__" in node.value:
+                    logger.warning("Rejected string literal with double-underscore.")
+                    return False
                 if isinstance(node, ast.JoinedStr): # f-strings
                     logger.warning("Rejected f-string usage.")
                     return False

@@ -1,6 +1,6 @@
 import time
 import hashlib
-from typing import Optional  # <-- Removed 'List' as requested
+from typing import Optional
 from collections.abc import Sequence
 
 from .transaction import Transaction
@@ -24,7 +24,6 @@ def _calculate_merkle_tree(hashes: Sequence[str]) -> Optional[str]:
         hashes_list = new_level
     return hashes_list[0]
 
-# <-- Updated to Sequence to accept the frozen tuple
 def _calculate_merkle_root(transactions: Sequence[Transaction]) -> Optional[str]:
     if not transactions:
         return None
@@ -65,9 +64,8 @@ class Block:
         self.hash: Optional[str] = None
         self.state_root: Optional[str] = state_root
         self.receipt_root: Optional[str] = receipt_root
-        self.miner: Optional[str] = miner
 
-        # NEW: compute merkle roots once
+        # Compute merkle roots once
         self.merkle_root: Optional[str] = _calculate_merkle_root(self.transactions)
         
         # If receipt_root is missing but we have receipts, calculate it.
@@ -88,7 +86,7 @@ class Block:
             "difficulty": self.difficulty,
             "nonce": self.nonce,
         }
-        # Include miner in header only when present (optional field)  <-- Reworded comment
+        # Include miner in header only when present (optional field)
         if self.miner is not None:
             header["miner"] = self.miner          
         return header
@@ -132,27 +130,26 @@ class Block:
             for r_payload in payload.get("receipts", [])
         ]
         
-        # Safely extract and cast difficulty if it exists
+        # Safely extract and cast difficulty and timestamp if they exist
         raw_diff = payload.get("difficulty")
         parsed_diff = int(raw_diff) if raw_diff is not None else None
-        
-        # Safely extract and cast timestamp if it exists <-- Added explicit timestamp casting
+
         raw_ts = payload.get("timestamp")
         parsed_ts = int(raw_ts) if raw_ts is not None else None
         block = cls(
-            index=int(payload["index"]),  
+            index=int(payload["index"]),
             previous_hash=payload["previous_hash"],
             transactions=transactions,
-            timestamp=parsed_ts,          # <-- Passed the casted timestamp
-            difficulty=parsed_diff,       
+            timestamp=parsed_ts,
+            difficulty=parsed_diff,
             state_root=payload.get("state_root"),
             receipt_root=payload.get("receipt_root"),
             receipts=receipts,
             miner=payload.get("miner"),
         )
-        block.nonce = int(payload.get("nonce", 0))  
+        block.nonce = int(payload.get("nonce", 0))
         block.hash = payload.get("hash")
-      
+
         # Verify the block hash
         expected_hash = block.compute_hash()
         if block.hash is not None and block.hash != expected_hash:

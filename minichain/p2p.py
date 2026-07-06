@@ -21,6 +21,13 @@ from .persistence import ban_peer, is_peer_banned
 
 logger = logging.getLogger(__name__)
 
+
+def _peer_id_from_addr(peer_addr: str) -> str:
+    """Strip the "peer:" prefix from a peer address, if present."""
+    prefix = "peer:"
+    return peer_addr[len(prefix):] if peer_addr.startswith(prefix) else peer_addr
+
+
 SUPPORTED_MESSAGE_TYPES = {"hello", "tx", "block", "chain_request", "chain_response"}
 PROTOCOL_ID = TProtocol("/minichain/1.0.0")
 MAX_FRAME_BYTES = 1 * 1024 * 1024  # 1 MB
@@ -53,25 +60,23 @@ class P2PNetwork:
         self._peer_count = 0
         self._peer_count_lock = threading.Lock()
 
-        # Misbehavior tracking
+        # Misbehavior tracking, keyed directly by ValidationStatus so there is a
+        # single vocabulary for statuses (no parallel string keys to convert).
         self.data_path = data_path
         self.thresholds = {
-            "malformed": malformed_threshold,
-            "failed": failed_threshold,
-            "invalid": invalid_threshold,
+            ValidationStatus.MALFORMED: malformed_threshold,
+            ValidationStatus.FAILED: failed_threshold,
+            ValidationStatus.INVALID: invalid_threshold,
         }
         self.decay_interval_minutes = decay_interval_minutes
-        # { peer_id_str -> {"malformed": int, "failed": int, "invalid": int} }
+        # { peer_id_str -> { ValidationStatus -> int } }
         self._peer_counters: dict = {}
 
         if self.decay_interval_minutes <= 0:
             raise ValueError(f"decay_interval_minutes must be positive, got {self.decay_interval_minutes}")
-        if self.thresholds["malformed"] <= 0:
-            raise ValueError(f"malformed_threshold must be positive, got {self.thresholds['malformed']}")
-        if self.thresholds["failed"] <= 0:
-            raise ValueError(f"failed_threshold must be positive, got {self.thresholds['failed']}")
-        if self.thresholds["invalid"] <= 0:
-            raise ValueError(f"invalid_threshold must be positive, got {self.thresholds['invalid']}")
+        for status, value in self.thresholds.items():
+            if value <= 0:
+                raise ValueError(f"{status.name.lower()}_threshold must be positive, got {value}")
 
     def register_handler(self, handler_callback):
         self._handler_callback = handler_callback
@@ -102,14 +107,17 @@ class P2PNetwork:
         if msg_type == "block": return payload["hash"]
         return None
 
+    def _seen_set(self, msg_type):
+        return self._seen_tx_ids if msg_type == "tx" else self._seen_block_hashes
+
     def _is_duplicate(self, msg_type, payload):
         mid = self._message_id(msg_type, payload)
-        if not mid: return False
-        return mid in (self._seen_tx_ids if msg_type == "tx" else self._seen_block_hashes)
+        return bool(mid) and mid in self._seen_set(msg_type)
 
     def _mark_seen(self, msg_type, payload):
         mid = self._message_id(msg_type, payload)
-        if mid: (self._seen_tx_ids if msg_type == "tx" else self._seen_block_hashes).add(mid)
+        if mid:
+            self._seen_set(msg_type).add(mid)
 
     async def _broadcast_raw(self, payload: dict):
         self._to_trio.put(("BROADCAST", payload))
@@ -143,17 +151,15 @@ class P2PNetwork:
 
     # ── misbehavior helpers ──────────────────────────────────────────────────
 
-    def _increment_counter(self, peer_id: str, category: str) -> bool:
+    def _increment_counter(self, peer_id: str, status: ValidationStatus) -> bool:
         """
-        Increment the named counter (malformed/failed/invalid) for peer_id.
-        Returns True if any counter now meets or exceeds its threshold.
+        Increment peer_id's counter for the given ValidationStatus.
+        Returns True if that counter now meets or exceeds its threshold.
         Called only from the asyncio thread — no lock needed.
         """
-        if peer_id not in self._peer_counters:
-            self._peer_counters[peer_id] = {"malformed": 0, "failed": 0, "invalid": 0}
-        self._peer_counters[peer_id][category] += 1
-        counts = self._peer_counters[peer_id]
-        return counts[category] >= self.thresholds[category]
+        counts = self._peer_counters.setdefault(peer_id, {s: 0 for s in self.thresholds})
+        counts[status] += 1
+        return counts[status] >= self.thresholds[status]
 
     async def _handle_validation_status(
         self, peer_id: str, peer_addr: str, status: ValidationStatus
@@ -164,21 +170,16 @@ class P2PNetwork:
           FAILED    → drop silently; ban + disconnect if counter >= threshold
           INVALID   → always ban + disconnect (threshold configurable, default=1)
         """
-        category = {
-            ValidationStatus.MALFORMED: "malformed",
-            ValidationStatus.FAILED: "failed",
-            ValidationStatus.INVALID: "invalid",
-        }.get(status)
-        if category is None:
+        if status not in self.thresholds:
             return
 
-        exceeded = self._increment_counter(peer_id, category)
+        exceeded = self._increment_counter(peer_id, status)
 
         if exceeded:
-            ban_peer(peer_id, reason=f"{category}_threshold_exceeded", path=self.data_path)
+            ban_peer(peer_id, reason=f"{status.name.lower()}_threshold_exceeded", path=self.data_path)
             logger.warning(
                 "Banned peer %s: %s threshold (%d) exceeded",
-                peer_id, category, self.thresholds[category],
+                peer_id, status.name.lower(), self.thresholds[status],
             )
 
         always_disconnect = status in (ValidationStatus.MALFORMED, ValidationStatus.INVALID)
@@ -216,9 +217,7 @@ class P2PNetwork:
                 msg_type = data.get("type")
                 payload = data.get("data")
                 peer_addr = data.get("_peer_addr", "")
-                peer_id = (
-                    peer_addr[len("peer:"):] if peer_addr.startswith("peer:") else peer_addr
-                )
+                peer_id = _peer_id_from_addr(peer_addr)
 
                 if msg_type not in SUPPORTED_MESSAGE_TYPES:
                     continue
@@ -246,9 +245,7 @@ class P2PNetwork:
             elif msg[0] == "MALFORMED":
                 # JSON parse failure signalled from the Trio thread.
                 peer_addr = msg[1]
-                peer_id = (
-                    peer_addr[len("peer:"):] if peer_addr.startswith("peer:") else peer_addr
-                )
+                peer_id = _peer_id_from_addr(peer_addr)
                 await self._handle_validation_status(peer_id, peer_addr, ValidationStatus.MALFORMED)
 
             elif msg[0] == "PEER_CONNECTED":

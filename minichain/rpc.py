@@ -27,25 +27,28 @@ class JSONRPCServer:
         if hasattr(self, 'runner'):
             await self.runner.cleanup()
 
+    @staticmethod
+    def _ok(result, req_id):
+        return {"jsonrpc": "2.0", "result": result, "id": req_id}
+
+    @staticmethod
+    def _err(code, message, req_id):
+        return {"jsonrpc": "2.0", "error": {"code": code, "message": message}, "id": req_id}
+
     async def handle_rpc(self, request):
         try:
             req_data = await request.json()
         except json.JSONDecodeError:
-            return web.json_response({"jsonrpc": "2.0", "error": {"code": -32700, "message": "Parse error"}, "id": None})
+            return web.json_response(self._err(-32700, "Parse error", None))
 
         if isinstance(req_data, list):
-            responses = []
-            for req in req_data:
-                responses.append(await self._process_single(req))
-            return web.json_response(responses)
-        else:
-            response = await self._process_single(req_data)
-            return web.json_response(response)
+            return web.json_response([await self._process_single(req) for req in req_data])
+        return web.json_response(await self._process_single(req_data))
 
     async def _process_single(self, req):
         if not isinstance(req, dict) or "method" not in req or req.get("jsonrpc") != "2.0":
-            return {"jsonrpc": "2.0", "error": {"code": -32600, "message": "Invalid Request"}, "id": req.get("id") if isinstance(req, dict) else None}
-        
+            return self._err(-32600, "Invalid Request", req.get("id") if isinstance(req, dict) else None)
+
         method = req["method"]
         params = req.get("params", [])
         req_id = req.get("id")
@@ -70,8 +73,7 @@ class JSONRPCServer:
                 if not params:
                     raise ValueError("Missing address")
                 address = params[0]
-                account = self.chain.state.get_account(address)
-                result = account["balance"] if account else 0
+                result = self.chain.state.get_account(address)["balance"]
             elif method == "mc_sendTransaction":
                 if not params:
                     raise ValueError("Missing transaction payload")
@@ -85,9 +87,9 @@ class JSONRPCServer:
                 else:
                     raise ValueError("Transaction rejected by Mempool")
             else:
-                return {"jsonrpc": "2.0", "error": {"code": -32601, "message": f"Method not found: {method}"}, "id": req_id}
+                return self._err(-32601, f"Method not found: {method}", req_id)
 
-            return {"jsonrpc": "2.0", "result": result, "id": req_id}
+            return self._ok(result, req_id)
         except Exception as e:
             logger.error("RPC Error processing %s: %s", method, e)
-            return {"jsonrpc": "2.0", "error": {"code": -32000, "message": str(e)}, "id": req_id}
+            return self._err(-32000, str(e), req_id)
