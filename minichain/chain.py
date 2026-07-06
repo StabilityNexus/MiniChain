@@ -14,6 +14,11 @@ class InvalidProofOfWorkError(ValueError):
     pass
 
 
+def validate_difficulty(difficulty, max_difficulty):
+    if type(difficulty) is not int or difficulty < 1 or difficulty > max_difficulty:
+        raise ValueError(f"invalid difficulty {difficulty}")
+
+
 def validate_block_link_and_hash(previous_block, block):
     if block.previous_hash != previous_block.hash:
         raise ValueError(
@@ -28,6 +33,8 @@ def validate_block_link_and_hash(previous_block, block):
     expected_hash = calculate_hash(block.to_header_dict())
     if block.hash != expected_hash:
         raise ValueError(f"invalid hash {block.hash}")
+
+    validate_difficulty(block.difficulty, len(block.hash))
 
     if not block.hash.startswith("0" * block.difficulty):
         raise InvalidProofOfWorkError(
@@ -126,7 +133,11 @@ class Blockchain:
         if chain_list is None:
             with self._lock:
                 chain_list = self.chain
-        return sum(2 ** (block.difficulty or 1) for block in chain_list)
+
+        for block in chain_list:
+            validate_difficulty(block.difficulty, len(block.hash))
+
+        return sum(2 ** block.difficulty for block in chain_list)
 
     def _next_difficulty(self, difficulty, avg_block_time):
         """Advance the EMA difficulty control after a block, returning the new value."""
@@ -222,9 +233,12 @@ class Blockchain:
             return False, []
 
         with self._lock:
-            current_work = self.get_total_work()
-            new_work = self.get_total_work(new_chain_list)
-
+            try:
+                current_work = self.get_total_work()
+                new_work = self.get_total_work(new_chain_list)
+            except ValueError as exc:
+                logger.warning("Reorg rejected: %s", exc)
+                return False, []
             if new_work <= current_work:
                 logger.debug("Incoming chain (work: %s) is not heavier than local chain (work: %s). Rejecting.", new_work, current_work)
                 return False, []
