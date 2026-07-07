@@ -168,7 +168,7 @@ class Blockchain:
                 return status, difficulty, avg_block_time
             receipts.append(receipt)
 
-        total_fees = sum(getattr(r, 'gas_used', 0) for r in receipts)
+        total_fees = sum(getattr(r, 'gas_used', 0) * getattr(tx, 'max_fee_per_gas', 0) for r, tx in zip(receipts, block.transactions))
         if block.miner:
             state.credit_mining_reward(block.miner, reward=state.DEFAULT_MINING_REWARD + total_fees)
 

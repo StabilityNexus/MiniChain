@@ -52,10 +52,10 @@ class Mempool:
 
             i_min = min(i_min, i_max)
 
-            # Insert before the first tx in [i_min, i_max] that has a lower fee
+            # Insert before the first tx in [i_min, i_max] that has a lower max_fee_per_gas
             insert_idx = i_max
             for j in range(i_min, i_max):
-                if getattr(self._list[j], 'fee', 0) < getattr(tx, 'fee', 0):
+                if getattr(self._list[j], 'max_fee_per_gas', 0) < getattr(tx, 'max_fee_per_gas', 0):
                     insert_idx = j
                     break
             

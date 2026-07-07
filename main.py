@@ -7,7 +7,9 @@ Usage:
 
 Commands (type in the terminal while the node is running):
     balance                 — show all account balances
-    send <to> <amount>      — send coins to another address
+    send <to> <amount>      - send coins                        
+    deploy <file>           - deploy a contract                 
+    call <addr> <data>      - call a contract                   
     mine                    — mine a block from the mempool
     peers                   — show connected peers
     connect <multiaddr>     — connect to another node
@@ -85,19 +87,20 @@ def request_chain(network, start_index, limit):
     asyncio.create_task(network._broadcast_raw(req))
 
 
-def parse_amount_fee(parts, start):
-    """Parse optional non-negative amount/fee at parts[start] and parts[start+1].
-    Returns (amount, fee), or None if invalid (a message is printed for the user)."""
+def parse_tx_params(parts, start):
+    """Parse optional non-negative amount, gas_limit, max_fee_per_gas.
+    Returns (amount, gas_limit, max_fee), or None if invalid."""
     try:
         amount = int(parts[start]) if len(parts) > start else 0
-        fee = int(parts[start + 1]) if len(parts) > start + 1 else 0
+        gas_limit = int(parts[start + 1]) if len(parts) > start + 1 else 0
+        max_fee = int(parts[start + 2]) if len(parts) > start + 2 else 0
     except ValueError:
-        print("  Amount and fee must be integers.")
+        print("  Values must be integers.")
         return None
-    if amount < 0 or fee < 0:
-        print("  Amount and fee cannot be negative.")
+    if amount < 0 or gas_limit < 0 or max_fee < 0:
+        print("  Values cannot be negative.")
         return None
-    return amount, fee
+    return amount, gas_limit, max_fee
 
 
 async def submit_and_broadcast(mempool, network, tx, ok_msg, reject_msg):
@@ -143,7 +146,7 @@ def mine_and_process_block(chain, mempool, miner_pk):
         logger.info("No mineable transactions in current queue window.")
         return None
 
-    total_fees = sum(getattr(r, 'gas_used', 0) for r in receipts)
+    total_fees = sum(getattr(r, 'gas_used', 0) * getattr(tx, 'max_fee_per_gas', 0) for r, tx in zip(receipts, mineable_txs))
     temp_state.credit_mining_reward(miner_pk, reward=temp_state.DEFAULT_MINING_REWARD + total_fees)
 
     block = Block(
@@ -399,7 +402,7 @@ async def cli_loop(sk, pk, chain, mempool, network, datadir: str | None = None):
         # ── send ──
         elif cmd == "send":
             if len(parts) < 3:
-                print("  Usage: send <receiver_address> <amount> [fee]")
+                print("  Usage: send <receiver_address> <amount> [gas_limit] [max_fee_per_gas]")
                 continue
             receiver = parts[1]
             if not is_valid_receiver(receiver):
@@ -407,19 +410,20 @@ async def cli_loop(sk, pk, chain, mempool, network, datadir: str | None = None):
                 continue
             try:
                 amount = int(parts[2])
-                fee = int(parts[3]) if len(parts) > 3 else 0
+                gas_limit = int(parts[3]) if len(parts) > 3 else 0
+                max_fee = int(parts[4]) if len(parts) > 4 else 0
             except ValueError:
-                print("  Amount and fee must be integers.")
+                print("  Values must be integers.")
                 continue
             if amount <= 0:
                 print("  Amount must be greater than 0.")
                 continue
-            if fee < 0:
-                print("  Fee cannot be negative.")
+            if gas_limit < 0 or max_fee < 0:
+                print("  Gas limit and max fee cannot be negative.")
                 continue
 
             nonce = chain.state.get_account(pk).get("nonce", 0)
-            tx = Transaction(sender=pk, receiver=receiver, amount=amount, nonce=nonce, fee=fee, chain_id=chain.chain_id)
+            tx = Transaction(sender=pk, receiver=receiver, amount=amount, nonce=nonce, gas_limit=gas_limit, max_fee_per_gas=max_fee, chain_id=chain.chain_id)
             tx.sign(sk)
 
             await submit_and_broadcast(
@@ -431,7 +435,7 @@ async def cli_loop(sk, pk, chain, mempool, network, datadir: str | None = None):
         # ── deploy ──
         elif cmd == "deploy":
             if len(parts) < 2:
-                print("  Usage: deploy <filepath> [amount] [fee]")
+                print("  Usage: deploy <filepath> [amount] [gas_limit] [max_fee_per_gas]")
                 continue
             filepath = parts[1]
             try:
@@ -441,13 +445,13 @@ async def cli_loop(sk, pk, chain, mempool, network, datadir: str | None = None):
                 print(f"  File not found: {filepath}")
                 continue
             
-            parsed = parse_amount_fee(parts, 2)
+            parsed = parse_tx_params(parts, 2)
             if parsed is None:
                 continue
-            amount, fee = parsed
+            amount, gas_limit, max_fee = parsed
 
             nonce = chain.state.get_account(pk).get("nonce", 0)
-            tx = Transaction(sender=pk, receiver=None, amount=amount, nonce=nonce, fee=fee, data=code, chain_id=chain.chain_id)
+            tx = Transaction(sender=pk, receiver=None, amount=amount, nonce=nonce, gas_limit=gas_limit, max_fee_per_gas=max_fee, data=code, chain_id=chain.chain_id)
             tx.sign(sk)
 
             await submit_and_broadcast(
@@ -459,7 +463,7 @@ async def cli_loop(sk, pk, chain, mempool, network, datadir: str | None = None):
         # ── call ──
         elif cmd == "call":
             if len(parts) < 3:
-                print("  Usage: call <contract_address> <payload> [amount] [fee]")
+                print("  Usage: call <contract_address> <payload> [amount] [gas_limit] [max_fee_per_gas]")
                 continue
             receiver = parts[1]
             if not is_valid_receiver(receiver):
@@ -467,13 +471,13 @@ async def cli_loop(sk, pk, chain, mempool, network, datadir: str | None = None):
                 continue
             payload = parts[2]
 
-            parsed = parse_amount_fee(parts, 3)
+            parsed = parse_tx_params(parts, 3)
             if parsed is None:
                 continue
-            amount, fee = parsed
+            amount, gas_limit, max_fee = parsed
 
             nonce = chain.state.get_account(pk).get("nonce", 0)
-            tx = Transaction(sender=pk, receiver=receiver, amount=amount, nonce=nonce, fee=fee, data=payload, chain_id=chain.chain_id)
+            tx = Transaction(sender=pk, receiver=receiver, amount=amount, nonce=nonce, gas_limit=gas_limit, max_fee_per_gas=max_fee, data=payload, chain_id=chain.chain_id)
             tx.sign(sk)
 
             await submit_and_broadcast(

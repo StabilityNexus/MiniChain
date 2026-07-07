@@ -66,7 +66,7 @@ class TestCore(unittest.TestCase):
         """Test that transaction fees are properly deducted and credited."""
         self.state.credit_mining_reward(self.alice_pk, 100)
         
-        tx = Transaction(self.alice_pk, self.bob_pk, 40, 0, fee=5)
+        tx = Transaction(self.alice_pk, self.bob_pk, 40, 0, gas_limit=5, max_fee_per_gas=1)
         tx.sign(self.alice_sk)
         
         receipt = self.state.validate_and_apply(tx)
