@@ -139,9 +139,6 @@ class State:
         if tx.receiver is None or tx.receiver == "":
             contract_address = self.derive_contract_address(tx.sender, tx.nonce)
             gas_used = getattr(tx, 'gas_limit', 0)
-            gas_refund = tx.gas_limit - gas_used
-            if gas_refund > 0:
-                sender['balance'] += (gas_refund * tx.max_fee_per_gas)
 
             # Prevent redeploy collision
             existing = self.accounts.get(contract_address)
@@ -211,9 +208,6 @@ class State:
         receiver = self.get_account(tx.receiver)
         receiver['balance'] += tx.amount
         gas_used = getattr(tx, 'gas_limit', 0)
-        gas_refund = tx.gas_limit - gas_used
-        if gas_refund > 0:
-            sender['balance'] += (gas_refund * tx.max_fee_per_gas)
         return Receipt(tx.tx_id, status=1, gas_used=gas_used)
 
     def derive_contract_address(self, sender, nonce):

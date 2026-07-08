@@ -68,6 +68,7 @@ class Blockchain:
         
         # Apply genesis allocations
         alloc = config.get("alloc", {})
+        total_alloc = 0
         for address, data in alloc.items():
             balance = data.get("balance", 0)
             if not isinstance(balance, int) or balance < 0:
@@ -75,6 +76,12 @@ class Blockchain:
                 sys.exit(1)
             account = self.state.get_account(address)
             account['balance'] = balance
+            total_alloc += balance
+
+        initial_supply = config.get("initial_supply")
+        if initial_supply is not None and initial_supply != total_alloc:
+            logger.error("Genesis allocation mismatch: initial_supply is %s but alloc sum is %s", initial_supply, total_alloc)
+            sys.exit(1)
 
         self.chain_id = config.get("chain_id", "minichain-default")
         self.state.chain_id = self.chain_id

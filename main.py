@@ -408,18 +408,13 @@ async def cli_loop(sk, pk, chain, mempool, network, datadir: str | None = None):
             if not is_valid_receiver(receiver):
                 print("  Invalid receiver format. Expected 40 or 64 hex characters.")
                 continue
-            try:
-                amount = int(parts[2])
-                gas_limit = int(parts[3]) if len(parts) > 3 else 0
-                max_fee = int(parts[4]) if len(parts) > 4 else 0
-            except ValueError:
-                print("  Values must be integers.")
+            parsed = parse_tx_params(parts, 2)
+            if parsed is None:
                 continue
+            amount, gas_limit, max_fee = parsed
+
             if amount <= 0:
                 print("  Amount must be greater than 0.")
-                continue
-            if gas_limit < 0 or max_fee < 0:
-                print("  Gas limit and max fee cannot be negative.")
                 continue
 
             nonce = chain.state.get_account(pk).get("nonce", 0)
