@@ -124,20 +124,31 @@ def mine_and_process_block(chain, mempool, miner_pk):
     temp_state = chain.state.copy()
     mineable_txs = []
     stale_txs = []
+    rejected_txs = []
     receipts = []
     for tx in pending_txs:
         expected_nonce = temp_state.get_account(tx.sender).get("nonce", 0)
         if tx.nonce < expected_nonce:
             stale_txs.append(tx)
             continue
-            
-        receipt = temp_state.validate_and_apply(tx)
-        if receipt is not None:
+
+        status, receipt = temp_state.validate_and_apply_with_status(tx)
+        if status == ValidationStatus.VALID:
             mineable_txs.append(tx)
             receipts.append(receipt)
+        elif tx.nonce == expected_nonce:
+            # This is the very next transaction the sender could submit and
+            # it can never succeed (e.g. insufficient balance) — evict it so
+            # it doesn't sit in the mempool forever blocking every
+            # higher-nonce transaction from the same sender.
+            rejected_txs.append(tx)
+        # else: tx.nonce > expected_nonce — legitimately queued for later,
+        # leave it in the mempool to be retried on a future mining cycle.
 
     if stale_txs:
         mempool.remove_transactions(stale_txs)
+    if rejected_txs:
+        mempool.remove_transactions(rejected_txs)
 
     if not mineable_txs:
         logger.info("No mineable transactions in current queue window.")
@@ -613,7 +624,7 @@ async def run_node(port: int, host: str, connect_to: str | None, fund: int, data
     if chain is None:
         chain = Blockchain()
 
-    mempool = Mempool()
+    mempool = Mempool(state_provider=lambda: chain.state)
     network = P2PNetwork(data_path=datadir or ".")
 
     handler = make_network_handler(chain, mempool, network)

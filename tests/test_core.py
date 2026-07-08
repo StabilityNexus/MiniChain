@@ -2,7 +2,7 @@ import unittest
 from nacl.signing import SigningKey
 from nacl.encoding import HexEncoder
 
-from minichain import Transaction, Blockchain, State # Removed unused imports
+from minichain import Transaction, Blockchain, State, Mempool # Removed unused imports
 
 class TestCore(unittest.TestCase):
     def setUp(self):
@@ -119,6 +119,39 @@ class TestCore(unittest.TestCase):
         with self.assertRaises(ValueError) as cm:
             tx.sign(self.bob_sk)
         self.assertIn("Signing key does not match sender", str(cm.exception))
+
+    def test_mempool_rejects_unfunded_transaction(self):
+        """A transaction whose sender cannot afford amount + fee must be
+        rejected immediately by the mempool, not merely at mining time."""
+        mempool = Mempool(state_provider=lambda: self.state)
+
+        # Alice has zero balance in self.state (never credited in setUp).
+        tx = Transaction(self.alice_pk, self.bob_pk, 10, 0)
+        tx.sign(self.alice_sk)
+
+        self.assertFalse(mempool.add_transaction(tx))
+        self.assertEqual(len(mempool), 0)
+
+    def test_unminable_transaction_evicted_during_mining(self):
+        """A transaction already sitting in the mempool that can never
+        succeed (insufficient balance) must be evicted during a mining
+        cycle instead of being silently skipped and left stuck forever."""
+        import main
+
+        # No state_provider here: models a tx that was admitted without a
+        # live-balance check (e.g. via a caller that hasn't wired one up)
+        # and now can never be applied against the real chain state, where
+        # Alice's balance is zero.
+        mempool = Mempool()
+        tx = Transaction(self.alice_pk, self.bob_pk, 10, 0)
+        tx.sign(self.alice_sk)
+        self.assertTrue(mempool.add_transaction(tx))
+        self.assertEqual(len(mempool), 1)
+
+        mined = main.mine_and_process_block(self.chain, mempool, self.bob_pk)
+
+        self.assertIsNone(mined)
+        self.assertEqual(len(mempool), 0)
 
 
 if __name__ == '__main__':

@@ -1,18 +1,53 @@
 import logging
 import threading
+from typing import TYPE_CHECKING, Callable, Optional
+
+if TYPE_CHECKING:
+    from .state import State
 
 logger = logging.getLogger(__name__)
 
 class Mempool:
-    def __init__(self, max_size=1000, transactions_per_block=100):
+    def __init__(
+        self,
+        max_size: int = 1000,
+        transactions_per_block: int = 100,
+        state_provider: Optional[Callable[[], "State"]] = None,
+    ):
+        """
+        state_provider: optional zero-arg callable returning the current live
+        State. Used to reject transactions the sender cannot afford at
+        admission time. It is a callable rather than a stored State instance
+        so the mempool always observes the latest state, even after the
+        chain replaces its State wholesale (e.g. after mining a block or a
+        reorg). If omitted, balance is not checked at admission time.
+        """
         self._list = []  # Single sorted list
         self._lock = threading.Lock()
         self.max_size = max_size
         self.transactions_per_block = transactions_per_block
+        self._state_provider = state_provider
+
+    def _sender_can_afford(self, tx) -> bool:
+        """
+        Return True if the tx sender's live balance covers amount + fee.
+        Returns True when no state_provider was configured, preserving
+        signature-only admission for callers that don't wire up chain state.
+        """
+        if self._state_provider is None:
+            return True
+        state = self._state_provider()
+        account = state.get_account(tx.sender)
+        total_cost = tx.amount + getattr(tx, "fee", 0)
+        return account["balance"] >= total_cost
 
     def add_transaction(self, tx):
         if not tx.verify():
             logger.warning("Mempool: Invalid signature rejected")
+            return False
+
+        if not self._sender_can_afford(tx):
+            logger.warning("Mempool: Insufficient balance rejected for tx %s", tx.tx_id)
             return False
 
         with self._lock:
