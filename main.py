@@ -103,8 +103,11 @@ def parse_tx_params(parts, start):
     return amount, gas_limit, max_fee
 
 
-async def submit_and_broadcast(mempool, network, tx, ok_msg, reject_msg):
+async def submit_and_broadcast(chain, mempool, network, tx, ok_msg, reject_msg):
     """Add a signed tx to the mempool and broadcast it, printing the outcome."""
+    if chain.state.verify_transaction_logic(tx) != ValidationStatus.VALID:
+        print("  ❌ Transaction failed state validation (e.g. insufficient balance or invalid nonce).")
+        return
     if mempool.add_transaction(tx):
         await network.broadcast_transaction(tx)
         print(ok_msg)
@@ -138,6 +141,8 @@ def mine_and_process_block(chain, mempool, miner_pk):
         if receipt is not None:
             mineable_txs.append(tx)
             receipts.append(receipt)
+        else:
+            stale_txs.append(tx)
 
     if stale_txs:
         mempool.remove_transactions(stale_txs)
@@ -220,6 +225,9 @@ def make_network_handler(chain, mempool, network):
                 logger.warning("Invalid chain_id in tx from %s", peer_addr)
                 return ValidationStatus.INVALID
 
+            if chain.state.verify_transaction_logic(tx) != ValidationStatus.VALID:
+                return ValidationStatus.INVALID
+
             if mempool.add_transaction(tx):
                 logger.info("📥 Received tx from %s... (amount=%s)", tx.sender[:8], tx.amount)
                 return ValidationStatus.VALID
@@ -244,8 +252,7 @@ def make_network_handler(chain, mempool, network):
                     request_chain(network, chain.last_block.index + 1, 500)
                 else:
                     logger.warning("📥 Received Block #%s — rejected. Fork detected, trigger reorg sync.", block.index)
-                    # For a fork, request the full chain to use resolve_conflicts
-                    request_chain(network, 0, 1000000)
+                    request_chain(network, max(0, block.index - 50), 50)
             return status
 
         elif msg_type == "chain_request":
@@ -276,15 +283,8 @@ def make_network_handler(chain, mempool, network):
                 return
 
             if new_chain:
-                # Distinguish between linear catch-up vs full reorg based on whether we received block 0
-                if new_chain[0].index == 0:
-                    # Fork / Reorg sync
-                    success, orphans = chain.resolve_conflicts(new_chain)
-                    if success:
-                        logger.info("🔄 Reorg complete! Restoring %d orphaned txs to mempool.", len(orphans))
-                        for tx in orphans:
-                            mempool.add_transaction(tx)
-                else:
+                # Differentiate between linear catchup and reorg
+                if new_chain[0].index == chain.last_block.index + 1 and new_chain[0].previous_hash == chain.last_block.hash:
                     # Linear Catch-up
                     all_added = True
                     for block in new_chain:
@@ -294,16 +294,31 @@ def make_network_handler(chain, mempool, network):
                             logger.info("📥 Synced Block #%d", block.index)
                             mempool.remove_transactions(block.transactions)
                         else:
-                            logger.warning("❌ Sync failed at Block #%d. Fork detected. Requesting full chain.", block.index)
-                            request_chain(network, 0, 1000000)
+                            logger.warning("❌ Sync failed at Block #%d. Fork detected. Requesting chunk backward.", block.index)
+                            request_chain(network, max(0, block.index - 50), 50)
                             all_added = False
                             break
 
-                    # If we added all blocks and we hit the limit, request next batch
                     if all_added and len(new_chain) == requested_limit:
                         next_index = chain.last_block.index + 1
                         logger.info("📡 Requesting next batch from index %d", next_index)
                         request_chain(network, next_index, requested_limit)
+                else:
+                    # Fork / Reorg sync
+                    success, orphans = chain.resolve_conflicts(new_chain)
+                    if success:
+                        logger.info("🔄 Reorg complete! Restoring %d orphaned txs to mempool.", len(orphans))
+                        for tx in orphans:
+                            mempool.add_transaction(tx)
+                        
+                        if len(new_chain) == requested_limit:
+                            next_index = chain.last_block.index + 1
+                            request_chain(network, next_index, requested_limit)
+                    else:
+                        logger.warning("❌ Reorg failed. Fetching earlier blocks to find fork point...")
+                        earlier_start = max(0, new_chain[0].index - 50)
+                        if new_chain[0].index > 0:
+                            request_chain(network, earlier_start, 50)
 
     return handler
 
@@ -422,7 +437,7 @@ async def cli_loop(sk, pk, chain, mempool, network, datadir: str | None = None):
             tx.sign(sk)
 
             await submit_and_broadcast(
-                mempool, network, tx,
+                chain, mempool, network, tx,
                 f"  {C_GREEN}✅ Tx sent:{C_RESET} {amount} coins → {receiver[:12]}...",
                 f"  {C_RED}❌ Transaction rejected{C_RESET} (invalid sig, duplicate, or mempool full).",
             )
@@ -450,7 +465,7 @@ async def cli_loop(sk, pk, chain, mempool, network, datadir: str | None = None):
             tx.sign(sk)
 
             await submit_and_broadcast(
-                mempool, network, tx,
+                chain, mempool, network, tx,
                 f"  ✅ Deploy Tx sent (nonce={nonce}). Mine a block to confirm.",
                 "  ❌ Deploy Transaction rejected.",
             )
@@ -476,7 +491,7 @@ async def cli_loop(sk, pk, chain, mempool, network, datadir: str | None = None):
             tx.sign(sk)
 
             await submit_and_broadcast(
-                mempool, network, tx,
+                chain, mempool, network, tx,
                 f"  ✅ Call Tx sent to {receiver[:12]}... (payload='{payload}'). Mine a block to confirm.",
                 "  ❌ Call Transaction rejected.",
             )

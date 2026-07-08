@@ -215,8 +215,9 @@ class State:
         return sha256(raw, encoder=HexEncoder).decode()[:40]
 
     def create_contract(self, contract_address, code, initial_balance=0):
+        existing_balance = self.accounts.get(contract_address, {}).get('balance', 0)
         self.accounts[contract_address] = {
-            'balance': initial_balance,
+            'balance': existing_balance + initial_balance,
             'nonce': 0,
             'code': code,
             'storage': {}
