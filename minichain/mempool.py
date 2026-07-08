@@ -1,6 +1,7 @@
 import logging
 import threading
-from typing import TYPE_CHECKING, Callable, Optional
+from typing import TYPE_CHECKING, Optional
+from collections.abc import Callable
 
 if TYPE_CHECKING:
     from .state import State
@@ -13,7 +14,7 @@ class Mempool:
         max_size: int = 1000,
         transactions_per_block: int = 100,
         state_provider: Optional[Callable[[], "State"]] = None,
-    ):
+    ) -> None:
         """
         state_provider: optional zero-arg callable returning the current live
         State. Used to reject transactions the sender cannot afford at
