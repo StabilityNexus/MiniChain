@@ -40,7 +40,9 @@ jobs:
 
       - name: Update README
         run: |
-          sed -i '/<!-- Pytest Coverage Comment:Begin -->/,/<!-- Pytest Coverage Comment:End -->/c\<!-- Pytest Coverage Comment:Begin -->\n![Coverage](https://img.shields.io/badge/Coverage-${{ steps.coverage.outputs.coverage }}%25-${{ steps.coverage.outputs.color }}?style=for-the-badge)\n<!-- Pytest Coverage Comment:End -->' ./README.md
+          BADGE='${{ steps.coverage.outputs.coverageHtml }}'
+          BADGE="${BADGE/.svg/.svg?style=for-the-badge}"
+          sed -i "/<!-- Pytest Coverage Comment:Begin -->/,/<!-- Pytest Coverage Comment:End -->/c\<!-- Pytest Coverage Comment:Begin -->\n$BADGE\n<!-- Pytest Coverage Comment:End -->" ./README.md
 
       - name: Commit changes
         uses: stefanzweifel/git-auto-commit-action@v5
