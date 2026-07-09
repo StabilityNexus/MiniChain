@@ -141,6 +141,15 @@ class State:
             contract_address = self.derive_contract_address(tx.sender, tx.nonce)
             gas_used = getattr(tx, 'gas_limit', 0)
 
+            from .network_config import GAS_PER_BYTE
+            code_bytes = len(tx.data.encode('utf-8')) if tx.data else 0
+            code_gas = code_bytes * GAS_PER_BYTE
+            
+            if code_gas > gas_used:
+                # Restore sender balance on failure, but keep nonce incremented
+                sender['balance'] += tx.amount
+                return Receipt(tx.tx_id, status=0, error_message="Out of gas (Code size exceeded limit)", gas_used=gas_used)
+
             # Prevent redeploy collision
             existing = self.accounts.get(contract_address)
             if existing and existing.get("code"):
