@@ -169,7 +169,7 @@ class ContractMachine:
                 args=(code, globals_for_exec, context, queue, gas_limit)
             )
             p.start()
-            p.join(timeout=1)  # 1 second timeout
+            p.join(timeout=5)  # 5 seconds timeout (increased for Windows compatibility)
 
             if p.is_alive():
                 p.kill()
