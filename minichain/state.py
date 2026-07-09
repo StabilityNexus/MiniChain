@@ -6,6 +6,7 @@ from nacl.encoding import HexEncoder
 from .contract import ContractMachine
 from .mpt import Trie
 from .receipt import Receipt
+from .network_config import DEFAULT_MINING_REWARD
 
 logger = logging.getLogger(__name__)
 
@@ -30,7 +31,7 @@ class State:
             trie.put(addr, json.dumps(acc, sort_keys=True))
         return trie.root_hash()
 
-    DEFAULT_MINING_REWARD = 50
+    DEFAULT_MINING_REWARD = DEFAULT_MINING_REWARD
 
     def get_account(self, address):
         if address not in self.accounts:

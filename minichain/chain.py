@@ -7,6 +7,7 @@ import json
 import os
 import sys
 import time
+from .network_config import MAX_FUTURE_BLOCK_TIME_MS
 
 logger = logging.getLogger(__name__)
 
@@ -33,7 +34,7 @@ def validate_block_link_and_hash(previous_block, block):
     if block.timestamp <= previous_block.timestamp:
         raise ValueError(f"invalid timestamp: {block.timestamp} is not strictly greater than previous block timestamp {previous_block.timestamp}")
 
-    max_allowed_time = int(time.time() * 1000) + 15000
+    max_allowed_time = int(time.time() * 1000) + MAX_FUTURE_BLOCK_TIME_MS
     if block.timestamp > max_allowed_time:
         raise ValueError(f"invalid timestamp: {block.timestamp} is too far in the future (max allowed: {max_allowed_time})")
 

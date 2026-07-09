@@ -1,14 +1,16 @@
 import logging
 import threading
 
+from .node_config import MEMPOOL_MAX_SIZE, MEMPOOL_TX_PER_BLOCK
+
 logger = logging.getLogger(__name__)
 
 class Mempool:
-    def __init__(self, max_size=1000, transactions_per_block=100):
-        self._list = []  # Single sorted list
+    def __init__(self, max_size=None, transactions_per_block=None):
+        self._list = []  # Sorted list of transactions (highest fee first, then oldest)
+        self.max_size = max_size if max_size is not None else MEMPOOL_MAX_SIZE
+        self.transactions_per_block = transactions_per_block if transactions_per_block is not None else MEMPOOL_TX_PER_BLOCK
         self._lock = threading.Lock()
-        self.max_size = max_size
-        self.transactions_per_block = transactions_per_block
 
     def add_transaction(self, tx):
         if not tx.verify():
