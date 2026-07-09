@@ -14,7 +14,8 @@
 
 [![Static Badge](https://img.shields.io/badge/Stability_Nexus-MiniChain-228B22?style=for-the-badge&labelColor=FFC517)](https://stability.nexus/)
 
-<!-- Correct deployed url to be added -->
+<!-- Pytest Coverage Comment:Begin -->
+<!-- Pytest Coverage Comment:End -->
 
 </div>
 
