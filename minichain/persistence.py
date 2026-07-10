@@ -112,6 +112,18 @@ def load(path: str = ".") -> Blockchain:
     blockchain.chain = blocks
     blockchain.state.accounts = normalized_accounts
 
+    if len(blocks) > 1:
+        current_difficulty = blocks[0].difficulty if blocks[0].difficulty is not None else ((1 << 256) - 1)
+        avg_block_time = blockchain.target_block_time
+        for i in range(1, len(blocks)):
+            prev_block = blocks[i - 1]
+            block = blocks[i]
+            new_avg = blockchain.alpha * (block.timestamp - prev_block.timestamp) + (1 - blockchain.alpha) * avg_block_time
+            current_difficulty = blockchain._next_difficulty(current_difficulty, new_avg)
+            avg_block_time = new_avg
+        blockchain.current_difficulty = current_difficulty
+        blockchain.avg_block_time = avg_block_time
+
     logger.info(
         "Loaded %d blocks and %d accounts from '%s'",
         len(blockchain.chain),

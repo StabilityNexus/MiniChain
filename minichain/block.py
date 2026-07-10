@@ -72,6 +72,14 @@ class Block:
         if self.receipt_root is None and self.receipts:
             self.receipt_root = calculate_receipt_root(self.receipts)
 
+    @property
+    def target(self) -> int:
+        if self.difficulty is None:
+            return (1 << 256) - 1
+        if self.difficulty <= 256:
+            return (1 << (256 - 4 * self.difficulty)) - 1
+        return self.difficulty
+
     # -------------------------
     # HEADER (used for mining)
     # -------------------------
@@ -134,8 +142,6 @@ class Block:
         raw_diff = payload.get("difficulty")
         if raw_diff is not None:
             parsed_diff = int(raw_diff)
-            if parsed_diff > 256:
-                raise ValueError(f"Difficulty too large: {parsed_diff}")
         else:
             parsed_diff = None
 

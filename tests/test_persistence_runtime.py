@@ -71,12 +71,12 @@ class TestPersistenceRuntime(unittest.IsolatedAsyncioTestCase):
             index=1,
             previous_hash=bc.last_block.hash,
             transactions=[tx],
-            difficulty=1,
+            difficulty=(1<<256)-1,
             state_root=temp_state.state_root(),
             receipt_root=calculate_receipt_root([receipt]),
             receipts=[receipt],
         )
-        mine_block(block, difficulty=1)
+        mine_block(block, difficulty=(1<<256)-1)
         bc.add_block(block)
         return bc
 
