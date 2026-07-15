@@ -40,6 +40,13 @@ class Mempool:
                     logger.warning("Mempool: Ignoring older replacement %s", tx.tx_id)
                     return False
                 
+                # Enforce RBF: new fee must be at least 10% higher
+                old_fee = getattr(existing_tx, 'max_fee_per_gas', 0)
+                new_fee = getattr(tx, 'max_fee_per_gas', 0)
+                if new_fee <= old_fee * 1.1:
+                    logger.warning("Mempool: Replacement fee too low for %s", tx.tx_id)
+                    return False
+                
                 self._list.pop(existing_idx)
                 if i_max > existing_idx:
                     i_max -= 1

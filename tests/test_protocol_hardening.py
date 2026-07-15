@@ -31,13 +31,14 @@ class TestMempoolQueue(unittest.TestCase):
         self.receiver_pk = SigningKey.generate().verify_key.encode(encoder=HexEncoder).decode()
         self.state.credit_mining_reward(self.sender_pk, 100)
 
-    def _signed_tx(self, nonce, amount=1, timestamp=None) -> Transaction:
+    def _signed_tx(self, nonce, amount=1, timestamp=None, max_fee_per_gas=0) -> Transaction:
         tx = Transaction(
             sender=self.sender_pk,
             receiver=self.receiver_pk,
             amount=amount,
             nonce=nonce,
             timestamp=timestamp,
+            max_fee_per_gas=max_fee_per_gas,
         )
         tx.sign(self.sender_sk)
         return tx
@@ -58,8 +59,8 @@ class TestMempoolQueue(unittest.TestCase):
 
     def test_same_nonce_replaces_pending_transaction(self):
         mempool = Mempool()
-        original_tx = self._signed_tx(0, amount=1, timestamp=1000)
-        replacement_tx = self._signed_tx(0, amount=2, timestamp=2000)
+        original_tx = self._signed_tx(0, amount=1, timestamp=1000, max_fee_per_gas=10)
+        replacement_tx = self._signed_tx(0, amount=2, timestamp=2000, max_fee_per_gas=15)
 
         self.assertTrue(mempool.add_transaction(original_tx))
         self.assertTrue(mempool.add_transaction(replacement_tx))
