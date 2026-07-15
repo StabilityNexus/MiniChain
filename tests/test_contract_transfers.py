@@ -13,7 +13,7 @@ class TestContractTransfers(unittest.TestCase):
         self.target_pk = SigningKey.generate().verify_key.encode(encoder=HexEncoder).decode()
         
         # Credit sender with enough balance to deploy and call
-        self.state.credit_mining_reward(self.sender_pk, 10000)
+        self.state.credit_mining_reward(self.sender_pk, 1000000)
 
     def _sign(self, tx):
         tx.sign(self.sender_sk)
@@ -26,7 +26,7 @@ target = msg['data']['target']
 transfer_out(target, 50)
 transfer_out(target, 25)
 """
-        deploy_tx = self._sign(Transaction(self.sender_pk, None, amount=100, nonce=0, data=code, gas_limit=1000, max_fee_per_gas=1))
+        deploy_tx = self._sign(Transaction(self.sender_pk, None, amount=100, nonce=0, data=code, gas_limit=50000, max_fee_per_gas=1))
         receipt = self.state.apply_transaction(deploy_tx)
         self.assertEqual(receipt.status, 1)
         contract_addr = receipt.contract_address
@@ -36,7 +36,7 @@ transfer_out(target, 25)
         self.assertEqual(self.state.get_account(self.target_pk)['balance'], 0)
 
         # 2. Call Contract to transfer out 75 coins
-        call_tx = self._sign(Transaction(self.sender_pk, contract_addr, amount=0, nonce=1, data={"target": self.target_pk}, gas_limit=1000, max_fee_per_gas=1))
+        call_tx = self._sign(Transaction(self.sender_pk, contract_addr, amount=0, nonce=1, data={"target": self.target_pk}, gas_limit=50000, max_fee_per_gas=1))
         receipt2 = self.state.apply_transaction(call_tx)
         
         self.assertEqual(receipt2.status, 1)
@@ -55,13 +55,13 @@ target = msg['data']['target']
 transfer_out(target, 500)
 storage['malicious_state'] = 'corrupted'
 """
-        deploy_tx = self._sign(Transaction(self.sender_pk, None, amount=100, nonce=0, data=code, gas_limit=1000, max_fee_per_gas=1))
+        deploy_tx = self._sign(Transaction(self.sender_pk, None, amount=100, nonce=0, data=code, gas_limit=50000, max_fee_per_gas=1))
         receipt = self.state.apply_transaction(deploy_tx)
         self.assertEqual(receipt.status, 1)
         contract_addr = receipt.contract_address
 
         # 2. Call Contract
-        call_tx = self._sign(Transaction(self.sender_pk, contract_addr, amount=50, nonce=1, data={"target": self.target_pk}, gas_limit=1000, max_fee_per_gas=1))
+        call_tx = self._sign(Transaction(self.sender_pk, contract_addr, amount=50, nonce=1, data={"target": self.target_pk}, gas_limit=50000, max_fee_per_gas=1))
         receipt2 = self.state.apply_transaction(call_tx)
         
         # Should fail with status 0
@@ -73,9 +73,9 @@ storage['malicious_state'] = 'corrupted'
         self.assertEqual(self.state.get_account(self.target_pk)['balance'], 0)
         
         # Sender's balance should have decreased by only the fee amount (or gas_used if refunded) as the 50 amount was refunded
-        # Starting balance 10000, minus (100+1000) for deploy = 8900
+        # Starting balance 1000000, minus 100 amount for deploy
         # Call tx net cost is receipt2.gas_used
-        self.assertEqual(self.state.get_account(self.sender_pk)['balance'], 8900 - receipt2.gas_used)
+        self.assertEqual(self.state.get_account(self.sender_pk)['balance'], 1000000 - 100 - receipt.gas_used - receipt2.gas_used)
 
         # Storage should NOT be updated
         self.assertEqual(self.state.get_account(contract_addr)['storage'], {})
@@ -87,7 +87,7 @@ target = msg['data']['target']
 # We use the incoming funds to instantly transfer out!
 transfer_out(target, msg['value'])
 """
-        deploy_tx = self._sign(Transaction(self.sender_pk, None, amount=0, nonce=0, data=code, gas_limit=1000, max_fee_per_gas=1))
+        deploy_tx = self._sign(Transaction(self.sender_pk, None, amount=0, nonce=0, data=code, gas_limit=50000, max_fee_per_gas=1))
         receipt = self.state.apply_transaction(deploy_tx)
         self.assertEqual(receipt.status, 1)
         contract_addr = receipt.contract_address
@@ -95,7 +95,7 @@ transfer_out(target, msg['value'])
         self.assertEqual(self.state.get_account(contract_addr)['balance'], 0)
 
         # 2. Call Contract sending 50 coins
-        call_tx = self._sign(Transaction(self.sender_pk, contract_addr, amount=50, nonce=1, data={"target": self.target_pk}, gas_limit=1000, max_fee_per_gas=1))
+        call_tx = self._sign(Transaction(self.sender_pk, contract_addr, amount=50, nonce=1, data={"target": self.target_pk}, gas_limit=50000, max_fee_per_gas=1))
         receipt2 = self.state.apply_transaction(call_tx)
         
         self.assertEqual(receipt2.status, 1)

@@ -13,7 +13,7 @@ class TestSmartContract(unittest.TestCase):
         self.state = State()
         self.sk = SigningKey.generate()
         self.pk = self.sk.verify_key.encode(encoder=HexEncoder).decode()
-        self.state.credit_mining_reward(self.pk, 10000)
+        self.state.credit_mining_reward(self.pk, 1000000)
 
     def test_deploy_and_execute(self):
         """Happy path: deploy and increment counter."""
@@ -23,7 +23,7 @@ if msg['data'] == 'increment':
     storage['counter'] = storage.get('counter', 0) + 1
 """
 
-        tx_deploy = Transaction(self.pk, None, 0, 0, gas_limit=500, max_fee_per_gas=1, data=code)
+        tx_deploy = Transaction(self.pk, None, 0, 0, gas_limit=50000, max_fee_per_gas=1, data=code)
         tx_deploy.sign(self.sk)
 
         receipt_deploy = self.state.apply_transaction(tx_deploy)
@@ -50,7 +50,7 @@ if msg['data'] == 'increment':
 
         code = "storage['x'] = 1"
 
-        tx = Transaction(poor_pk, None, 1000, 0, gas_limit=500, max_fee_per_gas=1, data=code)
+        tx = Transaction(poor_pk, None, 1000, 0, gas_limit=50000, max_fee_per_gas=1, data=code)
         tx.sign(poor_sk)
 
         receipt = self.state.apply_transaction(tx)
@@ -63,7 +63,7 @@ if msg['data'] == 'increment':
         fake_sk = SigningKey.generate()
         fake_receiver = fake_sk.verify_key.encode(encoder=HexEncoder).decode()
 
-        tx = Transaction(self.pk, fake_receiver, 0, 0, gas_limit=500, max_fee_per_gas=1, data="increment")
+        tx = Transaction(self.pk, fake_receiver, 0, 0, gas_limit=50000, max_fee_per_gas=1, data="increment")
         tx.sign(self.sk)
 
         receipt = self.state.apply_transaction(tx)
@@ -78,7 +78,7 @@ if msg['data'] == 'increment':
 raise Exception("boom")
 """
 
-        tx_deploy = Transaction(self.pk, None, 0, 0, gas_limit=500, max_fee_per_gas=1, data=code)
+        tx_deploy = Transaction(self.pk, None, 0, 0, gas_limit=50000, max_fee_per_gas=1, data=code)
         tx_deploy.sign(self.sk)
 
         receipt_deploy = self.state.apply_transaction(tx_deploy)
@@ -104,7 +104,7 @@ raise Exception("boom")
         code = "storage['x'] = 1"
 
         # First deploy
-        tx1 = Transaction(self.pk, None, 0, 0, gas_limit=500, max_fee_per_gas=1, data=code)
+        tx1 = Transaction(self.pk, None, 0, 0, gas_limit=50000, max_fee_per_gas=1, data=code)
         tx1.sign(self.sk)
 
         receipt1 = self.state.apply_transaction(tx1)
@@ -121,7 +121,7 @@ raise Exception("boom")
         self.state.create_contract(collision_addr, "storage['y'] = 2")
 
         # Attempt redeploy
-        tx2 = Transaction(self.pk, None, 0, next_nonce, gas_limit=500, max_fee_per_gas=1, data=code)
+        tx2 = Transaction(self.pk, None, 0, next_nonce, gas_limit=50000, max_fee_per_gas=1, data=code)
         tx2.sign(self.sk)
 
         receipt2 = self.state.apply_transaction(tx2)
@@ -138,7 +138,7 @@ raise Exception("boom")
 
         code = "storage['x'] = 1"
 
-        tx_deploy = Transaction(self.pk, None, 10, initial_nonce, gas_limit=500, max_fee_per_gas=1, data=code)
+        tx_deploy = Transaction(self.pk, None, 10, initial_nonce, gas_limit=50000, max_fee_per_gas=1, data=code)
         tx_deploy.sign(self.sk)
 
         receipt = self.state.apply_transaction(tx_deploy)
@@ -150,7 +150,7 @@ raise Exception("boom")
         # Verify balance and nonce after deploy
         # We spent 10 amount + 500 gas for deploy = 510 total deduction
         sender_after = self.state.get_account(self.pk)
-        self.assertEqual(sender_after["balance"], initial_balance - 510)
+        self.assertEqual(sender_after["balance"], initial_balance - receipt.gas_used - 10)
         self.assertEqual(sender_after["nonce"], initial_nonce + 1)
 
     def test_out_of_gas(self):
@@ -159,7 +159,7 @@ raise Exception("boom")
         code = "while True: pass"
         
         # 1. Deploy code
-        tx_deploy = Transaction(self.pk, None, 0, 0, gas_limit=500, max_fee_per_gas=1, data=code)
+        tx_deploy = Transaction(self.pk, None, 0, 0, gas_limit=50000, max_fee_per_gas=1, data=code)
         tx_deploy.sign(self.sk)
         receipt_deploy = self.state.apply_transaction(tx_deploy)
         self.assertEqual(receipt_deploy.status, 1)
@@ -184,13 +184,13 @@ raise Exception("boom")
     def test_malicious_import(self):
         """Contract attempting to import a module should fail AST validation."""
         code = "import os\nstorage['x'] = 1"
-        tx_deploy = Transaction(self.pk, None, 0, 0, gas_limit=500, max_fee_per_gas=1, data=code)
+        tx_deploy = Transaction(self.pk, None, 0, 0, gas_limit=50000, max_fee_per_gas=1, data=code)
         tx_deploy.sign(self.sk)
         
         receipt_deploy = self.state.apply_transaction(tx_deploy)
         self.assertEqual(receipt_deploy.status, 1) # Deploy succeeds, saves code
 
-        tx_call = Transaction(self.pk, receipt_deploy.contract_address, 0, 1, gas_limit=500, max_fee_per_gas=1, data="call")
+        tx_call = Transaction(self.pk, receipt_deploy.contract_address, 0, 1, gas_limit=50000, max_fee_per_gas=1, data="call")
         tx_call.sign(self.sk)
         receipt_call = self.state.apply_transaction(tx_call)
         
@@ -202,13 +202,13 @@ raise Exception("boom")
         """Contract attempting to use open() or file IO should fail at runtime due to missing builtins."""
         # Using open() which is stripped from __builtins__
         code = "f = open('critical_file.txt', 'w')\nf.write('hacked')"
-        tx_deploy = Transaction(self.pk, None, 0, 0, gas_limit=500, max_fee_per_gas=1, data=code)
+        tx_deploy = Transaction(self.pk, None, 0, 0, gas_limit=50000, max_fee_per_gas=1, data=code)
         tx_deploy.sign(self.sk)
         
         receipt_deploy = self.state.apply_transaction(tx_deploy)
         self.assertEqual(receipt_deploy.status, 1)
 
-        tx_call = Transaction(self.pk, receipt_deploy.contract_address, 0, 1, gas_limit=500, max_fee_per_gas=1, data="call")
+        tx_call = Transaction(self.pk, receipt_deploy.contract_address, 0, 1, gas_limit=50000, max_fee_per_gas=1, data="call")
         tx_call.sign(self.sk)
         receipt_call = self.state.apply_transaction(tx_call)
 

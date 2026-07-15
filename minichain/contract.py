@@ -189,12 +189,20 @@ class ContractMachine:
 
             # Validate storage is JSON serializable
             try:
-                json.dumps(result["storage"])
+                storage_json = json.dumps(result["storage"])
             except (TypeError, ValueError):
                 logger.error("Contract storage not JSON serializable")
                 return self._fail("Storage not JSON serializable", result.get("gas_used", gas_limit))
 
-            return {"success": True, "gas_used": result["gas_used"], "transfers": result.get("transfers", []), "storage": result["storage"], "error": None}
+            from .network_config import GAS_PER_BYTE
+            storage_gas = len(storage_json.encode('utf-8')) * GAS_PER_BYTE
+            total_gas = result["gas_used"] + storage_gas
+
+            if total_gas > gas_limit:
+                logger.error("Contract Execution Failed: Out of gas (Storage size exceeded limit)")
+                return self._fail("Out of gas (Storage size exceeded limit)", gas_limit)
+
+            return {"success": True, "gas_used": total_gas, "transfers": result.get("transfers", []), "storage": result["storage"], "error": None}
 
         except Exception as e:
             logger.error("Contract Execution Failed", exc_info=True)
