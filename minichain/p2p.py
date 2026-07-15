@@ -8,8 +8,11 @@ import json
 import logging
 import threading
 import time
+import struct
 import trio
 import queue
+from .node_config import MALFORMED_THRESHOLD, FAILED_THRESHOLD, INVALID_THRESHOLD, DECAY_INTERVAL_MINUTES
+from .network_config import SUPPORTED_MESSAGE_TYPES, PROTOCOL_ID, MAX_FRAME_BYTES
 
 from libp2p import new_host
 TProtocol = str
@@ -28,15 +31,7 @@ def _peer_id_from_addr(peer_addr: str) -> str:
     return peer_addr[len(prefix):] if peer_addr.startswith(prefix) else peer_addr
 
 
-SUPPORTED_MESSAGE_TYPES = {"hello", "tx", "block", "chain_request", "chain_response"}
-PROTOCOL_ID = TProtocol("/minichain/1.0.0")
-MAX_FRAME_BYTES = 1 * 1024 * 1024  # 1 MB
-
-# Misbehavior thresholds — all four are overridable per P2PNetwork instance.
-MALFORMED_THRESHOLD = 15     # N: accumulated malformed messages before ban
-FAILED_THRESHOLD = 15        # M: accumulated failed messages before ban
-INVALID_THRESHOLD = 1        # L: accumulated invalid messages before ban (1 = immediate)
-DECAY_INTERVAL_MINUTES = 10  # T: counter half-life period in minutes
+# (Constants moved to node_config.py and network_config.py)
 
 
 class P2PNetwork:

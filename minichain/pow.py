@@ -1,5 +1,6 @@
 import time
 from .serialization import canonical_json_hash
+from .node_config import MINING_MAX_NONCE
 
 
 class MiningExceededError(Exception):
@@ -14,12 +15,13 @@ def calculate_hash(block_dict):
 def mine_block(
     block,
     difficulty=None,
-    max_nonce=10_000_000,
+    max_nonce=None,
     timeout_seconds=None,
     logger=None,
     progress_callback=None
 ):
     """Mines a block using Proof-of-Work without mutating input block until success."""
+    max_nonce = max_nonce if max_nonce is not None else MINING_MAX_NONCE
 
     difficulty = difficulty if difficulty is not None else block.difficulty
     if not isinstance(difficulty, int) or difficulty <= 0:
