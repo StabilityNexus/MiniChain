@@ -6,6 +6,7 @@ import threading
 import json
 import os
 import sys
+import time
 
 logger = logging.getLogger(__name__)
 
@@ -18,8 +19,7 @@ def validate_difficulty(difficulty, max_difficulty):
     if type(difficulty) is not int or difficulty < 1 or difficulty > max_difficulty:
         raise ValueError(f"invalid difficulty {difficulty}")
 
-
-def validate_block_link_and_hash(previous_block, block):
+def validate_block(previous_block, block, expected_difficulty):
     if block.previous_hash != previous_block.hash:
         raise ValueError(
             f"invalid previous hash {block.previous_hash} != {previous_block.hash}"
@@ -34,11 +34,25 @@ def validate_block_link_and_hash(previous_block, block):
     if block.hash != expected_hash:
         raise ValueError(f"invalid hash {block.hash}")
 
-    validate_difficulty(block.difficulty, len(block.hash))
+    if block.difficulty != expected_difficulty:
+        raise ValueError(
+            f"invalid difficulty {block.difficulty} != expected {expected_difficulty}"
+        )
 
-    if not block.hash.startswith("0" * block.difficulty):
+    if not block.hash.startswith("0" * expected_difficulty):
         raise InvalidProofOfWorkError(
-            f"invalid PoW: hash {block.hash} does not satisfy difficulty {block.difficulty}"
+            f"invalid PoW: hash {block.hash} does not satisfy difficulty {expected_difficulty}"
+        )
+
+    if block.timestamp <= previous_block.timestamp:
+        raise ValueError(
+            f"invalid timestamp: {block.timestamp} is not strictly greater than previous block timestamp {previous_block.timestamp}"
+        )
+
+    max_allowed_time = int(time.time() * 1000) + 15000
+    if block.timestamp > max_allowed_time:
+        raise ValueError(
+            f"invalid timestamp: {block.timestamp} is too far in the future (max allowed: {max_allowed_time})"
         )
 
 class Blockchain:
@@ -157,7 +171,7 @@ class Blockchain:
         from .validators import ValidationStatus
 
         try:
-            validate_block_link_and_hash(prev_block, block)
+            validate_block(prev_block, block, difficulty)
         except InvalidProofOfWorkError as exc:
             logger.warning("Block %s rejected: %s", block.index, exc)
             return ValidationStatus.INVALID, difficulty, avg_block_time
@@ -165,9 +179,6 @@ class Blockchain:
             logger.warning("Block %s rejected: %s", block.index, exc)
             status = ValidationStatus.INVALID if "hash" in str(exc) else ValidationStatus.FAILED
             return status, difficulty, avg_block_time
-        if block.difficulty != difficulty:
-            logger.warning("Block %s rejected: Invalid difficulty. Expected %s, got %s", block.index, difficulty, block.difficulty)
-            return ValidationStatus.INVALID, difficulty, avg_block_time
 
         receipts = []
         for tx in block.transactions:
