@@ -62,7 +62,7 @@ class TestPersistence(unittest.TestCase):
             state_root=temp_state1.state_root(),
             receipt_root=None,
             receipts=[],
-            timestamp=int(time.time()),
+            timestamp=bc.last_block.timestamp + bc.target_block_time,
             miner=alice_pk,
         )
         mine_block(coinbase_block)
@@ -89,7 +89,7 @@ class TestPersistence(unittest.TestCase):
             state_root=temp_state2.state_root(),
             receipt_root=calculate_receipt_root([receipt]),
             receipts=[receipt],
-            timestamp=int(time.time()) + 1,
+            timestamp=bc.last_block.timestamp + bc.target_block_time,
             miner=alice_pk,
         )
         mine_block(tx_block)
@@ -282,7 +282,7 @@ class TestPersistence(unittest.TestCase):
             state_root=temp_state0.state_root(),
             receipt_root=None,
             receipts=[],
-            timestamp=int(time.time()) + 2,
+            timestamp=restored.last_block.timestamp + restored.target_block_time,
             miner=new_pk,
         )
         mine_block(coinbase_block)
@@ -308,7 +308,7 @@ class TestPersistence(unittest.TestCase):
             state_root=temp_state2.state_root(),
             receipt_root=calculate_receipt_root([receipt2]),
             receipts=[receipt2],
-            timestamp=int(time.time()) + 3,
+            timestamp=int(time.time() * 1000) + 3000,
             miner=new_pk,
         )
         mine_block(block2)
