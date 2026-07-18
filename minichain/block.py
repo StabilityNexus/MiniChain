@@ -152,7 +152,7 @@ class Block:
 
         # Verify the block hash
         expected_hash = block.compute_hash()
-        if block.hash is not None and block.hash != expected_hash:
+        if block.hash != expected_hash:
             raise ValueError("block hash does not match header")
 
         # Recalculate and verify the Merkle root!

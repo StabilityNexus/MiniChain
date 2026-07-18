@@ -149,6 +149,8 @@ class Blockchain:
                 chain_list = self.chain
 
         for block in chain_list:
+            if not isinstance(block.hash, str):
+                raise ValueError(f"invalid or missing hash on block {block.index}")
             validate_difficulty(block.difficulty, len(block.hash))
 
         return sum(2 ** block.difficulty for block in chain_list)

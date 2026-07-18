@@ -308,7 +308,7 @@ class TestPersistence(unittest.TestCase):
             state_root=temp_state2.state_root(),
             receipt_root=calculate_receipt_root([receipt2]),
             receipts=[receipt2],
-            timestamp=int(time.time() * 1000) + 3000,
+            timestamp=restored.last_block.timestamp + restored.target_block_time,
             miner=new_pk,
         )
         mine_block(block2)
