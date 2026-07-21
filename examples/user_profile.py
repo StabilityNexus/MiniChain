@@ -50,14 +50,14 @@ elif payload.startswith('update_age_grouped:'):
         
     new_age = int(parts[1])
     
-    # Notice the inefficiency here: we must load the entire dict,
-    # modify one field, and then re-save the entire dict to storage.
+    # Notice the inefficiency here: we must load the entire profile,
+    # modify one field, and then re-save the entire profile to storage.
     profile = storage.get(sender, {})
     if not profile:
         raise Exception("Profile not found")
         
     profile["age"] = new_age
-    storage[sender] = profile  # Re-saving the whole dictionary
+    storage[sender] = profile  # Re-saving the whole profile
 
 # -----------------------------------------------------------------------------
 # Paradigm 2: Composite Keys
