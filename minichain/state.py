@@ -54,7 +54,7 @@ class State:
 
         sender_acc = self.get_account(tx.sender)
 
-        total_cost = tx.amount + (getattr(tx, 'gas_limit', 0) * getattr(tx, 'max_fee_per_gas', 0))
+        total_cost = tx.amount + (getattr(tx, 'gas_limit', 0) * getattr(tx, 'fee_per_gas', 0))
         if sender_acc['balance'] < total_cost:
             logger.warning("Invalid tx %s: insufficient balance", tx.tx_id)
             return ValidationStatus.FAILED
@@ -92,8 +92,8 @@ class State:
         if not isinstance(tx.amount, int) or tx.amount < 0:
             return False
         gas_limit = getattr(tx, "gas_limit", 0)
-        max_fee = getattr(tx, "max_fee_per_gas", 0)
-        return isinstance(gas_limit, int) and gas_limit >= 0 and isinstance(max_fee, int) and max_fee >= 0
+        fee_per_gas = getattr(tx, "fee_per_gas", 0)
+        return isinstance(gas_limit, int) and gas_limit >= 0 and isinstance(fee_per_gas, int) and fee_per_gas >= 0
 
     def validate_and_apply_with_status(self, tx):
         """
@@ -129,7 +129,7 @@ class State:
         """
         sender = self.accounts[tx.sender]
 
-        total_cost = tx.amount + (getattr(tx, 'gas_limit', 0) * getattr(tx, 'max_fee_per_gas', 0))
+        total_cost = tx.amount + (getattr(tx, 'gas_limit', 0) * getattr(tx, 'fee_per_gas', 0))
         
         # Deduct funds and increment nonce
         sender['balance'] -= total_cost
@@ -181,7 +181,7 @@ class State:
             gas_used = result.get("gas_used", gas_limit)
             gas_refund = gas_limit - gas_used
             if gas_refund > 0:
-                sender['balance'] += (gas_refund * getattr(tx, 'max_fee_per_gas', 0))
+                sender['balance'] += (gas_refund * getattr(tx, 'fee_per_gas', 0))
 
             if not result.get("success"):
                 revert_transfer()

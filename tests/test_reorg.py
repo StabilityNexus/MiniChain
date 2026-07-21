@@ -39,7 +39,7 @@ def test_resolve_conflicts_heavier_chain(genesis_file):
     assert node_a.get_total_work() == node_b.get_total_work()
     
     pool_b = Mempool()
-    tx = Transaction(sender=pk, receiver="b"*64, amount=10, nonce=0, gas_limit=1, max_fee_per_gas=1)
+    tx = Transaction(sender=pk, receiver="b"*64, amount=10, nonce=0, gas_limit=1, fee_per_gas=1)
     tx.sign(sk)
     pool_b.add_transaction(tx)
     
@@ -65,19 +65,19 @@ def test_resolve_conflicts_reorg_with_orphans(genesis_file):
     pool_b = Mempool()
     
     # Node A mines tx1 (nonce 0)
-    tx1 = Transaction(sender=pk, receiver="a"*64, amount=10, nonce=0, gas_limit=1, max_fee_per_gas=1)
+    tx1 = Transaction(sender=pk, receiver="a"*64, amount=10, nonce=0, gas_limit=1, fee_per_gas=1)
     tx1.sign(sk)
     pool_a.add_transaction(tx1)
     mine_and_process_block(node_a, pool_a, pk)
     
     # Node B mines tx2 (nonce 0, competing transaction)
-    tx2 = Transaction(sender=pk, receiver="b"*64, amount=20, nonce=0, gas_limit=1, max_fee_per_gas=1)
+    tx2 = Transaction(sender=pk, receiver="b"*64, amount=20, nonce=0, gas_limit=1, fee_per_gas=1)
     tx2.sign(sk)
     pool_b.add_transaction(tx2)
     mine_and_process_block(node_b, pool_b, pk)
     
     # Node B mines tx3 (nonce 1) to become the heavier chain
-    tx3 = Transaction(sender=pk, receiver="c"*64, amount=30, nonce=1, gas_limit=1, max_fee_per_gas=1)
+    tx3 = Transaction(sender=pk, receiver="c"*64, amount=30, nonce=1, gas_limit=1, fee_per_gas=1)
     tx3.sign(sk)
     pool_b.add_transaction(tx3)
     block_b2 = mine_and_process_block(node_b, pool_b, pk)
@@ -103,7 +103,7 @@ def test_resolve_conflicts_rejects_lighter_chain(genesis_file):
     pool_a = Mempool()
     
     # Node A mines a block
-    tx1 = Transaction(sender=pk, receiver="a"*64, amount=10, nonce=0, gas_limit=1, max_fee_per_gas=1)
+    tx1 = Transaction(sender=pk, receiver="a"*64, amount=10, nonce=0, gas_limit=1, fee_per_gas=1)
     tx1.sign(sk)
     pool_a.add_transaction(tx1)
     mine_and_process_block(node_a, pool_a, pk)
