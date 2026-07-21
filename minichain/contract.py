@@ -22,71 +22,6 @@ class GasMeter:
 import json
 logger = logging.getLogger(__name__)
 
-def _safe_exec_worker(code, globals_dict, context_dict, child_conn, gas_limit):
-    """
-    Worker function to execute contract code in a separate process with gas metering.
-    
-    SECURITY:
-    This function relies on `globals_dict` (which has `__builtins__` stripped down 
-    to a minimal safe allowlist) to prevent malicious code from accessing file systems
-    (e.g., `open()`), networking, or OS-level commands (e.g., `__import__('os')`).
-    Because `exec` is run with these restricted globals, any attempt to call unauthorized
-    builtins or standard library modules will result in a NameError or ImportError.
-    """
-    try:
-        # Attempt to set resource limits (Unix only)
-        try:
-            import resource
-            # Limit CPU time (seconds) and memory (bytes) - example values
-            resource.setrlimit(resource.RLIMIT_CPU, (10, 10)) # Align with p.join timeout (10 seconds)
-            resource.setrlimit(resource.RLIMIT_AS, (100 * 1024 * 1024, 100 * 1024 * 1024))
-        except ImportError:
-            logger.warning("Resource module not available. Contract will run without OS-level resource limits.")
-        except (OSError, ValueError) as e:
-            logger.warning("Failed to set resource limits: %s", e)
-
-        transfers = []
-        
-        def transfer_out(address, amount):
-            if not isinstance(amount, int) or amount <= 0:
-                raise ValueError("Invalid transfer amount")
-            if not isinstance(address, str):
-                raise ValueError("Invalid address type")
-            if not address or len(address) not in (40, 64):
-                raise ValueError("Invalid address format")
-            try:
-                int(address, 16)
-            except ValueError:
-                raise ValueError("Invalid address format")
-            transfers.append({"to": address, "amount": amount})
-            
-        globals_dict["__builtins__"]["transfer_out"] = transfer_out
-
-        def call_contract(address, payload, amount=0):
-            child_conn.send({"type": "call", "address": address, "payload": payload, "amount": amount})
-            resp = child_conn.recv()
-            if not resp.get("success"):
-                raise Exception("Cross-contract call failed: " + str(resp.get("error")))
-            return resp.get("result", True)
-            
-        globals_dict["__builtins__"]["call_contract"] = call_contract
-
-        meter = GasMeter(gas_limit)
-        sys.settrace(meter.trace_calls)
-        
-        try:
-            exec(code, globals_dict, context_dict)
-        finally:
-            sys.settrace(None)
-            
-        gas_used = meter.initial_gas - meter.gas
-        child_conn.send({"type": "return", "status": "success", "storage": context_dict.get("storage"), "transfers": transfers, "gas_used": gas_used})
-    except OutOfGasException as e:
-        child_conn.send({"type": "return", "status": "error", "error": "Out of gas!", "gas_used": gas_limit})
-    except Exception as e:
-        # If it failed for another reason, we still charge the gas it consumed up to the failure
-        gas_used = gas_limit if 'meter' not in locals() else meter.initial_gas - meter.gas
-        child_conn.send({"type": "return", "status": "error", "error": str(e), "gas_used": gas_used})
 
 class ContractMachine:
     """
@@ -175,45 +110,57 @@ class ContractMachine:
         }
 
         try:
-            # Execute in a subprocess with timeout
-            import time
-            parent_conn, child_conn = multiprocessing.Pipe()
-            p = multiprocessing.Process(
-                target=_safe_exec_worker,
-                args=(code, globals_for_exec, context, child_conn, gas_limit)
-            )
-            p.start()
+            transfers = []
             
-            start_time = time.time()
-            result = None
-            
-            while p.is_alive() or parent_conn.poll():
-                if time.time() - start_time > 5:
-                    p.kill()
-                    p.join()
-                    logger.error("Contract execution timed out")
-                    return self._fail("Execution timed out", gas_limit)
-                    
-                if parent_conn.poll(0.1):
-                    msg = parent_conn.recv()
-                    if msg.get("type") == "call":
-                        # Execute internal sub-call recursively
-                        sub_result = self.state.execute_internal_call(
-                            sender=contract_address, # Caller is the current contract!
-                            receiver_address=msg["address"],
-                            amount=msg.get("amount", 0),
-                            payload=msg["payload"],
-                            gas_limit=gas_limit, # Let inner call use remaining gas
-                            depth=depth + 1
-                        )
-                        parent_conn.send(sub_result)
-                    elif msg.get("type") == "return":
-                        result = msg
-                        break
+            def transfer_out(address, amount):
+                if not isinstance(amount, int) or amount <= 0:
+                    raise ValueError("Invalid transfer amount")
+                if not isinstance(address, str):
+                    raise ValueError("Invalid address type")
+                if not address or len(address) not in (40, 64):
+                    raise ValueError("Invalid address format")
+                try:
+                    int(address, 16)
+                except ValueError:
+                    raise ValueError("Invalid address format")
+                transfers.append({"to": address, "amount": amount})
+                
+            globals_for_exec["__builtins__"]["transfer_out"] = transfer_out
 
-            if result is None:
-                logger.error("Contract execution crashed without result")
-                return self._fail("Crashed", gas_limit)
+            meter = GasMeter(gas_limit)
+            def call_contract(address, payload, amount=0):
+                # Execute internal sub-call recursively
+                sub_result = self.state.execute_internal_call(
+                    sender=contract_address, # Caller is the current contract!
+                    receiver_address=address,
+                    amount=amount,
+                    payload=payload,
+                    gas_limit=meter.gas, # Let inner call use remaining gas
+                    depth=depth + 1
+                )
+                if not sub_result.get("success"):
+                    raise Exception("Cross-contract call failed: " + str(sub_result.get("error")))
+                # Deduct gas used by the sub-call
+                meter.gas -= sub_result.get("gas_used", 0)
+                if meter.gas <= 0:
+                    raise OutOfGasException("Out of gas!")
+                return sub_result.get("result", True)
+                
+            globals_for_exec["__builtins__"]["call_contract"] = call_contract
+
+            sys.settrace(meter.trace_calls)
+            
+            try:
+                exec(code, globals_for_exec, context)
+                gas_used = meter.initial_gas - meter.gas
+                result = {"status": "success", "storage": context.get("storage"), "transfers": transfers, "gas_used": gas_used}
+            except OutOfGasException as e:
+                result = {"status": "error", "error": "Out of gas!", "gas_used": gas_limit}
+            except Exception as e:
+                gas_used = meter.initial_gas - meter.gas if 'meter' in locals() else 0
+                result = {"status": "error", "error": str(e), "gas_used": gas_used}
+            finally:
+                sys.settrace(None)
 
             if result["status"] != "success":
                 logger.error("Contract Execution Failed: %s", result.get('error'))
@@ -263,8 +210,8 @@ class ContractMachine:
                 if isinstance(node, ast.JoinedStr): # f-strings
                     logger.warning("Rejected f-string usage.")
                     return False
-                if isinstance(node, ast.BinOp) and isinstance(node.op, (ast.Mult, ast.Pow, ast.MatMult)):
-                    logger.warning("Rejected contract code with potentially unbounded operator (*, **, @).")
+                if isinstance(node, ast.BinOp) and isinstance(node.op, (ast.Pow, ast.MatMult)):
+                    logger.warning("Rejected contract code with potentially unbounded operator (**, @).")
                     return False
             return True
         except SyntaxError:

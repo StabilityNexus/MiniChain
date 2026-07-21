@@ -86,7 +86,7 @@ class TestCore(unittest.TestCase):
             index=1,
             previous_hash="0",
             transactions=[tx],
-            difficulty=1,
+            difficulty=(1<<256)-1,
             state_root=self.state.state_root(),
             receipt_root=calculate_receipt_root([receipt]),
             receipts=[receipt],

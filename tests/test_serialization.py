@@ -38,8 +38,8 @@ def test_block_serialization_determinism():
     tx2 = Transaction(**tx_params)
     
    # Add the miner field
-    block1 = Block(index=1, previous_hash="0"*64, transactions=[tx1], difficulty=2, timestamp=999999, miner="a" * 40)
-    block2 = Block(index=1, previous_hash="0"*64, transactions=[tx2], difficulty=2, timestamp=999999, miner="a" * 40)
+    block1 = Block(index=1, previous_hash="0"*64, transactions=[tx1], difficulty=(1<<256)-1, timestamp=999999, miner="a" * 40)
+    block2 = Block(index=1, previous_hash="0"*64, transactions=[tx2], difficulty=(1<<256)-1, timestamp=999999, miner="a" * 40)
 
     # Pre-compute the hashes before asserting
     block1.hash = block1.compute_hash()
@@ -55,7 +55,7 @@ def test_block_from_dict_rejects_tampered_payload():
     tx = Transaction(sender="A", receiver="B", amount=10, nonce=5, timestamp=1000)
     block = Block(
         index=1, previous_hash="0"*64, transactions=[tx], 
-        difficulty=2, timestamp=999999, miner="a"*40
+        difficulty=(1<<256)-1, timestamp=999999, miner="a"*40
     )
     block.hash = block.compute_hash()
 

@@ -27,9 +27,8 @@ def validate_block_link_and_hash(previous_block, block):
     if block.hash != expected_hash:
         raise ValueError(f"invalid hash {block.hash}")
 
-    target = "0" * (block.difficulty or 1)
-    if not block.hash.startswith(target):
-        raise ValueError(f"invalid Proof of Work: hash {block.hash} does not satisfy difficulty {block.difficulty}")
+    if int(block.hash, 16) > block.target:
+        raise ValueError(f"invalid Proof of Work: hash {block.hash} does not satisfy target {block.target}")
 
     if block.timestamp <= previous_block.timestamp:
         raise ValueError(f"invalid timestamp: {block.timestamp} is not strictly greater than previous block timestamp {previous_block.timestamp}")
@@ -89,6 +88,8 @@ class Blockchain:
 
         timestamp = config.get("timestamp")
         difficulty = config.get("difficulty")
+        if isinstance(difficulty, int) and difficulty <= 256:
+            difficulty = (1 << (256 - 4 * difficulty)) - 1
         
         self.target_block_time = config.get("target_block_time", 10000)
         self.alpha = config.get("alpha", 0.1)
@@ -133,20 +134,21 @@ class Blockchain:
     def get_total_work(self, chain_list=None):
         """
         Calculates the cumulative PoW of a chain.
-        Work is proportional to 2^difficulty.
+        Work is proportional to expected hashes (2^256 // target).
         """
         if chain_list is None:
             with self._lock:
                 chain_list = self.chain
-        return sum(2 ** (block.difficulty or 1) for block in chain_list)
+        return sum((1 << 256) // (block.target + 1) for block in chain_list)
 
     def _next_difficulty(self, difficulty, avg_block_time):
-        """Advance the EMA difficulty control after a block, returning the new value."""
-        if avg_block_time > self.target_block_time:
-            return max(1, difficulty - 1)
-        if avg_block_time < self.target_block_time:
-            return difficulty + 1
-        return difficulty
+        """Advance the EMA difficulty control after a block, returning the new target."""
+        ratio = avg_block_time / self.target_block_time
+        # Clamp ratio to prevent extreme swings
+        ratio = max(0.25, min(4.0, ratio))
+        new_target = int(difficulty * ratio)
+        max_target = (1 << 256) - 1
+        return max(1, min(max_target, new_target))
 
     def _apply_block(self, prev_block, block, state, difficulty, avg_block_time):
         """
@@ -164,8 +166,8 @@ class Blockchain:
             status = ValidationStatus.INVALID if "hash" in str(exc) else ValidationStatus.FAILED
             return status, difficulty, avg_block_time
 
-        if block.difficulty != difficulty:
-            logger.warning("Block %s rejected: Invalid difficulty. Expected %s, got %s", block.index, difficulty, block.difficulty)
+        if block.target != difficulty:
+            logger.warning("Block %s rejected: Invalid target. Expected %s, got %s", block.index, difficulty, block.target)
             return ValidationStatus.INVALID, difficulty, avg_block_time
 
         receipts = []
@@ -264,7 +266,7 @@ class Blockchain:
             temp_state.chain_id = self.chain_id
             temp_state.restore(self._genesis_state_snapshot)
 
-            temp_difficulty = proposed_chain[0].difficulty
+            temp_difficulty = proposed_chain[0].target
             temp_avg_block_time = self.target_block_time
 
             for i in range(1, len(proposed_chain)):

@@ -117,7 +117,7 @@ class TestP2PValidationAndDedup(unittest.IsolatedAsyncioTestCase):
             previous_hash="0" * 64, 
             transactions=[tx], 
             timestamp=1600000000000, 
-            difficulty=2, 
+            difficulty=(1<<256)-1, 
             state_root="0"*64,
             receipts=[receipt],
             receipt_root=calculate_receipt_root([receipt])
