@@ -119,7 +119,8 @@ class ContractMachine:
         Returns a dict: {"success": bool, "gas_used": int, "error": str}
         """
 
-        if depth > 10:
+        from .network_config import MAX_CALL_DEPTH
+        if depth > MAX_CALL_DEPTH:
             return self._fail("Max call depth exceeded", gas_limit)
 
         account = self.state.get_account(contract_address)
