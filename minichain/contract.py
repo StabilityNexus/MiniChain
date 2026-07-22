@@ -22,7 +22,7 @@ class GasMeter:
 import json
 logger = logging.getLogger(__name__)
 
-def _safe_exec_worker(code, globals_dict, context_dict, result_queue, gas_limit):
+def _safe_exec_worker(code, globals_dict, context_dict, child_conn, gas_limit):
     """
     Worker function to execute contract code in a separate process with gas metering.
     
@@ -62,6 +62,15 @@ def _safe_exec_worker(code, globals_dict, context_dict, result_queue, gas_limit)
             
         globals_dict["__builtins__"]["transfer_out"] = transfer_out
 
+        def call_contract(address, payload, amount=0):
+            child_conn.send({"type": "call", "address": address, "payload": payload, "amount": amount})
+            resp = child_conn.recv()
+            if not resp.get("success"):
+                raise Exception("Cross-contract call failed: " + str(resp.get("error")))
+            return resp.get("result", True)
+            
+        globals_dict["__builtins__"]["call_contract"] = call_contract
+
         meter = GasMeter(gas_limit)
         sys.settrace(meter.trace_calls)
         
@@ -71,13 +80,13 @@ def _safe_exec_worker(code, globals_dict, context_dict, result_queue, gas_limit)
             sys.settrace(None)
             
         gas_used = meter.initial_gas - meter.gas
-        result_queue.put({"status": "success", "storage": context_dict.get("storage"), "transfers": transfers, "gas_used": gas_used})
+        child_conn.send({"type": "return", "status": "success", "storage": context_dict.get("storage"), "transfers": transfers, "gas_used": gas_used})
     except OutOfGasException as e:
-        result_queue.put({"status": "error", "error": "Out of gas!", "gas_used": gas_limit})
+        child_conn.send({"type": "return", "status": "error", "error": "Out of gas!", "gas_used": gas_limit})
     except Exception as e:
         # If it failed for another reason, we still charge the gas it consumed up to the failure
         gas_used = gas_limit if 'meter' not in locals() else meter.initial_gas - meter.gas
-        result_queue.put({"status": "error", "error": str(e), "gas_used": gas_used})
+        child_conn.send({"type": "return", "status": "error", "error": str(e), "gas_used": gas_used})
 
 class ContractMachine:
     """
@@ -104,11 +113,15 @@ class ContractMachine:
         """Uniform failure result for execute()."""
         return {"success": False, "gas_used": gas_used, "error": error}
 
-    def execute(self, contract_address, sender_address, payload, amount, gas_limit):
+    def execute(self, contract_address, sender_address, payload, amount, gas_limit, depth=0):
         """
         Executes the contract code associated with the contract_address.
         Returns a dict: {"success": bool, "gas_used": int, "error": str}
         """
+
+        from .network_config import MAX_CALL_DEPTH
+        if depth > MAX_CALL_DEPTH:
+            return self._fail("Max call depth exceeded", gas_limit)
 
         account = self.state.get_account(contract_address)
         if not account:
@@ -163,23 +176,42 @@ class ContractMachine:
 
         try:
             # Execute in a subprocess with timeout
-            queue = multiprocessing.Queue()
+            import time
+            parent_conn, child_conn = multiprocessing.Pipe()
             p = multiprocessing.Process(
                 target=_safe_exec_worker,
-                args=(code, globals_for_exec, context, queue, gas_limit)
+                args=(code, globals_for_exec, context, child_conn, gas_limit)
             )
             p.start()
-            p.join(timeout=5)  # 5 seconds timeout (increased for Windows compatibility)
+            
+            start_time = time.time()
+            result = None
+            
+            while p.is_alive() or parent_conn.poll():
+                if time.time() - start_time > 5:
+                    p.kill()
+                    p.join()
+                    logger.error("Contract execution timed out")
+                    return self._fail("Execution timed out", gas_limit)
+                    
+                if parent_conn.poll(0.1):
+                    msg = parent_conn.recv()
+                    if msg.get("type") == "call":
+                        # Execute internal sub-call recursively
+                        sub_result = self.state.execute_internal_call(
+                            sender=contract_address, # Caller is the current contract!
+                            receiver_address=msg["address"],
+                            amount=msg.get("amount", 0),
+                            payload=msg["payload"],
+                            gas_limit=gas_limit, # Let inner call use remaining gas
+                            depth=depth + 1
+                        )
+                        parent_conn.send(sub_result)
+                    elif msg.get("type") == "return":
+                        result = msg
+                        break
 
-            if p.is_alive():
-                p.kill()
-                p.join()
-                logger.error("Contract execution timed out")
-                return self._fail("Execution timed out", gas_limit)
-
-            try:
-                result = queue.get(timeout=1)
-            except Exception:
+            if result is None:
                 logger.error("Contract execution crashed without result")
                 return self._fail("Crashed", gas_limit)
 
