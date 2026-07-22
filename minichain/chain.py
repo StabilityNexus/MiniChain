@@ -68,6 +68,7 @@ class Blockchain:
         
         # Apply genesis allocations
         alloc = config.get("alloc", {})
+        total_alloc = 0
         for address, data in alloc.items():
             balance = data.get("balance", 0)
             if not isinstance(balance, int) or balance < 0:
@@ -75,6 +76,12 @@ class Blockchain:
                 sys.exit(1)
             account = self.state.get_account(address)
             account['balance'] = balance
+            total_alloc += balance
+
+        initial_supply = config.get("initial_supply")
+        if initial_supply is not None and initial_supply != total_alloc:
+            logger.error("Genesis allocation mismatch: initial_supply is %s but alloc sum is %s", initial_supply, total_alloc)
+            sys.exit(1)
 
         self.chain_id = config.get("chain_id", "minichain-default")
         self.state.chain_id = self.chain_id
@@ -168,7 +175,7 @@ class Blockchain:
                 return status, difficulty, avg_block_time
             receipts.append(receipt)
 
-        total_fees = sum(getattr(r, 'gas_used', 0) for r in receipts)
+        total_fees = sum(getattr(r, 'gas_used', 0) * getattr(tx, 'fee_per_gas', 0) for r, tx in zip(receipts, block.transactions))
         if block.miner:
             state.credit_mining_reward(block.miner, reward=state.DEFAULT_MINING_REWARD + total_fees)
 
@@ -214,7 +221,7 @@ class Blockchain:
 
     def resolve_conflicts(self, new_chain_list) -> tuple[bool, list]:
         """
-        Evaluates a competing chain. If it has strictly greater cumulative work,
+        Evaluates a competing partial or full chain. If it has strictly greater cumulative work,
         attempts a reorg. Rebuilds state from genesis to guarantee validity.
         Returns: (success_bool, list_of_orphaned_transactions)
         """
@@ -224,46 +231,54 @@ class Blockchain:
             return False, []
 
         with self._lock:
+            first_block = new_chain_list[0]
+            fork_idx = first_block.index
+            
+            if fork_idx == 0:
+                if first_block.hash != self.chain[0].hash:
+                    logger.warning("Reorg failed: Genesis hash mismatch.")
+                    return False, []
+            else:
+                if fork_idx > len(self.chain):
+                    logger.warning("Reorg failed: Partial chain does not connect to our history.")
+                    return False, []
+                if first_block.previous_hash != self.chain[fork_idx - 1].hash:
+                    logger.warning("Reorg failed: Partial chain hash mismatch at fork point.")
+                    return False, []
+
+            proposed_chain = self.chain[:fork_idx] + new_chain_list
+
             current_work = self.get_total_work()
-            new_work = self.get_total_work(new_chain_list)
+            new_work = self.get_total_work(proposed_chain)
 
             if new_work <= current_work:
                 logger.debug("Incoming chain (work: %s) is not heavier than local chain (work: %s). Rejecting.", new_work, current_work)
                 return False, []
 
-            # 1. Verify genesis block matches
-            if new_chain_list[0].hash != self.chain[0].hash:
-                logger.warning("Reorg failed: Genesis hash mismatch.")
-                return False, []
-
             logger.info("Incoming chain is heavier (%s > %s). Attempting reorg...", new_work, current_work)
 
-            # 2. Snapshot current chain in case reorg fails validation
             original_chain = list(self.chain)
 
-            # 3. Rebuild state entirely from genesis using the new chain
             temp_state = State()
             temp_state.chain_id = self.chain_id
             temp_state.restore(self._genesis_state_snapshot)
 
-            temp_difficulty = new_chain_list[0].difficulty
+            temp_difficulty = proposed_chain[0].difficulty
             temp_avg_block_time = self.target_block_time
 
-            # Verify and apply blocks 1 to N through the shared pipeline
-            for i in range(1, len(new_chain_list)):
+            for i in range(1, len(proposed_chain)):
                 status, temp_difficulty, temp_avg_block_time = self._apply_block(
-                    new_chain_list[i - 1], new_chain_list[i], temp_state, temp_difficulty, temp_avg_block_time
+                    proposed_chain[i - 1], proposed_chain[i], temp_state, temp_difficulty, temp_avg_block_time
                 )
                 if status != ValidationStatus.VALID:
-                    logger.warning("Reorg failed at block %s", new_chain_list[i].index)
+                    logger.warning("Reorg failed at block %s", proposed_chain[i].index)
                     return False, []
 
-            # 4. Success! Compute orphaned transactions.
             old_txs = {tx.tx_id: tx for b in original_chain[1:] for tx in b.transactions}
-            new_tx_ids = {tx.tx_id for b in new_chain_list[1:] for tx in b.transactions}
+            new_tx_ids = {tx.tx_id for b in proposed_chain[1:] for tx in b.transactions}
             orphans = [tx for tx_id, tx in old_txs.items() if tx_id not in new_tx_ids]
 
-            self.chain = new_chain_list
+            self.chain = proposed_chain
             self.state = temp_state
             self.current_difficulty = temp_difficulty
             self.avg_block_time = temp_avg_block_time

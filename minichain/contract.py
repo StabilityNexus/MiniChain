@@ -169,7 +169,7 @@ class ContractMachine:
                 args=(code, globals_for_exec, context, queue, gas_limit)
             )
             p.start()
-            p.join(timeout=10)  # 10 second timeout
+            p.join(timeout=5)  # 5 seconds timeout (increased for Windows compatibility)
 
             if p.is_alive():
                 p.kill()
@@ -222,6 +222,9 @@ class ContractMachine:
                     return False
                 if isinstance(node, ast.JoinedStr): # f-strings
                     logger.warning("Rejected f-string usage.")
+                    return False
+                if isinstance(node, ast.BinOp) and isinstance(node.op, (ast.Mult, ast.Pow, ast.MatMult)):
+                    logger.warning("Rejected contract code with potentially unbounded operator (*, **, @).")
                     return False
             return True
         except SyntaxError:

@@ -54,7 +54,7 @@ class State:
 
         sender_acc = self.get_account(tx.sender)
 
-        total_cost = tx.amount + getattr(tx, 'fee', 0)
+        total_cost = tx.amount + (getattr(tx, 'gas_limit', 0) * getattr(tx, 'fee_per_gas', 0))
         if sender_acc['balance'] < total_cost:
             logger.warning("Invalid tx %s: insufficient balance", tx.tx_id)
             return ValidationStatus.FAILED
@@ -91,8 +91,9 @@ class State:
         """Semantic guard: amount and fee must be non-negative integers."""
         if not isinstance(tx.amount, int) or tx.amount < 0:
             return False
-        fee = getattr(tx, "fee", 0)
-        return isinstance(fee, int) and fee >= 0
+        gas_limit = getattr(tx, "gas_limit", 0)
+        fee_per_gas = getattr(tx, "fee_per_gas", 0)
+        return isinstance(gas_limit, int) and gas_limit >= 0 and isinstance(fee_per_gas, int) and fee_per_gas >= 0
 
     def validate_and_apply_with_status(self, tx):
         """
@@ -128,7 +129,7 @@ class State:
         """
         sender = self.accounts[tx.sender]
 
-        total_cost = tx.amount + getattr(tx, 'fee', 0)
+        total_cost = tx.amount + (getattr(tx, 'gas_limit', 0) * getattr(tx, 'fee_per_gas', 0))
         
         # Deduct funds and increment nonce
         sender['balance'] -= total_cost
@@ -137,7 +138,7 @@ class State:
         # LOGIC BRANCH 1: Contract Deployment
         if tx.receiver is None or tx.receiver == "":
             contract_address = self.derive_contract_address(tx.sender, tx.nonce)
-            gas_used = getattr(tx, 'fee', 0)
+            gas_used = getattr(tx, 'gas_limit', 0)
 
             # Prevent redeploy collision
             existing = self.accounts.get(contract_address)
@@ -153,7 +154,7 @@ class State:
         # If data is provided (non-empty), treat as contract call
         if tx.data:
             receiver = self.accounts.get(tx.receiver)
-            gas_limit = getattr(tx, 'fee', 0)
+            gas_limit = getattr(tx, 'gas_limit', 0)
 
             # Fail if contract does not exist or has no code
             if not receiver or not receiver.get("code"):
@@ -180,7 +181,7 @@ class State:
             gas_used = result.get("gas_used", gas_limit)
             gas_refund = gas_limit - gas_used
             if gas_refund > 0:
-                sender['balance'] += gas_refund
+                sender['balance'] += (gas_refund * getattr(tx, 'fee_per_gas', 0))
 
             if not result.get("success"):
                 revert_transfer()
@@ -206,15 +207,17 @@ class State:
         # LOGIC BRANCH 3: Regular Transfer
         receiver = self.get_account(tx.receiver)
         receiver['balance'] += tx.amount
-        return Receipt(tx.tx_id, status=1, gas_used=getattr(tx, 'fee', 0))
+        gas_used = getattr(tx, 'gas_limit', 0)
+        return Receipt(tx.tx_id, status=1, gas_used=gas_used)
 
     def derive_contract_address(self, sender, nonce):
         raw = f"{sender}:{nonce}".encode()
         return sha256(raw, encoder=HexEncoder).decode()[:40]
 
     def create_contract(self, contract_address, code, initial_balance=0):
+        existing_balance = self.accounts.get(contract_address, {}).get('balance', 0)
         self.accounts[contract_address] = {
-            'balance': initial_balance,
+            'balance': existing_balance + initial_balance,
             'nonce': 0,
             'code': code,
             'storage': {}

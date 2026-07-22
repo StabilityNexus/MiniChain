@@ -132,7 +132,12 @@ class Block:
         
         # Safely extract and cast difficulty and timestamp if they exist
         raw_diff = payload.get("difficulty")
-        parsed_diff = int(raw_diff) if raw_diff is not None else None
+        if raw_diff is not None:
+            parsed_diff = int(raw_diff)
+            if parsed_diff > 256:
+                raise ValueError(f"Difficulty too large: {parsed_diff}")
+        else:
+            parsed_diff = None
 
         raw_ts = payload.get("timestamp")
         parsed_ts = int(raw_ts) if raw_ts is not None else None

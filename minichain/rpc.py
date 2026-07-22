@@ -81,6 +81,9 @@ class JSONRPCServer:
                 tx = Transaction.from_dict(tx_data)
                 if not tx.verify():
                     raise ValueError("Invalid signature")
+                from .validators import ValidationStatus
+                if self.chain.state.verify_transaction_logic(tx) != ValidationStatus.VALID:
+                    raise ValueError("Transaction failed state validation")
                 if self.mempool.add_transaction(tx):
                     asyncio.create_task(self.network.broadcast_transaction(tx))
                     result = tx.tx_id

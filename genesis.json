@@ -4,6 +4,7 @@
   "difficulty": 4,
   "target_block_time": 10000,
   "alpha": 0.1,
+  "initial_supply": 1500000000,
   "alloc": {
     "0000000000000000000000000000000000000001": {
       "balance": 1000000000

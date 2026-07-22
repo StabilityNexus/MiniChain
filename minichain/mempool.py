@@ -40,6 +40,13 @@ class Mempool:
                     logger.warning("Mempool: Ignoring older replacement %s", tx.tx_id)
                     return False
                 
+                # Enforce RBF: new fee must be at least 10% higher
+                old_fee = getattr(existing_tx, 'fee_per_gas', 0)
+                new_fee = getattr(tx, 'fee_per_gas', 0)
+                if new_fee <= old_fee * 1.1:
+                    logger.warning("Mempool: Replacement fee too low for %s", tx.tx_id)
+                    return False
+                
                 self._list.pop(existing_idx)
                 if i_max > existing_idx:
                     i_max -= 1
@@ -52,10 +59,10 @@ class Mempool:
 
             i_min = min(i_min, i_max)
 
-            # Insert before the first tx in [i_min, i_max] that has a lower fee
+            # Insert before the first tx in [i_min, i_max] that has a lower fee_per_gas
             insert_idx = i_max
             for j in range(i_min, i_max):
-                if getattr(self._list[j], 'fee', 0) < getattr(tx, 'fee', 0):
+                if getattr(self._list[j], 'fee_per_gas', 0) < getattr(tx, 'fee_per_gas', 0):
                     insert_idx = j
                     break
             
