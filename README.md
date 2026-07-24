@@ -69,9 +69,8 @@ MiniChain is a minimal fully functional blockchain implemented in Python.
   blockchains by looking at the codebase.
 
 * The blockchain space is again going through a phase where many new blockchains are being launched.
-  Back in 2017 and 2018, such an expansion period led to many general frameworks for blockchains,
-  such as Scorex and various Hyperledger frameworks. But most of these frameworks suffered from speculative generality and
-  were bloated. They focused on extensibility and configurability. MiniChain has a different philosophy:
+  Back in 2017 and 2018, such an expansion period led to various general frameworks for blockchains,
+  but most of these frameworks suffered from speculative generality. They focused on extensibility and configurability. MiniChain has a different philosophy:
   focus on minimality and, therefore, ease of modification.
 
 * Recent advances in networking and crypto libraries for Python make it possible to develop MiniChain in Python.
