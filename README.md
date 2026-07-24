@@ -54,34 +54,20 @@
 <h1>MiniChain</h1>
 </div>
 
-MiniChain is a minimal fully functional blockchain implemented in Python.
+MiniChain is a minimal fully functional blockchain implemented in Python, with 3 goals:
 
-### Background and Motivation
+* **Education:** By having a clean codebase with self-explanatory code, MiniChain allows devs to learn and deeply understand blockchains.
+MiniChain is implemented in Python, which is one of the most popular and easy-to-learn programming languages. MiniChain's smart contracts can be written in Python as well.
+Furthermore, recent advances in Python's networking and cryptography libraries allow MiniChain to fulfill its educational goal while maintaining performance and security.
 
-* Most well-known blockchains are now several years old and have accumulated a lot of technical debt.
-  Simply forking their codebases is not an optimal option for starting a new chain.
+* **Research:** By having a small codebase, MiniChain is easy to modify by researchers who are interested in exploring variations of blockchain technologies (e.g. consensus protocols, smart contract approaches, scalibility solutions, ...) and in having a benchamark against which these variations can be tested. We hope that MiniChain will be as valuable for blockchain research as, for instance, MiniSat (with its less than 600 lines of C++ code) was valuable for satisfiability and automated reasoning research.
 
-* MiniChain will be focused on research. Its primary purpose is not to be yet another blockchain
-  trying to be the one blockchain to kill them all, but rather to serve as a clean codebase that can be a benchmark for research of
-  variations of the technology. (We hope that MiniChain will be as valuable for blockchain research as, for instance,
-  MiniSat was valuable for satisfiability and automated reasoning research. MiniSat had less than 600 lines of C++ code.)
-
-* MiniChain will be focused on education. By having a clean and small codebase, devs will be able to understand
-  blockchains by looking at the codebase.
-
-* The blockchain space is again going through a phase where many new blockchains are being launched.
-  Back in 2017 and 2018, such an expansion period led to various general frameworks for blockchains,
-  but most of these frameworks suffered from speculative generality. They focused on extensibility and configurability. MiniChain has a different philosophy:
-  focus on minimality and, therefore, ease of modification.
-
-* Recent advances in networking and crypto libraries for Python make it possible to develop MiniChain in Python.
-  Given that Python is one of the easiest languages to learn and results in usually boilerplate-minimized and easy to read code,
-  implementing MiniChain in Python aligns with MiniChain's educational goal.
-
-
-### Resources
-
-* Read this book:  https://www.marabu.dev/blockchain-foundations.pdf 
+* **Innovation:** MiniChain is a minimal technical-debt-free codebase that can be forked to create new custom blockchains.
+The blockchain space is again going through a phase where many new blockchains are being launched.
+Similar expansion periods in the past led either to forks of codebases that carried technical debt
+or to development and use of various general blockchain frameworks that suffered from speculative generality.
+They focused on extensibility and configurability. MiniChain has a different philosophy:
+it focuses on minimality and, therefore, ease of modification.
 
 ---
 
@@ -194,5 +180,12 @@ If you encounter bugs, need help, or have feature requests:
 - Describe the problem clearly and include any relevant logs or screenshots.
 
 We appreciate your feedback and contributions!
+
+
+### Resources
+
+* If you would like to learn blockchain technologies, we recommend reading this book (https://www.marabu.dev/blockchain-foundations.pdf) in addition to inspecting MiniChain's codebase.
+
+---
 
 © 2025 The Stable Order.
