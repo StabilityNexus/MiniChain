@@ -7,6 +7,7 @@ import sqlite3
 import tempfile
 import time
 import unittest
+from unittest.mock import patch, wraps
 
 from nacl.encoding import HexEncoder
 from nacl.signing import SigningKey
@@ -33,31 +34,68 @@ class TestPersistence(unittest.TestCase):
         shutil.rmtree(self.tmpdir, ignore_errors=True)
 
     def _chain_with_tx(self):
+        """Build a 3-block chain that survives full _apply_block() replay.
+
+        Block 1 (coinbase): alice mines an empty block and earns the mining
+        reward — this is the only valid way to introduce fresh funds into a
+        chain that will be fully validated during load().
+
+        Block 2 (transfer): alice sends coins to bob.
+        """
         bc = Blockchain()
         alice_sk, alice_pk = _make_keypair()
         _, bob_pk = _make_keypair()
 
-        bc.state.credit_mining_reward(alice_pk, 100)
+        # --- Block 1: coinbase (alice mines, earns mining reward) ---
+        from minichain.block import calculate_receipt_root
+        from minichain.state import State
 
-        tx = Transaction(alice_pk, bob_pk, 30, 0)
+        temp_state1 = bc.state.copy()
+        temp_state1.chain_id = bc.chain_id
+        # Mining reward applied inside _apply_block via block.miner
+        temp_state1.credit_mining_reward(alice_pk, reward=temp_state1.DEFAULT_MINING_REWARD)
+        coinbase_block = Block(
+            index=1,
+            previous_hash=bc.last_block.hash,
+            transactions=[],
+            difficulty=bc.current_difficulty,
+            state_root=temp_state1.state_root(),
+            receipt_root=None,
+            receipts=[],
+            timestamp=bc.last_block.timestamp + bc.target_block_time,
+            miner=alice_pk,
+        )
+        mine_block(coinbase_block)
+        result = bc.add_block(coinbase_block)
+        self.assertEqual(result.name, "VALID", f"Coinbase block rejected: {result}")
+
+        # --- Block 2: alice sends to bob ---
+        tx = Transaction(alice_pk, bob_pk, 1, 0)
         tx.sign(alice_sk)
 
-        temp_state = bc.state.copy()
-        receipt = temp_state.validate_and_apply(tx)
+        temp_state2 = bc.state.copy()
+        temp_state2.chain_id = bc.chain_id
+        receipt = temp_state2.validate_and_apply(tx)
+        self.assertIsNotNone(receipt, "Transaction was rejected during block 2 construction")
 
-        from minichain.block import calculate_receipt_root
-        block = Block(
-            index=1,
+        total_fees = getattr(receipt, 'gas_used', 0)
+        temp_state2.credit_mining_reward(alice_pk, reward=temp_state2.DEFAULT_MINING_REWARD + total_fees)
+
+        tx_block = Block(
+            index=2,
             previous_hash=bc.last_block.hash,
             transactions=[tx],
             difficulty=bc.current_difficulty,
-            state_root=temp_state.state_root(),
+            state_root=temp_state2.state_root(),
             receipt_root=calculate_receipt_root([receipt]),
             receipts=[receipt],
-            timestamp=bc.last_block.timestamp + 1000,
+            timestamp=bc.last_block.timestamp + bc.target_block_time,
+            miner=alice_pk,
         )
-        mine_block(block)
-        bc.add_block(block)
+        mine_block(tx_block)
+        result = bc.add_block(tx_block)
+        self.assertEqual(result.name, "VALID", f"Tx block rejected: {result}")
+
         return bc, alice_pk, bob_pk
 
     def test_save_creates_sqlite_file(self):
@@ -85,8 +123,8 @@ class TestPersistence(unittest.TestCase):
         bc, _, _ = self._chain_with_tx()
         save(bc, path=self.tmpdir)
         restored = load(path=self.tmpdir)
-        original_tx = bc.chain[1].transactions[0]
-        loaded_tx = restored.chain[1].transactions[0]
+        original_tx = bc.chain[2].transactions[0]
+        loaded_tx = restored.chain[2].transactions[0]
         self.assertEqual(original_tx.sender, loaded_tx.sender)
         self.assertEqual(original_tx.receiver, loaded_tx.receiver)
         self.assertEqual(original_tx.amount, loaded_tx.amount)
@@ -97,8 +135,8 @@ class TestPersistence(unittest.TestCase):
         bc, _, _ = self._chain_with_tx()
         save(bc, path=self.tmpdir)
         restored = load(path=self.tmpdir)
-        original_receipt = bc.chain[1].receipts[0]
-        loaded_receipt = restored.chain[1].receipts[0]
+        original_receipt = bc.chain[2].receipts[0]
+        loaded_receipt = restored.chain[2].receipts[0]
         self.assertEqual(original_receipt.tx_hash, loaded_receipt.tx_hash)
         self.assertEqual(original_receipt.status, loaded_receipt.status)
         self.assertEqual(original_receipt.gas_used, loaded_receipt.gas_used)
@@ -232,13 +270,34 @@ class TestPersistence(unittest.TestCase):
         restored = load(path=self.tmpdir)
 
         new_sk, new_pk = _make_keypair()
-        restored.state.credit_mining_reward(new_pk, 50)
+        from minichain.block import calculate_receipt_root as crr
+        temp_state0 = restored.state.copy()
+        temp_state0.chain_id = restored.chain_id
+        temp_state0.credit_mining_reward(new_pk, reward=temp_state0.DEFAULT_MINING_REWARD)
+        coinbase_block = Block(
+            index=len(restored.chain),
+            previous_hash=restored.last_block.hash,
+            transactions=[],
+            difficulty=restored.current_difficulty,
+            state_root=temp_state0.state_root(),
+            receipt_root=None,
+            receipts=[],
+            timestamp=restored.last_block.timestamp + restored.target_block_time,
+            miner=new_pk,
+        )
+        mine_block(coinbase_block)
+        from minichain.validators import ValidationStatus
+        self.assertEqual(restored.add_block(coinbase_block), ValidationStatus.VALID)
 
-        tx2 = Transaction(new_pk, bob_pk, 10, 0)
+        tx2 = Transaction(new_pk, bob_pk, 1, 0)
         tx2.sign(new_sk)
 
-        temp_state = restored.state.copy()
-        receipt2 = temp_state.validate_and_apply(tx2)
+        temp_state2 = restored.state.copy()
+        temp_state2.chain_id = restored.chain_id
+        receipt2 = temp_state2.validate_and_apply(tx2)
+        self.assertIsNotNone(receipt2)
+        total_fees2 = getattr(receipt2, 'gas_used', 0)
+        temp_state2.credit_mining_reward(new_pk, reward=temp_state2.DEFAULT_MINING_REWARD + total_fees2)
 
         from minichain.block import calculate_receipt_root
         block2 = Block(
@@ -246,15 +305,113 @@ class TestPersistence(unittest.TestCase):
             previous_hash=restored.last_block.hash,
             transactions=[tx2],
             difficulty=restored.current_difficulty,
-            state_root=temp_state.state_root(),
+            state_root=temp_state2.state_root(),
             receipt_root=calculate_receipt_root([receipt2]),
             receipts=[receipt2],
-            timestamp=restored.last_block.timestamp + 1000,
+            timestamp=restored.last_block.timestamp + restored.target_block_time,
+            miner=new_pk,
         )
         mine_block(block2)
 
-        self.assertTrue(restored.add_block(block2))
-        self.assertEqual(len(restored.chain), len(bc.chain) + 1)
+        self.assertEqual(restored.add_block(block2), ValidationStatus.VALID)
+        self.assertEqual(len(restored.chain), len(bc.chain) + 2)
+
+    def test_load_uses_apply_block_pipeline(self):
+        """_apply_block() must be called for each non-genesis block during load."""
+        bc, _, _ = self._chain_with_tx()
+        save(bc, path=self.tmpdir)
+
+        call_count = []
+        import minichain.chain as chain_module
+        original_apply = chain_module.Blockchain._apply_block
+
+        def spying_apply(self_inner, prev_block, block, state, difficulty, avg_block_time):
+            call_count.append(block.index)
+            return original_apply(self_inner, prev_block, block, state, difficulty, avg_block_time)
+
+        with patch.object(chain_module.Blockchain, "_apply_block", spying_apply):
+            restored = load(path=self.tmpdir)
+
+        expected = list(range(1, len(bc.chain)))
+        self.assertEqual(sorted(call_count), expected,
+                         f"Expected _apply_block calls for blocks {expected}, got {call_count}")
+        self.assertEqual(len(restored.chain), len(bc.chain))
+
+    def test_load_rejects_invalid_pow_in_persisted_block(self):
+        """A persisted block whose hash fails PoW must be rejected during load."""
+        bc, _, _ = self._chain_with_tx()
+        save(bc, path=self.tmpdir)
+
+        db_path = os.path.join(self.tmpdir, DB_FILE)
+        with sqlite3.connect(db_path) as conn:
+            row = conn.execute(
+                "SELECT block_json FROM blocks WHERE height = 2"
+            ).fetchone()
+            payload = json.loads(row[0])
+            payload["hash"] = "f" * 64
+            # We need the hash to equal compute_hash() so deserialization passes,
+            # but PoW to fail. Use nonce manipulation.
+            from minichain.block import Block as B
+            from minichain.pow import calculate_hash
+            b = B.from_dict(json.loads(row[0]))
+            header = b.to_header_dict()
+            nonce = 0
+            while True:
+                header["nonce"] = nonce
+                h = calculate_hash(header)
+                if not h.startswith("0"):
+                    break
+                nonce += 1
+            payload["nonce"] = nonce
+            payload["hash"] = calculate_hash(header)
+            conn.execute(
+                "UPDATE blocks SET block_json = ? WHERE height = 2",
+                (json.dumps(payload),),
+            )
+
+        with self.assertRaises(ValueError) as cm:
+            load(path=self.tmpdir)
+        self.assertIn("failed validation", str(cm.exception))
+
+    def test_load_rejects_wrong_declared_difficulty(self):
+        """A persisted block declaring wrong difficulty must be rejected during load.
+
+        Security property: even if an attacker sets block.difficulty=1 and crafts
+        a hash that satisfies difficulty 1, load() must reject it because
+        expected_difficulty (chain-computed) is greater.
+        """
+        bc, _, _ = self._chain_with_tx()
+        save(bc, path=self.tmpdir)
+
+        db_path = os.path.join(self.tmpdir, DB_FILE)
+        with sqlite3.connect(db_path) as conn:
+            row = conn.execute(
+                "SELECT block_json FROM blocks WHERE height = 2"
+            ).fetchone()
+            payload = json.loads(row[0])
+            payload["difficulty"] = 1
+            from minichain.block import Block as B
+            from minichain.pow import calculate_hash, mine_block as mb
+            import copy
+            b = B.from_dict(json.loads(row[0]))
+            b.difficulty = 1
+            header = b.to_header_dict()
+            nonce = 0
+            while True:
+                header["nonce"] = nonce
+                h = calculate_hash(header)
+                if h.startswith("0"):
+                    break
+                nonce += 1
+            payload["nonce"] = nonce
+            payload["hash"] = h
+            conn.execute(
+                "UPDATE blocks SET block_json = ? WHERE height = 2",
+                (json.dumps(payload),),
+            )
+        with self.assertRaises(ValueError) as cm:
+            load(path=self.tmpdir)
+        self.assertIn("failed validation", str(cm.exception))
 
     def test_legacy_json_load_still_supported(self):
         bc = Blockchain()

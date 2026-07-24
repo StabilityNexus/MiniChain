@@ -11,7 +11,15 @@ import time
 logger = logging.getLogger(__name__)
 
 
-def validate_block_link_and_hash(previous_block, block):
+class InvalidProofOfWorkError(ValueError):
+    pass
+
+
+def validate_difficulty(difficulty, max_difficulty):
+    if type(difficulty) is not int or difficulty < 1 or difficulty > max_difficulty:
+        raise ValueError(f"invalid difficulty {difficulty}")
+
+def validate_block(previous_block, block, expected_difficulty):
     if block.previous_hash != previous_block.hash:
         raise ValueError(
             f"invalid previous hash {block.previous_hash} != {previous_block.hash}"
@@ -26,17 +34,26 @@ def validate_block_link_and_hash(previous_block, block):
     if block.hash != expected_hash:
         raise ValueError(f"invalid hash {block.hash}")
 
-    target = "0" * (block.difficulty or 1)
-    if not block.hash.startswith(target):
-        raise ValueError(f"invalid Proof of Work: hash {block.hash} does not satisfy difficulty {block.difficulty}")
+    if block.difficulty != expected_difficulty:
+        raise ValueError(
+            f"invalid difficulty {block.difficulty} != expected {expected_difficulty}"
+        )
+
+    if not block.hash.startswith("0" * expected_difficulty):
+        raise InvalidProofOfWorkError(
+            f"invalid PoW: hash {block.hash} does not satisfy difficulty {expected_difficulty}"
+        )
 
     if block.timestamp <= previous_block.timestamp:
-        raise ValueError(f"invalid timestamp: {block.timestamp} is not strictly greater than previous block timestamp {previous_block.timestamp}")
+        raise ValueError(
+            f"invalid timestamp: {block.timestamp} is not strictly greater than previous block timestamp {previous_block.timestamp}"
+        )
 
     max_allowed_time = int(time.time() * 1000) + 15000
     if block.timestamp > max_allowed_time:
-        raise ValueError(f"invalid timestamp: {block.timestamp} is too far in the future (max allowed: {max_allowed_time})")
-
+        raise ValueError(
+            f"invalid timestamp: {block.timestamp} is too far in the future (max allowed: {max_allowed_time})"
+        )
 
 class Blockchain:
     """
@@ -130,7 +147,13 @@ class Blockchain:
         if chain_list is None:
             with self._lock:
                 chain_list = self.chain
-        return sum(2 ** (block.difficulty or 1) for block in chain_list)
+
+        for block in chain_list:
+            if not isinstance(block.hash, str):
+                raise ValueError(f"invalid or missing hash on block {block.index}")
+            validate_difficulty(block.difficulty, len(block.hash))
+
+        return sum(2 ** block.difficulty for block in chain_list)
 
     def _next_difficulty(self, difficulty, avg_block_time):
         """Advance the EMA difficulty control after a block, returning the new value."""
@@ -150,15 +173,14 @@ class Blockchain:
         from .validators import ValidationStatus
 
         try:
-            validate_block_link_and_hash(prev_block, block)
+            validate_block(prev_block, block, difficulty)
+        except InvalidProofOfWorkError as exc:
+            logger.warning("Block %s rejected: %s", block.index, exc)
+            return ValidationStatus.INVALID, difficulty, avg_block_time
         except ValueError as exc:
             logger.warning("Block %s rejected: %s", block.index, exc)
             status = ValidationStatus.INVALID if "hash" in str(exc) else ValidationStatus.FAILED
             return status, difficulty, avg_block_time
-
-        if block.difficulty != difficulty:
-            logger.warning("Block %s rejected: Invalid difficulty. Expected %s, got %s", block.index, difficulty, block.difficulty)
-            return ValidationStatus.INVALID, difficulty, avg_block_time
 
         receipts = []
         for tx in block.transactions:
@@ -224,9 +246,12 @@ class Blockchain:
             return False, []
 
         with self._lock:
-            current_work = self.get_total_work()
-            new_work = self.get_total_work(new_chain_list)
-
+            try:
+                current_work = self.get_total_work()
+                new_work = self.get_total_work(new_chain_list)
+            except ValueError as exc:
+                logger.warning("Reorg rejected: %s", exc)
+                return False, []
             if new_work <= current_work:
                 logger.debug("Incoming chain (work: %s) is not heavier than local chain (work: %s). Rejecting.", new_work, current_work)
                 return False, []
