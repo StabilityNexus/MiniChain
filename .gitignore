@@ -335,3 +335,4 @@ __pycache__/
 
 # minichain data dir
 .minichain/
+test_env/

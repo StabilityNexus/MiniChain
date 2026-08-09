@@ -24,7 +24,7 @@ from contextlib import contextmanager
 from typing import Any
 
 from .block import Block
-from .chain import Blockchain, validate_block_link_and_hash
+from .chain import Blockchain
 
 logger = logging.getLogger(__name__)
 
@@ -64,7 +64,13 @@ def save(blockchain: Blockchain, path: str = ".") -> None:
 
 
 def load(path: str = ".") -> Blockchain:
-    """Restore a Blockchain from SQLite inside *path* (with legacy JSON fallback)."""
+    """Restore a Blockchain from SQLite inside *path* (with legacy JSON fallback).
+
+    Blocks are replayed through the canonical ``Blockchain._apply_block()``
+    pipeline so that difficulty adjustment, PoW, receipt validation, state-root
+    validation and transaction validation are all performed by the same code
+    path used at runtime.  No parallel validation logic is maintained here.
+    """
     db_path = os.path.join(path, _DB_FILE)
     legacy_path = os.path.join(path, _LEGACY_DATA_FILE)
 
@@ -90,6 +96,9 @@ def load(path: str = ".") -> Blockchain:
         raise ValueError(f"Invalid or empty chain data in '{path}'")
     if not isinstance(raw_accounts, dict):
         raise ValueError(f"Invalid accounts data in '{path}'")
+    for address, account in raw_accounts.items():
+        if not isinstance(address, str) or not isinstance(account, dict):
+            raise ValueError(f"Invalid accounts data in '{path}'")
 
     blocks = []
     for raw_block in raw_blocks:
@@ -100,17 +109,44 @@ def load(path: str = ".") -> Blockchain:
         except (KeyError, TypeError, ValueError) as exc:
             raise ValueError(f"Invalid chain data in '{path}'") from exc
 
-    normalized_accounts = {}
-    for address, account in raw_accounts.items():
-        if not isinstance(address, str) or not isinstance(account, dict):
-            raise ValueError(f"Invalid accounts data in '{path}'")
-        normalized_accounts[address] = account
-
-    _verify_chain_integrity(blocks)
-
     blockchain = Blockchain()
+
+    from .pow import calculate_hash
+    genesis = blocks[0]
+    if genesis.index != 0:
+        raise ValueError("Invalid genesis block")
+    if genesis.hash != calculate_hash(genesis.to_header_dict()):
+        raise ValueError("Invalid genesis block hash")
+    if genesis.hash != blockchain.chain[0].hash:
+        raise ValueError(
+            f"Persisted genesis hash {genesis.hash!r} does not match "
+            f"local genesis {blockchain.chain[0].hash!r}"
+        )
+
+    from .validators import ValidationStatus
+    from .state import State
+
+    temp_state = State()
+    temp_state.chain_id = blockchain.chain_id
+    temp_state.restore(blockchain._genesis_state_snapshot)
+
+    temp_difficulty = blocks[0].difficulty
+    temp_avg_block_time = blockchain.target_block_time
+
+    for i in range(1, len(blocks)):
+        status, temp_difficulty, temp_avg_block_time = blockchain._apply_block(
+            blocks[i - 1], blocks[i], temp_state, temp_difficulty, temp_avg_block_time
+        )
+        if status != ValidationStatus.VALID:
+            raise ValueError(
+                f"Block #{blocks[i].index} failed validation during load "
+                f"(status={status.name})"
+            )
+
     blockchain.chain = blocks
-    blockchain.state.accounts = normalized_accounts
+    blockchain.state = temp_state
+    blockchain.current_difficulty = temp_difficulty
+    blockchain.avg_block_time = temp_avg_block_time
 
     logger.info(
         "Loaded %d blocks and %d accounts from '%s'",
@@ -119,29 +155,6 @@ def load(path: str = ".") -> Blockchain:
         path,
     )
     return blockchain
-
-
-# ---------------------------------------------------------------------------
-# Integrity verification
-# ---------------------------------------------------------------------------
-
-
-def _verify_chain_integrity(blocks: list[Block]) -> None:
-    """Verify genesis, hash linkage, and block hashes."""
-    genesis = blocks[0]
-    if genesis.index != 0:
-        raise ValueError("Invalid genesis block")
-    from .pow import calculate_hash
-    if genesis.hash != calculate_hash(genesis.to_header_dict()):
-        raise ValueError("Invalid genesis block hash")
-
-    for i in range(1, len(blocks)):
-        block = blocks[i]
-        prev = blocks[i - 1]
-        try:
-            validate_block_link_and_hash(prev, block)
-        except ValueError as exc:
-            raise ValueError(f"Block #{block.index}: {exc}") from exc
 
 
 # ---------------------------------------------------------------------------
