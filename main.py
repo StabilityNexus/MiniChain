@@ -197,6 +197,14 @@ def make_network_handler(chain, mempool, network):
             return
 
         if msg_type == "hello":
+            if not isinstance(payload, dict):
+                logger.warning(
+                    "Malformed hello from %s: payload is not a dict (got %s). Disconnecting.",
+                    peer_addr, type(payload).__name__
+                )
+                asyncio.create_task(network.disconnect_peer(peer_addr))
+                return ValidationStatus.MALFORMED
+
             peer_chain_id = payload.get("chain_id")
             peer_gen_hash = payload.get("genesis_hash")
             if peer_chain_id != chain.chain_id:
