@@ -193,10 +193,28 @@ def make_network_handler(chain, mempool, network):
         payload = data.get("data")
         peer_addr = data.get("_peer_addr", "unknown")
 
-        if payload is None and msg_type in ("hello", "chain_request", "chain_response"):
-            return
+        if payload is None and msg_type in ("chain_request", "chain_response"):
+            return None
+            
+        if msg_type in ("chain_request", "chain_response") and not isinstance(payload, dict):
+            logger.warning(
+                "Malformed %s from %s: payload is not a dict (got %s).",
+                msg_type, peer_addr, type(payload).__name__
+            )
+            return None
+            
+        # Note: a null payload in a hello message deliberately falls through
+        # to the isinstance(payload, dict) guard below, which disconnects the peer.
 
         if msg_type == "hello":
+            if not isinstance(payload, dict):
+                logger.warning(
+                    "Malformed hello from %s: payload is not a dict (got %s). Disconnecting.",
+                    peer_addr, type(payload).__name__
+                )
+                asyncio.create_task(network.disconnect_peer(peer_addr))
+                return ValidationStatus.MALFORMED
+
             peer_chain_id = payload.get("chain_id")
             peer_gen_hash = payload.get("genesis_hash")
             if peer_chain_id != chain.chain_id:
@@ -208,8 +226,18 @@ def make_network_handler(chain, mempool, network):
                 asyncio.create_task(network.disconnect_peer(peer_addr))
                 return
 
-            logger.info("🔄 Handshake successful with %s", peer_addr)
             peer_tip = payload.get("latest_block_index", 0)
+
+            if not isinstance(peer_tip, int) or isinstance(peer_tip, bool) or peer_tip < 0:
+                invalid_val = peer_tip if isinstance(peer_tip, int) and not isinstance(peer_tip, bool) else type(peer_tip).__name__
+                logger.warning(
+                    "Malformed hello from %s: latest_block_index is not a valid integer (got %s). Disconnecting.",
+                    peer_addr, invalid_val
+                )
+                asyncio.create_task(network.disconnect_peer(peer_addr))
+                return ValidationStatus.MALFORMED
+
+            logger.info("🔄 Handshake successful with %s", peer_addr)
             if peer_tip > chain.last_block.index:
                 logger.info("📡 Peer %s is ahead (%d > %d). Initiating chunked sync...", peer_addr, peer_tip, chain.last_block.index)
                 request_chain(network, chain.last_block.index + 1, 500)
