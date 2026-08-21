@@ -1,3 +1,4 @@
+import asyncio
 import unittest
 from unittest.mock import AsyncMock, patch
 
@@ -187,6 +188,24 @@ class TestChainRequestValidation(unittest.IsolatedAsyncioTestCase):
         data.setdefault("_peer_addr", "test-peer")
         return await handler(data)
 
+    async def test_non_dict_payload_list_is_rejected(self):
+        """A list payload must not reach .get() — would raise AttributeError."""
+        handler, _ = self._make_handler()
+        result = await self._call(handler, {
+            "type": "chain_request",
+            "data": [0, 10],
+        })
+        self.assertEqual(result, ValidationStatus.MALFORMED)
+
+    async def test_non_dict_payload_none_is_rejected(self):
+        """A None payload must not reach .get() — would raise AttributeError."""
+        handler, _ = self._make_handler()
+        result = await self._call(handler, {
+            "type": "chain_request",
+            "data": None,
+        })
+        self.assertEqual(result, ValidationStatus.MALFORMED)
+
     async def test_string_start_index_is_rejected(self):
         handler, _ = self._make_handler()
         result = await self._call(handler, {
@@ -237,6 +256,10 @@ class TestChainRequestValidation(unittest.IsolatedAsyncioTestCase):
             "type": "chain_request",
             "data": {"start_index": 0, "limit": 10},
         })
+
+        # create_task schedules _unicast_raw but doesn't run it immediately.
+        # One sleep(0) yields to the event loop so the task executes before we assert.
+        await asyncio.sleep(0)
 
         mock_unicast.assert_awaited_once()
         _, call_payload = mock_unicast.call_args.args

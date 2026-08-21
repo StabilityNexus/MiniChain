@@ -256,6 +256,12 @@ def make_network_handler(chain, mempool, network):
             return status
 
         elif msg_type == "chain_request":
+            if not isinstance(payload, dict):
+                logger.warning(
+                    "Malformed chain_request from %s: payload is not a dict (got %r). Ignoring.",
+                    peer_addr, type(payload).__name__,
+                )
+                return ValidationStatus.MALFORMED
             start_index = payload.get("start_index", 0)
             limit = payload.get("limit", 500)
             if (
