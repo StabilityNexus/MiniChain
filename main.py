@@ -262,11 +262,12 @@ def make_network_handler(chain, mempool, network):
                 not isinstance(start_index, int)
                 or isinstance(start_index, bool)
                 or start_index < 0
-            ):logger.warning(
+            ):
+                logger.warning(
                     "Malformed chain_request from %s: start_index is not a non-negative int (got %r). Ignoring.",
                     peer_addr, start_index,
                 )
-            return None
+                return ValidationStatus.MALFORMED
 
             if (
                 not isinstance(limit, int)
@@ -277,7 +278,7 @@ def make_network_handler(chain, mempool, network):
                     "Malformed chain_request from %s: limit is not a non-negative int (got %r). Ignoring.",
                     peer_addr, limit,
                 )
-                return None
+                return ValidationStatus.MALFORMED
                 
             logger.info("📡 Peer requested blocks from %d (limit %d).", start_index, limit)
             
