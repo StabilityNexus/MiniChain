@@ -258,6 +258,27 @@ def make_network_handler(chain, mempool, network):
         elif msg_type == "chain_request":
             start_index = payload.get("start_index", 0)
             limit = payload.get("limit", 500)
+            if (
+                not isinstance(start_index, int)
+                or isinstance(start_index, bool)
+                or start_index < 0
+            ):logger.warning(
+                    "Malformed chain_request from %s: start_index is not a non-negative int (got %r). Ignoring.",
+                    peer_addr, start_index,
+                )
+            return None
+
+            if (
+                not isinstance(limit, int)
+                or isinstance(limit, bool)
+                or limit < 0
+            ):
+                logger.warning(
+                    "Malformed chain_request from %s: limit is not a non-negative int (got %r). Ignoring.",
+                    peer_addr, limit,
+                )
+                return None
+                
             logger.info("📡 Peer requested blocks from %d (limit %d).", start_index, limit)
             
             if start_index < len(chain.chain):

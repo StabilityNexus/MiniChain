@@ -92,7 +92,6 @@ class TestMempoolQueue(unittest.TestCase):
 
         self.assertEqual(len(mempool), 0)
 
-
 class TestP2PValidationAndDedup(unittest.IsolatedAsyncioTestCase):
     async def test_invalid_message_schema_is_rejected(self):
         invalid_payload = {"sender": "abc"}
@@ -162,3 +161,71 @@ class TestP2PValidationAndDedup(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(network._is_duplicate("block", block_message["data"]))
         network._mark_seen("block", block_message["data"])
         self.assertTrue(network._is_duplicate("block", block_message["data"]))
+                
+class TestChainRequestValidation(unittest.IsolatedAsyncioTestCase):
+    """Verify that chain_request handler rejects malformed start_index/limit values."""
+
+    def _make_handler(self):
+        from minichain import Blockchain, Mempool, P2PNetwork
+        from main import make_network_handler
+        chain = Blockchain()
+        mempool = Mempool()
+        network = P2PNetwork()
+        handler = make_network_handler(chain, mempool, network)
+        return handler
+
+    async def _call(self, handler, data):
+        """Wrap handler call to include required _peer_addr field."""
+        data.setdefault("_peer_addr", "test-peer")
+        return await handler(data)
+
+    async def test_string_start_index_is_rejected(self):
+        handler = self._make_handler()
+        result = await self._call(handler, {
+            "type": "chain_request",
+            "data": {"start_index": "0", "limit": 10},
+        })
+        self.assertIsNone(result)
+
+    async def test_bool_start_index_is_rejected(self):
+        handler = self._make_handler()
+        result = await self._call(handler, {
+            "type": "chain_request",
+            "data": {"start_index": True, "limit": 10},
+        })
+        self.assertIsNone(result)
+
+    async def test_negative_start_index_is_rejected(self):
+        handler = self._make_handler()
+        result = await self._call(handler, {
+            "type": "chain_request",
+            "data": {"start_index": -1, "limit": 10},
+        })
+        self.assertIsNone(result)
+
+    async def test_string_limit_is_rejected(self):
+        handler = self._make_handler()
+        result = await self._call(handler, {
+            "type": "chain_request",
+            "data": {"start_index": 0, "limit": "500"},
+        })
+        self.assertIsNone(result)
+
+    async def test_bool_limit_is_rejected(self):
+        handler = self._make_handler()
+        result = await self._call(handler, {
+            "type": "chain_request",
+            "data": {"start_index": 0, "limit": False},
+        })
+        self.assertIsNone(result)
+
+    async def test_valid_chain_request_is_accepted(self):
+        handler = self._make_handler()
+        # A well-formed request should not be dropped (result is None only on error return).
+        try:
+            await self._call(handler, {
+                "type": "chain_request",
+                "data": {"start_index": 0, "limit": 10},
+            })
+        except Exception as exc:
+            self.fail(f"Valid chain_request raised an exception: {exc}")
