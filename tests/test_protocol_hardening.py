@@ -1,10 +1,13 @@
+import asyncio
 import unittest
+from unittest.mock import AsyncMock, patch
 
 from nacl.encoding import HexEncoder
 from nacl.signing import SigningKey
 
 from minichain import Block, Mempool, P2PNetwork, State, Transaction, calculate_hash
 from minichain.serialization import canonical_json_dumps
+from minichain.validators import ValidationStatus
 
 
 class TestDeterministicConsensus(unittest.TestCase):
@@ -92,7 +95,6 @@ class TestMempoolQueue(unittest.TestCase):
 
         self.assertEqual(len(mempool), 0)
 
-
 class TestP2PValidationAndDedup(unittest.IsolatedAsyncioTestCase):
     async def test_invalid_message_schema_is_rejected(self):
         invalid_payload = {"sender": "abc"}
@@ -162,3 +164,118 @@ class TestP2PValidationAndDedup(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(network._is_duplicate("block", block_message["data"]))
         network._mark_seen("block", block_message["data"])
         self.assertTrue(network._is_duplicate("block", block_message["data"]))
+                
+class TestChainRequestValidation(unittest.IsolatedAsyncioTestCase):
+    """Verify that chain_request handler rejects malformed start_index/limit values."""
+
+    def _make_handler(self):
+        """Return (handler, network) so tests can mock network internals."""
+        from minichain import Blockchain, Mempool, P2PNetwork
+        from main import make_network_handler
+        chain = Blockchain()
+        mempool = Mempool()
+        network = P2PNetwork()
+        handler = make_network_handler(chain, mempool, network)
+        return handler, network
+
+    async def _call(self, handler_or_tuple, data):
+        """Wrap handler call to include required _peer_addr field.
+
+        Accepts either a bare handler or the (handler, network) tuple
+        returned by _make_handler.
+        """
+        handler = handler_or_tuple[0] if isinstance(handler_or_tuple, tuple) else handler_or_tuple
+        data.setdefault("_peer_addr", "test-peer")
+        return await handler(data)
+
+    async def test_non_dict_payload_list_is_rejected(self):
+        """A list payload must not reach .get() — would raise AttributeError."""
+        handler, _ = self._make_handler()
+        result = await self._call(handler, {
+            "type": "chain_request",
+            "data": [0, 10],
+        })
+        self.assertEqual(result, ValidationStatus.MALFORMED)
+
+    async def test_non_dict_payload_none_is_rejected(self):
+        """A None payload must not reach .get() — would raise AttributeError."""
+        handler, _ = self._make_handler()
+        result = await self._call(handler, {
+            "type": "chain_request",
+            "data": None,
+        })
+        self.assertEqual(result, ValidationStatus.MALFORMED)
+
+    async def test_string_start_index_is_rejected(self):
+        handler, _ = self._make_handler()
+        result = await self._call(handler, {
+            "type": "chain_request",
+            "data": {"start_index": "0", "limit": 10},
+        })
+        self.assertEqual(result, ValidationStatus.MALFORMED)
+
+    async def test_bool_start_index_is_rejected(self):
+        handler, _ = self._make_handler()
+        result = await self._call(handler, {
+            "type": "chain_request",
+            "data": {"start_index": True, "limit": 10},
+        })
+        self.assertEqual(result, ValidationStatus.MALFORMED)
+
+    async def test_negative_start_index_is_rejected(self):
+        handler, _ = self._make_handler()
+        result = await self._call(handler, {
+            "type": "chain_request",
+            "data": {"start_index": -1, "limit": 10},
+        })
+        self.assertEqual(result, ValidationStatus.MALFORMED)
+
+    async def test_string_limit_is_rejected(self):
+        handler, _ = self._make_handler()
+        result = await self._call(handler, {
+            "type": "chain_request",
+            "data": {"start_index": 0, "limit": "500"},
+        })
+        self.assertEqual(result, ValidationStatus.MALFORMED)
+
+    async def test_bool_limit_is_rejected(self):
+        handler, _ = self._make_handler()
+        result = await self._call(handler, {
+            "type": "chain_request",
+            "data": {"start_index": 0, "limit": False},
+        })
+        self.assertEqual(result, ValidationStatus.MALFORMED)
+
+    async def test_valid_chain_request_is_accepted(self):
+        """A valid request must dispatch a chain_response via _unicast_raw."""
+        handler, network = self._make_handler()
+        mock_unicast = AsyncMock()
+        network._unicast_raw = mock_unicast
+
+        await self._call(handler, {
+            "type": "chain_request",
+            "data": {"start_index": 0, "limit": 10},
+        })
+
+        # create_task schedules _unicast_raw but doesn't run it immediately.
+        # One sleep(0) yields to the event loop so the task executes before we assert.
+        await asyncio.sleep(0)
+
+        mock_unicast.assert_awaited_once()
+        _, call_payload = mock_unicast.call_args.args
+        self.assertEqual(call_payload.get("type"), "chain_response")
+        self.assertIn("blocks", call_payload.get("data", {}))
+
+    async def test_negative_limit_is_rejected(self):
+        """limit: -1 must be rejected — handler returns None and sends no response."""
+        handler, network = self._make_handler()
+        mock_unicast = AsyncMock()
+        network._unicast_raw = mock_unicast
+
+        result = await self._call(handler, {
+            "type": "chain_request",
+            "data": {"start_index": 0, "limit": -1},
+        })
+
+        self.assertEqual(result, ValidationStatus.MALFORMED)
+        mock_unicast.assert_not_awaited()
