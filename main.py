@@ -605,7 +605,7 @@ async def cli_loop(sk, pk, chain, mempool, network, datadir: str | None = None):
 # Main entry point
 # ──────────────────────────────────────────────
 
-async def run_node(port: int, host: str, connect_to: str | None, fund: int, datadir: str | None):
+async def run_node(port: int, host: str, connect_to: str | None, fund: int, datadir: str | None, rpc_host: str = "127.0.0.1"):
     """Boot the node, optionally connect to a peer, then enter the CLI."""
     sk, pk = load_or_create_wallet(datadir)
 
@@ -656,7 +656,7 @@ async def run_node(port: int, host: str, connect_to: str | None, fund: int, data
     
     # Start RPC server on a port correlated to the node port (e.g. 8545 if P2P is 9000)
     rpc_port = 8545 + (port - 9000)
-    await rpc_server.start(host="127.0.0.1", port=rpc_port)
+    await rpc_server.start(host=rpc_host, port=rpc_port)
 
     # Fund this node's wallet so it can transact in the demo
     if fund > 0:
@@ -683,13 +683,19 @@ async def run_node(port: int, host: str, connect_to: str | None, fund: int, data
         await network.stop()
 
 
-def main():
+def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="MiniChain Node — Testnet Demo")
     parser.add_argument("--host", type=str, default="127.0.0.1", help="Host/IP to bind the P2P server (default: 127.0.0.1)")
+    parser.add_argument("--rpc-host", type=str, default="127.0.0.1", help="Host/IP to bind the RPC server (default: 127.0.0.1)")
     parser.add_argument("--port", type=int, default=9000, help="TCP port to listen on (default: 9000)")
     parser.add_argument("--connect", type=str, default=None, help="Peer address to connect to (multiaddr)")
     parser.add_argument("--fund", type=int, default=100, help="Initial coins to fund this wallet (default: 100)")
     parser.add_argument("--datadir", type=str, default=".minichain", help="Directory to save/load blockchain state (enables persistence)")
+    return parser
+
+
+def main():
+    parser = build_arg_parser()
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -699,7 +705,7 @@ def main():
     )
 
     try:
-        asyncio.run(run_node(args.port, args.host, args.connect, args.fund, args.datadir))
+        asyncio.run(run_node(args.port, args.host, args.connect, args.fund, args.datadir, args.rpc_host))
     except KeyboardInterrupt:
         print("\nNode shut down.")
 
