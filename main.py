@@ -26,6 +26,7 @@ import re
 import sys
 import os
 import json
+import time
 
 from nacl.signing import SigningKey
 from nacl.encoding import HexEncoder
@@ -37,9 +38,6 @@ from minichain.block import calculate_receipt_root
 
 
 logger = logging.getLogger(__name__)
-
-TRUSTED_PEERS = set()
-LOCALHOST_PEERS = {"127.0.0.1", "::1", "localhost", "0:0:0:0:0:0:0:1"}
 
 
 # ──────────────────────────────────────────────
@@ -120,11 +118,15 @@ async def submit_and_broadcast(chain, mempool, network, tx, ok_msg, reject_msg):
 # ──────────────────────────────────────────────
 
 def mine_and_process_block(chain, mempool, miner_pk):
-    """Mine pending transactions into a new block."""
+    """
+    Mine pending transactions into a new block.
+
+    A block with no transactions is still mined: it carries the mining reward and
+    adds proof-of-work, so the chain keeps advancing while the network is idle.
+    Requiring a transaction would also make a fresh chain unusable, since coins
+    only come into existence through the mining reward.
+    """
     pending_txs = mempool.get_transactions_for_block()
-    if not pending_txs:
-        logger.info("Mempool is empty — nothing to mine.")
-        return None
 
     # Filter queue candidates against a temporary state snapshot.
     temp_state = chain.state.copy()
@@ -147,17 +149,19 @@ def mine_and_process_block(chain, mempool, miner_pk):
     if stale_txs:
         mempool.remove_transactions(stale_txs)
 
-    if not mineable_txs:
-        logger.info("No mineable transactions in current queue window.")
-        return None
-
     total_fees = sum(getattr(r, 'gas_used', 0) * getattr(tx, 'fee_per_gas', 0) for r, tx in zip(receipts, mineable_txs))
     temp_state.credit_mining_reward(miner_pk, reward=temp_state.DEFAULT_MINING_REWARD + total_fees)
+
+    # Timestamps are milliseconds and a block must be strictly newer than its parent.
+    # Blocks can be mined inside the same millisecond, so clamp forward rather than
+    # letting the miner build a block the chain will reject.
+    timestamp = max(round(time.time() * 1000), chain.last_block.timestamp + 1)
 
     block = Block(
         index=chain.last_block.index + 1,
         previous_hash=chain.last_block.hash,
         transactions=mineable_txs,
+        timestamp=timestamp,
         state_root=temp_state.state_root(),
         receipt_root=calculate_receipt_root(receipts),
         receipts=receipts,
@@ -505,6 +509,8 @@ async def cli_loop(sk, pk, chain, mempool, network, datadir: str | None = None):
         # ── peers ──
         elif cmd == "peers":
             print(f"  Connected peers: {network.peer_count}")
+            for peer_id in network.peer_ids:
+                print(f"    {peer_id}")
 
         # ── connect ──
         elif cmd == "connect":
@@ -605,7 +611,8 @@ async def cli_loop(sk, pk, chain, mempool, network, datadir: str | None = None):
 # Main entry point
 # ──────────────────────────────────────────────
 
-async def run_node(port: int, host: str, connect_to: str | None, fund: int, datadir: str | None):
+async def run_node(port: int, host: str, connect_to: str | None, fund: int, datadir: str | None,
+                   rpc_host: str = "127.0.0.1"):
     """Boot the node, optionally connect to a peer, then enter the CLI."""
     sk, pk = load_or_create_wallet(datadir)
 
@@ -656,7 +663,7 @@ async def run_node(port: int, host: str, connect_to: str | None, fund: int, data
     
     # Start RPC server on a port correlated to the node port (e.g. 8545 if P2P is 9000)
     rpc_port = 8545 + (port - 9000)
-    await rpc_server.start(host="127.0.0.1", port=rpc_port)
+    await rpc_server.start(host=rpc_host, port=rpc_port)
 
     # Fund this node's wallet so it can transact in the demo
     if fund > 0:
@@ -690,6 +697,7 @@ def main():
     parser.add_argument("--connect", type=str, default=None, help="Peer address to connect to (multiaddr)")
     parser.add_argument("--fund", type=int, default=100, help="Initial coins to fund this wallet (default: 100)")
     parser.add_argument("--datadir", type=str, default=".minichain", help="Directory to save/load blockchain state (enables persistence)")
+    parser.add_argument("--rpc-host", type=str, default="127.0.0.1", help="Host/IP to bind the JSON-RPC server (default: 127.0.0.1, loopback-only)")
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -699,7 +707,8 @@ def main():
     )
 
     try:
-        asyncio.run(run_node(args.port, args.host, args.connect, args.fund, args.datadir))
+        asyncio.run(run_node(args.port, args.host, args.connect, args.fund, args.datadir,
+                             rpc_host=args.rpc_host))
     except KeyboardInterrupt:
         print("\nNode shut down.")
 

@@ -89,9 +89,9 @@ python main.py --port 9000 --datadir ./node1_data
 *Note: Keep this terminal open to interact with the node via the CLI.*
 
 ### 2. Connecting to an Existing Chain
-To connect a secondary node to the network, start a new instance on a different port and point it to the seed node using the `--connect` flag.
+To connect a secondary node to the network, start a new instance on a different port and point it to the seed node using the `--connect` flag with the full multiaddress the seed node printed on startup (it includes the seed's peer ID, not just its host and port).
 ```bash
-python main.py --port 9001 --connect 127.0.0.1:9000 --datadir ./node2_data
+python main.py --port 9001 --connect /ip4/127.0.0.1/tcp/9000/p2p/<seed-peer-id> --datadir ./node2_data
 ```
 The node will automatically sync the blockchain state via the P2P network using the Fork-Choice rule.
 

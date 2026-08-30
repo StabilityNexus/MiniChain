@@ -11,7 +11,12 @@ import time
 import struct
 import trio
 import queue
-from .node_config import MALFORMED_THRESHOLD, FAILED_THRESHOLD, INVALID_THRESHOLD, DECAY_INTERVAL_MINUTES
+from collections import OrderedDict
+
+from .node_config import (
+    MALFORMED_THRESHOLD, FAILED_THRESHOLD, INVALID_THRESHOLD, DECAY_INTERVAL_MINUTES,
+    SEEN_CACHE_MAX,
+)
 from .network_config import SUPPORTED_MESSAGE_TYPES, PROTOCOL_ID, MAX_FRAME_BYTES
 
 from libp2p import new_host
@@ -48,12 +53,16 @@ class P2PNetwork:
     ):
         self._handler_callback = handler_callback
         self._on_peer_connected = None
-        self._seen_tx_ids = set()
-        self._seen_block_hashes = set()
+        # OrderedDict as an LRU: unbounded sets here would let a live node accumulate
+        # tx/block ids forever, and since relaying now depends on this set to stop
+        # echoes circulating, its size is no longer just a memory concern.
+        self._seen_tx_ids = OrderedDict()
+        self._seen_block_hashes = OrderedDict()
         self._to_trio = queue.Queue()
         self._to_asyncio = queue.Queue()
         self._peer_count = 0
         self._peer_count_lock = threading.Lock()
+        self._peer_ids: set = set()
 
         # Misbehavior tracking, keyed directly by ValidationStatus so there is a
         # single vocabulary for statuses (no parallel string keys to convert).
@@ -111,11 +120,16 @@ class P2PNetwork:
 
     def _mark_seen(self, msg_type, payload):
         mid = self._message_id(msg_type, payload)
-        if mid:
-            self._seen_set(msg_type).add(mid)
+        if not mid:
+            return
+        seen = self._seen_set(msg_type)
+        seen[mid] = True
+        seen.move_to_end(mid)
+        if len(seen) > SEEN_CACHE_MAX:
+            seen.popitem(last=False)
 
-    async def _broadcast_raw(self, payload: dict):
-        self._to_trio.put(("BROADCAST", payload))
+    async def _broadcast_raw(self, payload: dict, exclude: str | None = None):
+        self._to_trio.put(("BROADCAST", (payload, exclude)))
 
     async def _unicast_raw(self, target_addr: str, payload: dict):
         self._to_trio.put(("UNICAST", (target_addr, payload)))
@@ -143,6 +157,11 @@ class P2PNetwork:
     def peer_count(self) -> int:
         with self._peer_count_lock:
             return self._peer_count
+
+    @property
+    def peer_ids(self) -> list:
+        with self._peer_count_lock:
+            return list(self._peer_ids)
 
     # ── misbehavior helpers ──────────────────────────────────────────────────
 
@@ -237,6 +256,17 @@ class P2PNetwork:
                     except Exception:
                         pass
 
+                    # Relay accepted content onward, so gossip travels further than one
+                    # hop. Only VALID is forwarded: rejected content is never amplified,
+                    # and a None status (hello/chain_request/chain_response) is not
+                    # relayable at all. Excluding the sender avoids a pointless echo, and
+                    # _mark_seen above means an echo arriving from another peer is dropped
+                    # as a duplicate, so cycles in the peer graph terminate.
+                    if msg_type in ("tx", "block") and status == ValidationStatus.VALID:
+                        await self._broadcast_raw(
+                            {"type": msg_type, "data": payload}, exclude=peer_addr
+                        )
+
             elif msg[0] == "MALFORMED":
                 # JSON parse failure signalled from the Trio thread.
                 peer_addr = msg[1]
@@ -262,7 +292,14 @@ class P2PNetwork:
     async def _trio_main(self):
         host = new_host()
         listen_addr = Multiaddr(f"/ip4/{self.host_addr}/tcp/{self.port}")
-        await host.get_network().listen(listen_addr)
+        # Swarm.listen() waits on a nursery that only exists while the swarm runs as
+        # a background service, so listening must go through host.run(). Calling
+        # host.get_network().listen() directly blocks forever and the node comes up
+        # with no networking at all.
+        async with host.run(listen_addrs=[listen_addr]):
+            await self._serve(host, listen_addr)
+
+    async def _serve(self, host, listen_addr):
         print(f"  Network Multiaddr: {listen_addr}/p2p/{host.get_id().to_string()}")
 
         streams = []
@@ -283,6 +320,7 @@ class P2PNetwork:
             streams.append(stream)
             with self._peer_count_lock:
                 self._peer_count += 1
+                self._peer_ids.add(peer_id)
             self._to_asyncio.put(("PEER_CONNECTED", None))
 
             try:
@@ -313,10 +351,11 @@ class P2PNetwork:
                 streams.remove(stream)
                 with self._peer_count_lock:
                     self._peer_count -= 1
+                    self._peer_ids.discard(peer_id)
 
         host.set_stream_handler(PROTOCOL_ID, stream_handler)
 
-        async def check_queue():
+        async def check_queue(nursery):
             while True:
                 try:
                     while not self._to_trio.empty():
@@ -329,12 +368,18 @@ class P2PNetwork:
                                 info = info_from_p2p_addr(maddr)
                                 await host.connect(info)
                                 stream = await host.new_stream(info.peer_id, [PROTOCOL_ID])
-                                host.get_network().nursery.start_soon(stream_handler, stream)
+                                # Read the outbound stream in our own nursery: the swarm
+                                # exposes no nursery to borrow, and without this the
+                                # dialing side never registers the peer or reads from it.
+                                nursery.start_soon(stream_handler, stream)
                             except Exception as e:
                                 logger.error(f"Dial error: {e}")
                         elif cmd == "BROADCAST":
-                            msg = (canonical_json_dumps(arg) + "\n").encode()
+                            payload, exclude = arg
+                            msg = (canonical_json_dumps(payload) + "\n").encode()
                             for s in list(streams):
+                                if exclude and f"peer:{s.muxed_conn.peer_id}" == exclude:
+                                    continue
                                 try:
                                     await s.write(msg)
                                 except Exception:
@@ -361,13 +406,14 @@ class P2PNetwork:
                                         streams.remove(s)
                                         with self._peer_count_lock:
                                             self._peer_count -= 1
+                                            self._peer_ids.discard(str(s.muxed_conn.peer_id))
                 except Exception:
                     pass
                 await trio.sleep(0.1)
 
         async with trio.open_nursery() as nursery:
             async def run_monitor():
-                if await check_queue():
+                if await check_queue(nursery):
                     await host.close()
                     nursery.cancel_scope.cancel()
             nursery.start_soon(run_monitor)
