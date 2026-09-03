@@ -23,7 +23,7 @@ class FakeNetwork:
     def register_on_peer_connected(self, callback):
         self._on_peer_connected = callback
 
-    async def start(self, port=9000, host="127.0.0.1"):
+    async def start(self, port=9000, host="127.0.0.1", **kwargs):
         self.port = port
         self.host = host
 

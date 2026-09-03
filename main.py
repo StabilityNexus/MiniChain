@@ -26,6 +26,7 @@ import re
 import sys
 import os
 import json
+import time
 
 from nacl.signing import SigningKey
 from nacl.encoding import HexEncoder
@@ -34,12 +35,10 @@ from minichain import Transaction, Blockchain, Block, State, Mempool, P2PNetwork
 from minichain.rpc import JSONRPCServer
 from minichain.validators import is_valid_receiver, ValidationStatus
 from minichain.block import calculate_receipt_root
+from minichain.persistence import remember_peer, get_known_peers, is_peer_banned
 
 
 logger = logging.getLogger(__name__)
-
-TRUSTED_PEERS = set()
-LOCALHOST_PEERS = {"127.0.0.1", "::1", "localhost", "0:0:0:0:0:0:0:1"}
 
 
 # ──────────────────────────────────────────────
@@ -120,11 +119,15 @@ async def submit_and_broadcast(chain, mempool, network, tx, ok_msg, reject_msg):
 # ──────────────────────────────────────────────
 
 def mine_and_process_block(chain, mempool, miner_pk):
-    """Mine pending transactions into a new block."""
+    """
+    Mine pending transactions into a new block.
+
+    A block with no transactions is still mined: it carries the mining reward and
+    adds proof-of-work, so the chain keeps advancing while the network is idle.
+    Requiring a transaction would also make a fresh chain unusable, since coins
+    only come into existence through the mining reward.
+    """
     pending_txs = mempool.get_transactions_for_block()
-    if not pending_txs:
-        logger.info("Mempool is empty — nothing to mine.")
-        return None
 
     # Filter queue candidates against a temporary state snapshot.
     temp_state = chain.state.copy()
@@ -147,17 +150,19 @@ def mine_and_process_block(chain, mempool, miner_pk):
     if stale_txs:
         mempool.remove_transactions(stale_txs)
 
-    if not mineable_txs:
-        logger.info("No mineable transactions in current queue window.")
-        return None
-
     total_fees = sum(getattr(r, 'gas_used', 0) * getattr(tx, 'fee_per_gas', 0) for r, tx in zip(receipts, mineable_txs))
     temp_state.credit_mining_reward(miner_pk, reward=temp_state.DEFAULT_MINING_REWARD + total_fees)
+
+    # Timestamps are milliseconds and a block must be strictly newer than its parent.
+    # Blocks can be mined inside the same millisecond, so clamp forward rather than
+    # letting the miner build a block the chain will reject.
+    timestamp = max(round(time.time() * 1000), chain.last_block.timestamp + 1)
 
     block = Block(
         index=chain.last_block.index + 1,
         previous_hash=chain.last_block.hash,
         transactions=mineable_txs,
+        timestamp=timestamp,
         state_root=temp_state.state_root(),
         receipt_root=calculate_receipt_root(receipts),
         receipts=receipts,
@@ -193,7 +198,7 @@ def make_network_handler(chain, mempool, network):
         payload = data.get("data")
         peer_addr = data.get("_peer_addr", "unknown")
 
-        if payload is None and msg_type in ("hello", "chain_request", "chain_response"):
+        if payload is None and msg_type in ("hello", "chain_request", "chain_response", "getaddr", "addr"):
             return
 
         if msg_type == "hello":
@@ -213,6 +218,10 @@ def make_network_handler(chain, mempool, network):
             if peer_tip > chain.last_block.index:
                 logger.info("📡 Peer %s is ahead (%d > %d). Initiating chunked sync...", peer_addr, peer_tip, chain.last_block.index)
                 request_chain(network, chain.last_block.index + 1, 500)
+
+            # Ask for more peers, so the network stays reachable after whoever we
+            # were told about goes away, instead of only ever knowing our seed.
+            asyncio.create_task(network._unicast_raw(peer_addr, {"type": "getaddr", "data": {}}))
 
         elif msg_type == "tx":
             try:
@@ -319,6 +328,23 @@ def make_network_handler(chain, mempool, network):
                         earlier_start = max(0, new_chain[0].index - 50)
                         if new_chain[0].index > 0:
                             request_chain(network, earlier_start, 50)
+
+        elif msg_type == "getaddr":
+            # Share only peers we have ourselves successfully dialed: an inbound
+            # connection never reveals the far side's own listen address, so that is
+            # all we have to offer (the same asymmetry Bitcoin has via service flags).
+            addrs = [p["multiaddr"] for p in get_known_peers(network.data_path)]
+            asyncio.create_task(
+                network._unicast_raw(peer_addr, {"type": "addr", "data": {"addrs": addrs}})
+            )
+
+        elif msg_type == "addr":
+            for addr in payload.get("addrs", []):
+                candidate_id = addr.rsplit("/p2p/", 1)[-1]
+                if candidate_id == network._peer_id or is_peer_banned(candidate_id, path=network.data_path):
+                    continue
+                remember_peer(candidate_id, addr, network.data_path)
+                asyncio.create_task(network.connect_to_peer(addr))
 
     return handler
 
@@ -505,6 +531,8 @@ async def cli_loop(sk, pk, chain, mempool, network, datadir: str | None = None):
         # ── peers ──
         elif cmd == "peers":
             print(f"  Connected peers: {network.peer_count}")
+            for peer_id in network.peer_ids:
+                print(f"    {peer_id}")
 
         # ── connect ──
         elif cmd == "connect":
@@ -605,7 +633,11 @@ async def cli_loop(sk, pk, chain, mempool, network, datadir: str | None = None):
 # Main entry point
 # ──────────────────────────────────────────────
 
-async def run_node(port: int, host: str, connect_to: str | None, fund: int, datadir: str | None):
+async def run_node(port: int, host: str, connect_to: str | None, fund: int, datadir: str | None,
+                   rpc_host: str = "127.0.0.1",
+                   upnp: bool = False, bootstrap: list | None = None,
+                   relay: bool = False, relay_addr: str | None = None,
+                   announce: str | None = None):
     """Boot the node, optionally connect to a peer, then enter the CLI."""
     sk, pk = load_or_create_wallet(datadir)
 
@@ -652,16 +684,25 @@ async def run_node(port: int, host: str, connect_to: str | None, fund: int, data
 
     network.register_on_peer_connected(on_peer_connected)
 
-    await network.start(port=port, host=host)
+    await network.start(port=port, host=host, upnp=upnp, bootstrap=bootstrap,
+                        relay=relay, relay_addr=relay_addr, announce=announce, datadir=datadir)
     
     # Start RPC server on a port correlated to the node port (e.g. 8545 if P2P is 9000)
     rpc_port = 8545 + (port - 9000)
-    await rpc_server.start(host="127.0.0.1", port=rpc_port)
+    await rpc_server.start(host=rpc_host, port=rpc_port)
 
-    # Fund this node's wallet so it can transact in the demo
+    # Fund this node's wallet so it can transact in the demo. This is applied
+    # outside of block validation, so it diverges this node's state from every
+    # peer's — any block built on top of it will be rejected by them on the
+    # state-root check. Only safe on a single isolated node.
     if fund > 0:
         chain.state.credit_mining_reward(pk, reward=fund)
         logger.info("💰 Funded %s... with %d coins", pk[:12], fund)
+        if connect_to or bootstrap:
+            logger.warning(
+                "⚠️  --fund is nonzero while connecting to peers: this node's state will "
+                "diverge and its blocks will be rejected. Use --fund 0 and mine instead."
+            )
 
     # Connect to a seed peer if requested
     if connect_to:
@@ -688,8 +729,14 @@ def main():
     parser.add_argument("--host", type=str, default="127.0.0.1", help="Host/IP to bind the P2P server (default: 127.0.0.1)")
     parser.add_argument("--port", type=int, default=9000, help="TCP port to listen on (default: 9000)")
     parser.add_argument("--connect", type=str, default=None, help="Peer address to connect to (multiaddr)")
-    parser.add_argument("--fund", type=int, default=100, help="Initial coins to fund this wallet (default: 100)")
+    parser.add_argument("--fund", type=int, default=0, help="Initial coins to fund this wallet outside consensus (default: 0). Nonzero diverges state from every peer's -- see run_node.")
     parser.add_argument("--datadir", type=str, default=".minichain", help="Directory to save/load blockchain state (enables persistence)")
+    parser.add_argument("--rpc-host", type=str, default="127.0.0.1", help="Host/IP to bind the JSON-RPC server (default: 127.0.0.1, loopback-only)")
+    parser.add_argument("--upnp", action="store_true", help="Ask the router to forward our port, so peers on other networks can dial us")
+    parser.add_argument("--bootstrap", type=str, nargs="*", default=None, help="Peer multiaddrs to dial on startup")
+    parser.add_argument("--relay", action="store_true", help="Act as a relay, letting unreachable peers be dialed through this node")
+    parser.add_argument("--relay-addr", type=str, default=None, help="Multiaddr of a relay to become reachable through")
+    parser.add_argument("--announce", type=str, default=None, help="Public host:port to advertise instead of the bind address (e.g. behind --upnp or a port-forward)")
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -699,7 +746,11 @@ def main():
     )
 
     try:
-        asyncio.run(run_node(args.port, args.host, args.connect, args.fund, args.datadir))
+        asyncio.run(run_node(args.port, args.host, args.connect, args.fund, args.datadir,
+                             rpc_host=args.rpc_host,
+                             upnp=args.upnp, bootstrap=args.bootstrap,
+                             relay=args.relay, relay_addr=args.relay_addr,
+                             announce=args.announce))
     except KeyboardInterrupt:
         print("\nNode shut down.")
 

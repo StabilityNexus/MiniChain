@@ -1,10 +1,13 @@
+import asyncio
 import unittest
 
 from nacl.encoding import HexEncoder
 from nacl.signing import SigningKey
 
 from minichain import Block, Mempool, P2PNetwork, State, Transaction, calculate_hash
+from minichain.node_config import SEEN_CACHE_MAX
 from minichain.serialization import canonical_json_dumps
+from minichain.validators import ValidationStatus
 
 
 class TestDeterministicConsensus(unittest.TestCase):
@@ -162,3 +165,90 @@ class TestP2PValidationAndDedup(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(network._is_duplicate("block", block_message["data"]))
         network._mark_seen("block", block_message["data"])
         self.assertTrue(network._is_duplicate("block", block_message["data"]))
+
+
+
+class TestP2PRelayAndPeers(unittest.IsolatedAsyncioTestCase):
+    """
+    A node relays content it accepts, so gossip travels past one hop, but never
+    back to the peer it came from and never anything it rejected.
+    """
+
+    SOURCE = "peer:source"
+    TX_DATA = {
+        "sender": "a" * 64, "receiver": "b" * 64, "amount": 1, "nonce": 0,
+        "data": None, "timestamp": 123, "signature": "c" * 128,
+    }
+
+    def _network(self, status):
+        network = P2PNetwork(malformed_threshold=1000, failed_threshold=1000, invalid_threshold=1000)
+        network.loop = asyncio.get_running_loop()
+
+        async def handler(_data):
+            return status
+
+        network.register_handler(handler)
+        return network
+
+    async def _deliver(self, network, msg_type, data):
+        network._to_asyncio.put(("MSG", {"type": msg_type, "data": data, "_peer_addr": self.SOURCE}))
+        task = asyncio.create_task(network._asyncio_reader())
+        for _ in range(30):
+            await asyncio.sleep(0.01)
+            if not network._to_trio.empty():
+                break
+        task.cancel()
+        network._to_asyncio.put(("MALFORMED", self.SOURCE))
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+        commands = []
+        while not network._to_trio.empty():
+            commands.append(network._to_trio.get_nowait())
+        return [arg for cmd, arg in commands if cmd == "BROADCAST"]
+
+    async def test_accepted_tx_is_relayed_excluding_sender(self):
+        network = self._network(ValidationStatus.VALID)
+
+        broadcasts = await self._deliver(network, "tx", self.TX_DATA)
+
+        self.assertEqual(len(broadcasts), 1)
+        payload, exclude = broadcasts[0]
+        self.assertEqual(payload, {"type": "tx", "data": self.TX_DATA})
+        self.assertEqual(exclude, self.SOURCE)
+
+    async def test_rejected_content_is_never_relayed(self):
+        network = self._network(ValidationStatus.INVALID)
+
+        broadcasts = await self._deliver(network, "tx", self.TX_DATA)
+
+        self.assertEqual(broadcasts, [])
+
+    async def test_control_messages_are_never_relayed(self):
+        network = self._network(None)
+
+        broadcasts = await self._deliver(network, "hello", {"some": "payload"})
+
+        self.assertEqual(broadcasts, [])
+
+    async def test_duplicate_is_relayed_only_once(self):
+        network = self._network(ValidationStatus.VALID)
+
+        first = await self._deliver(network, "tx", self.TX_DATA)
+        second = await self._deliver(network, "tx", self.TX_DATA)
+
+        self.assertEqual(len(first), 1)
+        self.assertEqual(second, [])
+
+
+class TestSeenCacheIsBounded(unittest.TestCase):
+    def test_oldest_entry_is_evicted_past_the_cap(self):
+        network = P2PNetwork()
+
+        for i in range(SEEN_CACHE_MAX + 10):
+            network._mark_seen("block", {"hash": f"h{i}"})
+
+        self.assertEqual(len(network._seen_block_hashes), SEEN_CACHE_MAX)
+        self.assertFalse(network._is_duplicate("block", {"hash": "h0"}))
+        self.assertTrue(network._is_duplicate("block", {"hash": f"h{SEEN_CACHE_MAX + 9}"}))
