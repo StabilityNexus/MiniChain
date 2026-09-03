@@ -8,6 +8,9 @@ FAILED_THRESHOLD = 15        # M: accumulated failed messages before ban
 INVALID_THRESHOLD = 1        # L: accumulated invalid messages before ban (1 = immediate)
 DECAY_INTERVAL_MINUTES = 10  # T: counter half-life period in minutes
 
+# Gossip dedup: max tx/block ids remembered per set before the oldest is evicted.
+SEEN_CACHE_MAX = 10_000
+
 # Mempool Config
 MEMPOOL_MAX_SIZE = 1000
 MEMPOOL_TX_PER_BLOCK = 100
