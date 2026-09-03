@@ -1,5 +1,5 @@
 pynacl==1.6.2
 trie>=3.1.0
-libp2p==0.5.0
+libp2p
 aiohttp>=3.10.11
 multiaddr
