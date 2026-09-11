@@ -32,9 +32,10 @@ jobs:
 
       - name: Run Tests with Coverage
         run: |
-          pytest tests/ -v --junitxml=pytest.xml --cov-report=term-missing:skip-covered --cov=minichain | tee pytest-coverage.txt
+          pytest tests/ -v --junitxml=pytest.xml --cov-report=term-missing --cov=minichain | tee pytest-coverage.txt
 
       - name: Pytest coverage comment
+        if: github.event.pull_request.head.repo.full_name == github.repository
         uses: MishaKav/pytest-coverage-comment@v1
         with:
           pytest-coverage-path: ./pytest-coverage.txt

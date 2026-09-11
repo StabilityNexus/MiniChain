@@ -28,7 +28,7 @@ jobs:
 
       - name: Run tests
         run: |
-          pytest tests/ -v --junitxml=pytest.xml --cov-report=term-missing:skip-covered --cov=minichain | tee pytest-coverage.txt
+          pytest tests/ -v --junitxml=pytest.xml --cov-report=term-missing --cov=minichain | tee pytest-coverage.txt
 
       - name: Coverage comment
         id: coverage
