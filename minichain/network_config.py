@@ -5,7 +5,7 @@ TProtocol = str
 # to maintain consensus.
 
 # P2P Network Rules
-SUPPORTED_MESSAGE_TYPES = {"hello", "tx", "block", "chain_request", "chain_response"}
+SUPPORTED_MESSAGE_TYPES = {"hello", "tx", "block", "chain_request", "chain_response", "getaddr", "addr"}
 PROTOCOL_ID = TProtocol("/minichain/1.0.0")
 MAX_FRAME_BYTES = 1 * 1024 * 1024  # 1 MB
 
