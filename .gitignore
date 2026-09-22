@@ -340,3 +340,11 @@ build/
 
 # minichain data dir
 .minichain/
+.minichain.old/
+node1/
+node2/
+
+# Coverage
+.coverage
+pytest-coverage.txt
+pytest.xml
