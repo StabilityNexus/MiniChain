@@ -321,6 +321,59 @@ def get_banned_peers(path: str = ".") -> list[dict[str, Any]]:
 
 
 # ---------------------------------------------------------------------------
+# Known Peers (peer book)
+#
+# Lets a node redial peers it has previously connected to without needing
+# --connect or --bootstrap again. Mirrors the banned_peers table above.
+# ---------------------------------------------------------------------------
+
+
+def _ensure_known_peers_table(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS known_peers (peer_id TEXT PRIMARY KEY, multiaddr TEXT, last_seen REAL)"
+    )
+
+
+@contextmanager
+def _known_peers_conn(path: str, create: bool):
+    """Same shape as _banned_peers_conn: yields None for read-only callers when
+    no DB exists yet, so they can short-circuit without touching the filesystem."""
+    db_path = os.path.join(path, _DB_FILE)
+    if not create and not os.path.exists(db_path):
+        yield None
+        return
+    if create:
+        os.makedirs(path, exist_ok=True)
+    conn = _connect(db_path)
+    try:
+        _ensure_known_peers_table(conn)
+        yield conn
+    finally:
+        conn.close()
+
+
+def remember_peer(peer_id: str, multiaddr: str, path: str = ".") -> None:
+    """Record that we successfully connected to *peer_id* at *multiaddr*, so a
+    future startup (or the reconnect loop) can redial it without being told."""
+    with _known_peers_conn(path, create=True) as conn, conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO known_peers (peer_id, multiaddr, last_seen) VALUES (?, ?, ?)",
+            (peer_id, multiaddr, time.time())
+        )
+
+
+def get_known_peers(path: str = ".", limit: int = 50) -> list[dict[str, Any]]:
+    with _known_peers_conn(path, create=False) as conn:
+        if conn is None:
+            return []
+        rows = conn.execute(
+            "SELECT peer_id, multiaddr, last_seen FROM known_peers ORDER BY last_seen DESC LIMIT ?",
+            (limit,)
+        ).fetchall()
+        return [{"peer_id": r["peer_id"], "multiaddr": r["multiaddr"], "last_seen": r["last_seen"]} for r in rows]
+
+
+# ---------------------------------------------------------------------------
 # Legacy JSON helpers
 # ---------------------------------------------------------------------------
 
