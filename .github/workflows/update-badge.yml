@@ -39,10 +39,26 @@ jobs:
           hide-comment: true
 
       - name: Update README
+        env:
+          BADGE_HTML: ${{ steps.coverage.outputs.coverageHtml }}
         run: |
-          BADGE='${{ steps.coverage.outputs.coverageHtml }}'
-          BADGE="${BADGE/.svg/.svg?style=for-the-badge}"
-          sed -i "/<!-- Pytest Coverage Comment:Begin -->/,/<!-- Pytest Coverage Comment:End -->/c\<!-- Pytest Coverage Comment:Begin -->\n$BADGE\n<!-- Pytest Coverage Comment:End -->" ./README.md
+          python - <<'PY'
+          import os
+          import re
+          from pathlib import Path
+
+          badge = os.environ.get("BADGE_HTML", "").replace(".svg", ".svg?style=for-the-badge")
+          readme = Path("README.md")
+          content = readme.read_text()
+          replacement = "<!-- Pytest Coverage Comment:Begin -->\n" + badge + "\n<!-- Pytest Coverage Comment:End -->"
+          content = re.sub(
+              r"<!-- Pytest Coverage Comment:Begin -->.*?<!-- Pytest Coverage Comment:End -->",
+              lambda _match: replacement,
+              content,
+              flags=re.DOTALL,
+          )
+          readme.write_text(content)
+          PY
 
       - name: Commit changes
         uses: stefanzweifel/git-auto-commit-action@v5
