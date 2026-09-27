@@ -184,6 +184,9 @@ class ContractMachine:
             # "print": print,  # Removed for security
         }
 
+        p = None
+        parent_conn = None
+        child_conn = None
         try:
             # Execute in a subprocess with timeout
             import time
@@ -193,17 +196,16 @@ class ContractMachine:
                 args=(code, globals_for_exec, context, child_conn, gas_limit)
             )
             p.start()
-            
+
             start_time = time.time()
             result = None
-            
+
             while p.is_alive() or parent_conn.poll():
                 if time.time() - start_time > 5:
                     p.kill()
-                    p.join()
                     logger.error("Contract execution timed out")
                     return self._fail("Execution timed out", gas_limit)
-                    
+
                 if parent_conn.poll(0.1):
                     msg = parent_conn.recv()
                     if msg.get("type") == "call":
@@ -249,6 +251,21 @@ class ContractMachine:
         except Exception as e:
             logger.error("Contract Execution Failed", exc_info=True)
             return self._fail("System Error", gas_limit)
+        finally:
+            # Every return path above leaves the subprocess and its pipe ends
+            # dangling otherwise. multiprocessing keeps a strong reference to
+            # every unjoined Process in its internal _children registry, so
+            # without this, each contract execution permanently leaks a
+            # process handle (and, until timeout, a live child) for the
+            # lifetime of the interpreter.
+            if p is not None:
+                if p.is_alive():
+                    p.kill()
+                p.join(timeout=5)
+            if parent_conn is not None:
+                parent_conn.close()
+            if child_conn is not None:
+                child_conn.close()
 
     def _validate_code_ast(self, code):
         """Reject code that uses double underscores or introspection."""
