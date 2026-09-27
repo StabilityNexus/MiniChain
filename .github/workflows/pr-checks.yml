@@ -31,6 +31,11 @@ jobs:
           pip install -r requirements-test.txt
 
       - name: Run Tests with Coverage
+        env:
+          # Temporary: logs per-test peak RSS to pin down a CI-only crash
+          # where pytest dies partway through with no traceback (consistent
+          # with an OOM kill). See conftest.py. Remove once understood/fixed.
+          MINICHAIN_MEMORY_PROBE: "1"
         run: |
           pytest tests/ -v --junitxml=pytest.xml --cov-report=term-missing --cov=minichain | tee pytest-coverage.txt
 
