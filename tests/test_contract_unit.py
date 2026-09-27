@@ -14,11 +14,17 @@ require a subprocess at all.
 
 import sys
 import multiprocessing
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
-from minichain.contract import ContractMachine, GasMeter, OutOfGasException, _safe_exec_worker
+from minichain.contract import (
+    ContractMachine,
+    GasMeter,
+    OutOfGasException,
+    _safe_exec_worker,
+    _sandboxed_worker,
+)
 from minichain.state import State
 
 
@@ -35,14 +41,18 @@ from minichain.state import State
 
 def _run_worker(code, gas_limit=100_000, context=None):
     parent_conn, child_conn = multiprocessing.Pipe()
-    globals_dict = {"__builtins__": {"True": True, "False": False, "range": range, "int": int, "Exception": Exception}}
-    context_dict = context if context is not None else {"storage": {}}
-    outer_trace = sys.gettrace()
     try:
-        _safe_exec_worker(code, globals_dict, context_dict, child_conn, gas_limit)
+        globals_dict = {"__builtins__": {"True": True, "False": False, "range": range, "int": int, "Exception": Exception}}
+        context_dict = context if context is not None else {"storage": {}}
+        outer_trace = sys.gettrace()
+        try:
+            _safe_exec_worker(code, globals_dict, context_dict, child_conn, gas_limit)
+        finally:
+            sys.settrace(outer_trace)
+        return parent_conn.recv()
     finally:
-        sys.settrace(outer_trace)
-    return parent_conn.recv()
+        parent_conn.close()
+        child_conn.close()
 
 
 def test_worker_success_updates_storage():
@@ -88,44 +98,52 @@ def test_worker_transfer_out_rejects_invalid_input(bad_call):
 
 def test_worker_call_contract_sends_request_and_uses_reply():
     parent_conn, child_conn = multiprocessing.Pipe()
-    # Pre-queue the reply call_contract() will block on, since this test
-    # drives both ends of the pipe from the same thread.
-    parent_conn.send({"success": True, "result": "pong"})
-
-    code = "storage['reply'] = call_contract('cd' * 20, 'ping')"
-    globals_dict = {"__builtins__": {}}
-    context_dict = {"storage": {}}
-    outer_trace = sys.gettrace()
     try:
-        _safe_exec_worker(code, globals_dict, context_dict, child_conn, gas_limit=100_000)
+        # Pre-queue the reply call_contract() will block on, since this test
+        # drives both ends of the pipe from the same thread.
+        parent_conn.send({"success": True, "result": "pong"})
+
+        code = "storage['reply'] = call_contract('cd' * 20, 'ping')"
+        globals_dict = {"__builtins__": {}}
+        context_dict = {"storage": {}}
+        outer_trace = sys.gettrace()
+        try:
+            _safe_exec_worker(code, globals_dict, context_dict, child_conn, gas_limit=100_000)
+        finally:
+            sys.settrace(outer_trace)
+
+        call_msg = parent_conn.recv()
+        assert call_msg["type"] == "call"
+        assert call_msg["address"] == "cd" * 20
+        assert call_msg["payload"] == "ping"
+
+        return_msg = parent_conn.recv()
+        assert return_msg["status"] == "success"
+        assert return_msg["storage"]["reply"] == "pong"
     finally:
-        sys.settrace(outer_trace)
-
-    call_msg = parent_conn.recv()
-    assert call_msg["type"] == "call"
-    assert call_msg["address"] == "cd" * 20
-    assert call_msg["payload"] == "ping"
-
-    return_msg = parent_conn.recv()
-    assert return_msg["status"] == "success"
-    assert return_msg["storage"]["reply"] == "pong"
+        parent_conn.close()
+        child_conn.close()
 
 
 def test_worker_call_contract_failure_raises_in_contract_code():
     parent_conn, child_conn = multiprocessing.Pipe()
-    parent_conn.send({"success": False, "error": "receiver reverted"})
-
-    code = "call_contract('cd' * 20, 'ping')"
-    globals_dict = {"__builtins__": {}}
-    context_dict = {"storage": {}}
-    outer_trace = sys.gettrace()
     try:
-        _safe_exec_worker(code, globals_dict, context_dict, child_conn, gas_limit=100_000)
-    finally:
-        sys.settrace(outer_trace)
+        parent_conn.send({"success": False, "error": "receiver reverted"})
 
-    parent_conn.recv()  # the "call" request
-    return_msg = parent_conn.recv()
+        code = "call_contract('cd' * 20, 'ping')"
+        globals_dict = {"__builtins__": {}}
+        context_dict = {"storage": {}}
+        outer_trace = sys.gettrace()
+        try:
+            _safe_exec_worker(code, globals_dict, context_dict, child_conn, gas_limit=100_000)
+        finally:
+            sys.settrace(outer_trace)
+
+        parent_conn.recv()  # the "call" request
+        return_msg = parent_conn.recv()
+    finally:
+        parent_conn.close()
+        child_conn.close()
     assert return_msg["status"] == "error"
     assert "receiver reverted" in return_msg["error"]
 
@@ -145,6 +163,48 @@ def test_gas_meter_raises_when_exhausted():
     assert fake_frame.f_trace_opcodes is True
     with pytest.raises(OutOfGasException):
         meter.trace_calls(fake_frame, 'opcode', None)  # gas: 1 -> 0, raises
+
+
+# ------------------------------------------------------------------
+# Resource-limit regression: _safe_exec_worker (called directly, in-process,
+# by every test above) must never clamp the calling process. Only
+# _sandboxed_worker -- the actual multiprocessing.Process entrypoint, which
+# only ever runs in a throwaway subprocess -- may do that. Getting this
+# backwards previously crashed CI outright: setrlimit(RLIMIT_CPU, RLIMIT_AS)
+# is process-wide, so calling it from _safe_exec_worker while it runs
+# in-process (as these tests do, for coverage) clamped the pytest process
+# itself to 100MB/10s CPU, which the kernel enforced by killing pytest
+# mid-suite with no traceback. A fake `resource` module makes this a real
+# regression test on every platform, including Windows (which has no real
+# resource module and would otherwise let this pass silently either way).
+# ------------------------------------------------------------------
+
+def test_safe_exec_worker_never_touches_resource_limits():
+    fake_resource = MagicMock()
+    with patch.dict(sys.modules, {"resource": fake_resource}):
+        _run_worker("storage['x'] = 1")
+    fake_resource.setrlimit.assert_not_called()
+
+
+def test_sandboxed_worker_applies_resource_limits():
+    fake_resource = MagicMock()
+    parent_conn, child_conn = multiprocessing.Pipe()
+    try:
+        globals_dict = {"__builtins__": {}}
+        context_dict = {"storage": {}}
+        outer_trace = sys.gettrace()
+        try:
+            with patch.dict(sys.modules, {"resource": fake_resource}):
+                _sandboxed_worker("storage['x'] = 1", globals_dict, context_dict, child_conn, 100_000)
+        finally:
+            sys.settrace(outer_trace)
+        parent_conn.recv()  # drain the worker's result message
+    finally:
+        parent_conn.close()
+        child_conn.close()
+
+    fake_resource.setrlimit.assert_any_call(fake_resource.RLIMIT_CPU, (10, 10))
+    fake_resource.setrlimit.assert_any_call(fake_resource.RLIMIT_AS, (100 * 1024 * 1024, 100 * 1024 * 1024))
 
 
 # ------------------------------------------------------------------

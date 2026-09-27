@@ -22,29 +22,52 @@ class GasMeter:
 import json
 logger = logging.getLogger(__name__)
 
+def _apply_sandbox_limits():
+    """
+    Clamp CPU time and address space for the CURRENT process (Unix only).
+
+    These are process-wide OS limits, not per-call limits, so this must only
+    ever run inside a throwaway subprocess dedicated to one contract
+    execution (see _sandboxed_worker) -- never on a long-lived process like
+    the node itself or a test runner, which this would permanently cripple.
+    """
+    try:
+        import resource
+        # Limit CPU time (seconds) and memory (bytes) - example values
+        resource.setrlimit(resource.RLIMIT_CPU, (10, 10)) # Align with p.join timeout (10 seconds)
+        resource.setrlimit(resource.RLIMIT_AS, (100 * 1024 * 1024, 100 * 1024 * 1024))
+    except ImportError:
+        logger.warning("Resource module not available. Contract will run without OS-level resource limits.")
+    except (OSError, ValueError) as e:
+        logger.warning("Failed to set resource limits: %s", e)
+
+
+def _sandboxed_worker(*args):
+    """multiprocessing.Process entrypoint: apply OS resource limits to this
+    (freshly forked, disposable) process, then run the real worker."""
+    _apply_sandbox_limits()
+    _safe_exec_worker(*args)
+
+
 def _safe_exec_worker(code, globals_dict, context_dict, child_conn, gas_limit):
     """
     Worker function to execute contract code in a separate process with gas metering.
-    
+
     SECURITY:
-    This function relies on `globals_dict` (which has `__builtins__` stripped down 
+    This function relies on `globals_dict` (which has `__builtins__` stripped down
     to a minimal safe allowlist) to prevent malicious code from accessing file systems
     (e.g., `open()`), networking, or OS-level commands (e.g., `__import__('os')`).
     Because `exec` is run with these restricted globals, any attempt to call unauthorized
     builtins or standard library modules will result in a NameError or ImportError.
+
+    Resource limits (CPU/memory) are NOT applied here -- see _apply_sandbox_limits
+    and _sandboxed_worker. This function is also called directly, in-process, by
+    unit tests to get real coverage credit for the sandbox logic below (coverage.py
+    can't trace code that runs inside multiprocessing.Process); applying
+    process-wide OS limits here would clamp whatever process calls it, including
+    the test runner itself.
     """
     try:
-        # Attempt to set resource limits (Unix only)
-        try:
-            import resource
-            # Limit CPU time (seconds) and memory (bytes) - example values
-            resource.setrlimit(resource.RLIMIT_CPU, (10, 10)) # Align with p.join timeout (10 seconds)
-            resource.setrlimit(resource.RLIMIT_AS, (100 * 1024 * 1024, 100 * 1024 * 1024))
-        except ImportError:
-            logger.warning("Resource module not available. Contract will run without OS-level resource limits.")
-        except (OSError, ValueError) as e:
-            logger.warning("Failed to set resource limits: %s", e)
-
         transfers = []
         
         def transfer_out(address, amount):
@@ -174,26 +197,28 @@ class ContractMachine:
             # "print": print,  # Removed for security
         }
 
+        p = None
+        parent_conn = None
+        child_conn = None
         try:
             # Execute in a subprocess with timeout
             import time
             parent_conn, child_conn = multiprocessing.Pipe()
             p = multiprocessing.Process(
-                target=_safe_exec_worker,
+                target=_sandboxed_worker,
                 args=(code, globals_for_exec, context, child_conn, gas_limit)
             )
             p.start()
-            
+
             start_time = time.time()
             result = None
-            
+
             while p.is_alive() or parent_conn.poll():
                 if time.time() - start_time > 5:
                     p.kill()
-                    p.join()
                     logger.error("Contract execution timed out")
                     return self._fail("Execution timed out", gas_limit)
-                    
+
                 if parent_conn.poll(0.1):
                     msg = parent_conn.recv()
                     if msg.get("type") == "call":
@@ -239,6 +264,21 @@ class ContractMachine:
         except Exception as e:
             logger.error("Contract Execution Failed", exc_info=True)
             return self._fail("System Error", gas_limit)
+        finally:
+            # Every return path above leaves the subprocess and its pipe ends
+            # dangling otherwise. multiprocessing keeps a strong reference to
+            # every unjoined Process in its internal _children registry, so
+            # without this, each contract execution leaks a process handle
+            # (and, until timeout, a live child) for the interpreter's
+            # lifetime.
+            if p is not None:
+                if p.is_alive():
+                    p.kill()
+                p.join(timeout=5)
+            if parent_conn is not None:
+                parent_conn.close()
+            if child_conn is not None:
+                child_conn.close()
 
     def _validate_code_ast(self, code):
         """Reject code that uses double underscores or introspection."""
