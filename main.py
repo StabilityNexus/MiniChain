@@ -724,19 +724,24 @@ async def run_node(port: int, host: str, connect_to: str | None, fund: int, data
         await network.stop()
 
 
-def main():
+def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="MiniChain Node — Testnet Demo")
     parser.add_argument("--host", type=str, default="127.0.0.1", help="Host/IP to bind the P2P server (default: 127.0.0.1)")
+    parser.add_argument("--rpc-host", type=str, default="127.0.0.1", help="Host/IP to bind the JSON-RPC server (default: 127.0.0.1, loopback-only)")
     parser.add_argument("--port", type=int, default=9000, help="TCP port to listen on (default: 9000)")
     parser.add_argument("--connect", type=str, default=None, help="Peer address to connect to (multiaddr)")
     parser.add_argument("--fund", type=int, default=0, help="Initial coins to fund this wallet outside consensus (default: 0). Nonzero diverges state from every peer's -- see run_node.")
     parser.add_argument("--datadir", type=str, default=".minichain", help="Directory to save/load blockchain state (enables persistence)")
-    parser.add_argument("--rpc-host", type=str, default="127.0.0.1", help="Host/IP to bind the JSON-RPC server (default: 127.0.0.1, loopback-only)")
     parser.add_argument("--upnp", action="store_true", help="Ask the router to forward our port, so peers on other networks can dial us")
     parser.add_argument("--bootstrap", type=str, nargs="*", default=None, help="Peer multiaddrs to dial on startup")
     parser.add_argument("--relay", action="store_true", help="Act as a relay, letting unreachable peers be dialed through this node")
     parser.add_argument("--relay-addr", type=str, default=None, help="Multiaddr of a relay to become reachable through")
     parser.add_argument("--announce", type=str, default=None, help="Public host:port to advertise instead of the bind address (e.g. behind --upnp or a port-forward)")
+    return parser
+
+
+def main():
+    parser = build_arg_parser()
     args = parser.parse_args()
 
     logging.basicConfig(

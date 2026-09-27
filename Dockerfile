@@ -20,10 +20,10 @@ RUN useradd --create-home --uid 1000 minichain \
     && chown -R minichain:minichain /app
 USER minichain
 
-EXPOSE 9000
+EXPOSE 9000 8545
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
     CMD python -c "import socket; socket.create_connection(('127.0.0.1', 8545), timeout=3)"
 
 ENTRYPOINT ["python", "main.py"]
-CMD ["--host", "0.0.0.0", "--port", "9000"]
+CMD ["--host", "0.0.0.0", "--rpc-host", "0.0.0.0", "--port", "9000"]
