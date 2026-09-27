@@ -1,0 +1,44 @@
+name: Coverage Comment
+
+# Runs from the base branch with a write-scoped token, so it can comment on
+# PRs from forks (where `pull_request` workflows are stuck read-only). It
+# never checks out PR head code -- it only reads the coverage artifact that
+# the unprivileged pr-checks.yml job produced.
+on:
+  workflow_run:
+    workflows: ["PR Tests & Coverage"]
+    types: [completed]
+
+permissions:
+  contents: read
+  pull-requests: write
+  actions: read
+
+jobs:
+  comment:
+    runs-on: ubuntu-latest
+    if: github.event.workflow_run.event == 'pull_request'
+    steps:
+      - name: Download coverage artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: coverage-report
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ github.token }}
+
+      - name: Read PR number
+        id: pr
+        run: |
+          number="$(cat pr-number.txt)"
+          if ! [[ "$number" =~ ^[0-9]+$ ]]; then
+            echo "pr-number.txt did not contain a plain integer: '$number'" >&2
+            exit 1
+          fi
+          echo "number=$number" >> "$GITHUB_OUTPUT"
+
+      - name: Pytest coverage comment
+        uses: MishaKav/pytest-coverage-comment@v1
+        with:
+          issue-number: ${{ steps.pr.outputs.number }}
+          pytest-coverage-path: ./pytest-coverage.txt
+          junitxml-path: ./pytest.xml

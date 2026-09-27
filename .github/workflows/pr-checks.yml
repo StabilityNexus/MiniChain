@@ -8,9 +8,10 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    # Fork PRs only ever get a read-only token, so this job must not need more.
+    # The coverage comment is posted by coverage-comment.yml via workflow_run.
     permissions:
       contents: read
-      pull-requests: write
 
     steps:
       - name: Checkout Code
@@ -31,12 +32,24 @@ jobs:
           pip install -r requirements-test.txt
 
       - name: Run Tests with Coverage
+        # `shell: bash` sets -o pipefail, so a crashed/failing suite fails
+        # the step instead of tee's own exit status (always 0) masking it.
+        shell: bash
         run: |
           pytest tests/ -v --junitxml=pytest.xml --cov-report=term-missing --cov=minichain | tee pytest-coverage.txt
 
-      - name: Pytest coverage comment
-        if: github.event.pull_request.head.repo.full_name == github.repository
-        uses: MishaKav/pytest-coverage-comment@v1
+      - name: Record PR number
+        if: always()
+        run: echo "${{ github.event.pull_request.number }}" > pr-number.txt
+
+      # Uploaded even when tests fail, so the comment can still report why.
+      - name: Upload coverage artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
         with:
-          pytest-coverage-path: ./pytest-coverage.txt
-          junitxml-path: ./pytest.xml
+          name: coverage-report
+          path: |
+            pytest.xml
+            pytest-coverage.txt
+            pr-number.txt
+          retention-days: 1
