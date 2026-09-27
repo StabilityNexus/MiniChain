@@ -27,7 +27,17 @@ jobs:
           pip install -r requirements-test.txt
 
       - name: Run tests
+        # A crashed/killed pytest process (e.g. OOM) previously left tee's own
+        # exit code (0) as the step's result, silently masking the failure --
+        # pipefail makes the step's outcome reflect pytest's real exit status.
+        # continue-on-error keeps the badge job running so a normal test
+        # failure (as opposed to a crash) still gets the coverage read and
+        # reported; the "Update README" step's own guard is what actually
+        # protects the badge from a genuinely bad/missing report.
+        id: run_tests
+        continue-on-error: true
         run: |
+          set -o pipefail
           pytest tests/ -v --junitxml=pytest.xml --cov-report=term-missing --cov=minichain | tee pytest-coverage.txt
 
       - name: Coverage comment
@@ -45,9 +55,18 @@ jobs:
           python - <<'PY'
           import os
           import re
+          import sys
           from pathlib import Path
 
           badge = os.environ.get("BADGE_HTML", "").replace(".svg", ".svg?style=for-the-badge")
+          if not badge.strip():
+              # A malformed/truncated pytest-coverage.txt (e.g. from a crashed
+              # test run) makes the coverage-comment action emit an empty
+              # badge. Blindly substituting that in would wipe out the last
+              # good badge, so leave README.md untouched instead.
+              print("BADGE_HTML is empty -- leaving README.md untouched.", file=sys.stderr)
+              sys.exit(0)
+
           readme = Path("README.md")
           content = readme.read_text()
           replacement = "<!-- Pytest Coverage Comment:Begin -->\n" + badge + "\n<!-- Pytest Coverage Comment:End -->"
