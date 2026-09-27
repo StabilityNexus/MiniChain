@@ -1,5 +1,6 @@
 import logging
 import multiprocessing
+import threading
 import ast
 import sys
 
@@ -34,16 +35,25 @@ def _safe_exec_worker(code, globals_dict, context_dict, child_conn, gas_limit):
     builtins or standard library modules will result in a NameError or ImportError.
     """
     try:
-        # Attempt to set resource limits (Unix only)
-        try:
-            import resource
-            # Limit CPU time (seconds) and memory (bytes) - example values
-            resource.setrlimit(resource.RLIMIT_CPU, (10, 10)) # Align with p.join timeout (10 seconds)
-            resource.setrlimit(resource.RLIMIT_AS, (100 * 1024 * 1024, 100 * 1024 * 1024))
-        except ImportError:
-            logger.warning("Resource module not available. Contract will run without OS-level resource limits.")
-        except (OSError, ValueError) as e:
-            logger.warning("Failed to set resource limits: %s", e)
+        # Attempt to set resource limits (Unix only). RLIMIT_CPU/RLIMIT_AS are
+        # process-wide, not per-thread, so this must only run when this
+        # worker actually IS its own process (the real deployment: a forked
+        # multiprocessing.Process, whose initial thread is that process's
+        # main thread). A test double that runs this function on a thread
+        # inside a shared process (e.g. to get coverage credit without a
+        # real subprocess) must skip this, or it would clamp the CPU time
+        # and address space of the entire host process -- including pytest
+        # itself.
+        if threading.current_thread() is threading.main_thread():
+            try:
+                import resource
+                # Limit CPU time (seconds) and memory (bytes) - example values
+                resource.setrlimit(resource.RLIMIT_CPU, (10, 10)) # Align with p.join timeout (10 seconds)
+                resource.setrlimit(resource.RLIMIT_AS, (100 * 1024 * 1024, 100 * 1024 * 1024))
+            except ImportError:
+                logger.warning("Resource module not available. Contract will run without OS-level resource limits.")
+            except (OSError, ValueError) as e:
+                logger.warning("Failed to set resource limits: %s", e)
 
         transfers = []
         
