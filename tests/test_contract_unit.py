@@ -13,6 +13,7 @@ require a subprocess at all.
 """
 
 import sys
+import threading
 import multiprocessing
 from unittest.mock import patch
 
@@ -20,6 +21,40 @@ import pytest
 
 from minichain.contract import ContractMachine, GasMeter, OutOfGasException, _safe_exec_worker
 from minichain.state import State
+
+
+class _InlineProcess:
+    """Stand-in for multiprocessing.Process that runs its target on a thread
+    instead of forking a real subprocess. Used for tests that need to
+    exercise ContractMachine.execute()'s real polling/result-handling logic
+    (the parent-side code, which coverage.py can measure fine) without adding
+    OS-level process spawning to the suite -- a real fork here buys nothing
+    for these tests and only adds resource pressure.
+
+    A thread, not a synchronous call on execute()'s own frame, is essential:
+    _safe_exec_worker calls sys.settrace(meter.trace_calls) then
+    sys.settrace(None). sys.settrace is per-thread, so running the worker on
+    its own thread confines that to the worker thread -- the main thread
+    running execute() (and coverage.py's tracer on it) is never touched.
+    Calling it synchronously in-frame instead corrupts coverage for the rest
+    of execute()'s already-running frame: restoring the global tracer
+    afterwards does not reattach it to a frame that was already executing
+    when tracing was cleared."""
+
+    def __init__(self, target=None, args=(), **kwargs):
+        self._thread = threading.Thread(target=target, args=args, daemon=True)
+
+    def start(self):
+        self._thread.start()
+
+    def is_alive(self):
+        return self._thread.is_alive()
+
+    def join(self, timeout=None):
+        self._thread.join(timeout=timeout)
+
+    def kill(self):
+        pass
 
 
 # ------------------------------------------------------------------
@@ -35,14 +70,18 @@ from minichain.state import State
 
 def _run_worker(code, gas_limit=100_000, context=None):
     parent_conn, child_conn = multiprocessing.Pipe()
-    globals_dict = {"__builtins__": {"True": True, "False": False, "range": range, "int": int, "Exception": Exception}}
-    context_dict = context if context is not None else {"storage": {}}
-    outer_trace = sys.gettrace()
     try:
-        _safe_exec_worker(code, globals_dict, context_dict, child_conn, gas_limit)
+        globals_dict = {"__builtins__": {"True": True, "False": False, "range": range, "int": int, "Exception": Exception}}
+        context_dict = context if context is not None else {"storage": {}}
+        outer_trace = sys.gettrace()
+        try:
+            _safe_exec_worker(code, globals_dict, context_dict, child_conn, gas_limit)
+        finally:
+            sys.settrace(outer_trace)
+        return parent_conn.recv()
     finally:
-        sys.settrace(outer_trace)
-    return parent_conn.recv()
+        parent_conn.close()
+        child_conn.close()
 
 
 def test_worker_success_updates_storage():
@@ -88,44 +127,52 @@ def test_worker_transfer_out_rejects_invalid_input(bad_call):
 
 def test_worker_call_contract_sends_request_and_uses_reply():
     parent_conn, child_conn = multiprocessing.Pipe()
-    # Pre-queue the reply call_contract() will block on, since this test
-    # drives both ends of the pipe from the same thread.
-    parent_conn.send({"success": True, "result": "pong"})
-
-    code = "storage['reply'] = call_contract('cd' * 20, 'ping')"
-    globals_dict = {"__builtins__": {}}
-    context_dict = {"storage": {}}
-    outer_trace = sys.gettrace()
     try:
-        _safe_exec_worker(code, globals_dict, context_dict, child_conn, gas_limit=100_000)
+        # Pre-queue the reply call_contract() will block on, since this test
+        # drives both ends of the pipe from the same thread.
+        parent_conn.send({"success": True, "result": "pong"})
+
+        code = "storage['reply'] = call_contract('cd' * 20, 'ping')"
+        globals_dict = {"__builtins__": {}}
+        context_dict = {"storage": {}}
+        outer_trace = sys.gettrace()
+        try:
+            _safe_exec_worker(code, globals_dict, context_dict, child_conn, gas_limit=100_000)
+        finally:
+            sys.settrace(outer_trace)
+
+        call_msg = parent_conn.recv()
+        assert call_msg["type"] == "call"
+        assert call_msg["address"] == "cd" * 20
+        assert call_msg["payload"] == "ping"
+
+        return_msg = parent_conn.recv()
+        assert return_msg["status"] == "success"
+        assert return_msg["storage"]["reply"] == "pong"
     finally:
-        sys.settrace(outer_trace)
-
-    call_msg = parent_conn.recv()
-    assert call_msg["type"] == "call"
-    assert call_msg["address"] == "cd" * 20
-    assert call_msg["payload"] == "ping"
-
-    return_msg = parent_conn.recv()
-    assert return_msg["status"] == "success"
-    assert return_msg["storage"]["reply"] == "pong"
+        parent_conn.close()
+        child_conn.close()
 
 
 def test_worker_call_contract_failure_raises_in_contract_code():
     parent_conn, child_conn = multiprocessing.Pipe()
-    parent_conn.send({"success": False, "error": "receiver reverted"})
-
-    code = "call_contract('cd' * 20, 'ping')"
-    globals_dict = {"__builtins__": {}}
-    context_dict = {"storage": {}}
-    outer_trace = sys.gettrace()
     try:
-        _safe_exec_worker(code, globals_dict, context_dict, child_conn, gas_limit=100_000)
-    finally:
-        sys.settrace(outer_trace)
+        parent_conn.send({"success": False, "error": "receiver reverted"})
 
-    parent_conn.recv()  # the "call" request
-    return_msg = parent_conn.recv()
+        code = "call_contract('cd' * 20, 'ping')"
+        globals_dict = {"__builtins__": {}}
+        context_dict = {"storage": {}}
+        outer_trace = sys.gettrace()
+        try:
+            _safe_exec_worker(code, globals_dict, context_dict, child_conn, gas_limit=100_000)
+        finally:
+            sys.settrace(outer_trace)
+
+        parent_conn.recv()  # the "call" request
+        return_msg = parent_conn.recv()
+    finally:
+        parent_conn.close()
+        child_conn.close()
     assert return_msg["status"] == "error"
     assert "receiver reverted" in return_msg["error"]
 
@@ -192,14 +239,17 @@ def test_execute_ast_validation_failure(state):
 
 
 def test_execute_non_json_serializable_storage_fails(state):
-    """A real end-to-end run (real subprocess) whose storage ends up holding a
-    value json.dumps can't handle -- these lines run in the parent process
-    (inside execute(), after the worker returns), so they're reachable
-    without the sys.settrace conflict that limits _safe_exec_worker itself."""
+    """A whose storage ends up holding a value json.dumps can't handle --
+    these lines run in the parent process (inside execute(), after the
+    worker returns), so they're reachable without the sys.settrace conflict
+    that limits _safe_exec_worker itself. Runs the worker inline (see
+    _InlineProcess) rather than through a real subprocess, so this doesn't
+    add OS-level process spawning to the suite."""
     machine = ContractMachine(state)
     account = state.get_account("bad-storage")
     account["code"] = "storage['x'] = 1j"  # a complex literal; json can't serialize it
-    result = machine.execute("bad-storage", "sender", "payload", 0, gas_limit=100_000)
+    with patch("minichain.contract.multiprocessing.Process", _InlineProcess):
+        result = machine.execute("bad-storage", "sender", "payload", 0, gas_limit=100_000)
     assert result["success"] is False
     assert "not JSON serializable" in result["error"]
 
@@ -211,7 +261,8 @@ def test_execute_storage_size_exceeds_gas_limit(state):
     account = state.get_account("big-storage")
     long_literal = "a" * 300
     account["code"] = f"storage['x'] = '{long_literal}'"
-    result = machine.execute("big-storage", "sender", "payload", 0, gas_limit=200)
+    with patch("minichain.contract.multiprocessing.Process", _InlineProcess):
+        result = machine.execute("big-storage", "sender", "payload", 0, gas_limit=200)
     assert result["success"] is False
     assert "Storage size exceeded limit" in result["error"]
 
