@@ -348,3 +348,6 @@ node2/
 .coverage
 pytest-coverage.txt
 pytest.xml
+
+# Unremediated security review reports (private until findings are closed out)
+unremediated-security-reviews/
