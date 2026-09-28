@@ -307,7 +307,15 @@ class P2PNetwork:
 
                 status = None
                 if self._handler_callback:
-                    status = await self._handler_callback(data)
+                    try:
+                        status = await self._handler_callback(data)
+                    except Exception:
+                        logger.exception("Handler raised on %s message from %s", msg_type, peer_addr)
+                        # An unhandled exception here (e.g. a malformed
+                        # payload the handler didn't type-check) would
+                        # otherwise kill this task, silently deafening the
+                        # node to all further P2P messages.
+                        status = ValidationStatus.MALFORMED
 
                 # Only apply interception for content-bearing message types.
                 if msg_type in ("tx", "block") and status is not None:

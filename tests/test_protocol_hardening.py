@@ -241,6 +241,32 @@ class TestP2PRelayAndPeers(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(first), 1)
         self.assertEqual(second, [])
 
+    async def test_handler_exception_does_not_kill_reader_task(self):
+        """A handler bug (e.g. an untyped-payload crash) must not silently
+        deafen the node to all further P2P messages."""
+        network = P2PNetwork(malformed_threshold=1000, failed_threshold=1000, invalid_threshold=1000)
+        network.loop = asyncio.get_running_loop()
+
+        async def crashing_handler(_data):
+            raise AttributeError("simulated malformed-payload crash")
+
+        network.register_handler(crashing_handler)
+
+        task = asyncio.create_task(network._asyncio_reader())
+        network._to_asyncio.put(("MSG", {"type": "hello", "data": {"bad": "payload"}, "_peer_addr": self.SOURCE}))
+        await asyncio.sleep(0.05)
+
+        self.assertFalse(task.done(), "reader task died from an unhandled handler exception")
+
+        task.cancel()
+        # Unblock the executor thread's blocking queue.get() so the task can
+        # actually observe the cancellation instead of hanging forever.
+        network._to_asyncio.put(("MALFORMED", self.SOURCE))
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
 
 class TestSeenCacheIsBounded(unittest.TestCase):
     def test_oldest_entry_is_evicted_past_the_cap(self):
