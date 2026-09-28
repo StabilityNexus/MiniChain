@@ -241,6 +241,60 @@ class TestP2PRelayAndPeers(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(first), 1)
         self.assertEqual(second, [])
 
+    async def test_handler_exception_does_not_kill_reader_task(self):
+        """A handler bug (e.g. an untyped-payload crash) must not silently
+        deafen the node to all further P2P messages."""
+        network = P2PNetwork(malformed_threshold=1000, failed_threshold=1000, invalid_threshold=1000)
+        network.loop = asyncio.get_running_loop()
+
+        async def crashing_handler(_data):
+            raise AttributeError("simulated malformed-payload crash")
+
+        network.register_handler(crashing_handler)
+
+        task = asyncio.create_task(network._asyncio_reader())
+        network._to_asyncio.put(("MSG", {"type": "hello", "data": {"bad": "payload"}, "_peer_addr": self.SOURCE}))
+        await asyncio.sleep(0.05)
+
+        self.assertFalse(task.done(), "reader task died from an unhandled handler exception")
+
+        task.cancel()
+        # Unblock the executor thread's blocking queue.get() so the task can
+        # actually observe the cancellation instead of hanging forever.
+        network._to_asyncio.put(("MALFORMED", self.SOURCE))
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+    async def test_crashing_control_message_handler_still_disconnects_peer(self):
+        """A handler crash on a control message (hello/chain_request/...) must
+        count as MALFORMED like it already does for tx/block, not go
+        unpunished forever just because it isn't content-bearing."""
+        network = P2PNetwork(malformed_threshold=1000, failed_threshold=1000, invalid_threshold=1000)
+        network.loop = asyncio.get_running_loop()
+
+        async def crashing_handler(_data):
+            raise AttributeError("simulated malformed-payload crash")
+
+        network.register_handler(crashing_handler)
+
+        task = asyncio.create_task(network._asyncio_reader())
+        network._to_asyncio.put(("MSG", {"type": "hello", "data": {"bad": "payload"}, "_peer_addr": self.SOURCE}))
+        await asyncio.sleep(0.05)
+
+        commands = []
+        while not network._to_trio.empty():
+            commands.append(network._to_trio.get_nowait())
+        self.assertIn(("DISCONNECT", self.SOURCE), commands)
+
+        task.cancel()
+        network._to_asyncio.put(("MALFORMED", self.SOURCE))
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
 
 class TestSeenCacheIsBounded(unittest.TestCase):
     def test_oldest_entry_is_evicted_past_the_cap(self):
