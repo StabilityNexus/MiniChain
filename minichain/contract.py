@@ -300,6 +300,15 @@ class ContractMachine:
                 if isinstance(node, ast.Constant) and isinstance(node.value, str) and "__" in node.value:
                     logger.warning("Rejected string literal with double-underscore.")
                     return False
+                if isinstance(node, ast.Attribute) and node.attr in {"format", "format_map"}:
+                    # str.format()/format_map() parse their own field-name
+                    # mini-language at runtime (not via ast.parse), which
+                    # supports chained attribute/item access. That lets code
+                    # reach __globals__, __class__, etc. on any object without
+                    # ever writing a "__"-containing literal or Name, bypassing
+                    # every check above. Block the method outright.
+                    logger.warning("Rejected use of str.format()/format_map().")
+                    return False
                 if isinstance(node, ast.JoinedStr): # f-strings
                     logger.warning("Rejected f-string usage.")
                     return False

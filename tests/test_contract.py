@@ -198,6 +198,32 @@ raise Exception("boom")
         self.assertEqual(receipt_call.status, 0)
         self.assertEqual(receipt_call.error_message, "AST Validation Failed")
 
+    def test_malicious_format_string_sandbox_escape(self):
+        """Contract building a dunder name via concatenation and reaching it
+        through str.format()'s attribute/item traversal (e.g.
+        "{0.__globals__[...]}") must fail AST validation. No individual
+        literal contains "__", so only blocking .format() itself (rather
+        than the string-building) closes this off."""
+        code = (
+            "d = '_' + '_'\n"
+            "k = d + 'globals' + d\n"
+            "fmt = '{0.' + k + '}'\n"
+            "storage['leak'] = fmt.format(transfer_out)\n"
+        )
+        tx_deploy = Transaction(self.pk, None, 0, 0, gas_limit=50000, fee_per_gas=1, data=code)
+        tx_deploy.sign(self.sk)
+
+        receipt_deploy = self.state.apply_transaction(tx_deploy)
+        self.assertEqual(receipt_deploy.status, 1) # Deploy succeeds, saves code
+
+        tx_call = Transaction(self.pk, receipt_deploy.contract_address, 0, 1, gas_limit=50000, fee_per_gas=1, data="call")
+        tx_call.sign(self.sk)
+        receipt_call = self.state.apply_transaction(tx_call)
+
+        self.assertIsNotNone(receipt_call)
+        self.assertEqual(receipt_call.status, 0)
+        self.assertEqual(receipt_call.error_message, "AST Validation Failed")
+
     def test_malicious_file_deletion(self):
         """Contract attempting to use open() or file IO should fail at runtime due to missing builtins."""
         # Using open() which is stripped from __builtins__
