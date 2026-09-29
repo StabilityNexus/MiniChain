@@ -105,7 +105,7 @@ class TestPersistenceRuntime(unittest.IsolatedAsyncioTestCase):
 
         async def fake_cli_loop(sk, pk, chain, mempool, network, datadir=None):
             self.assertEqual(pk, fixed_pk)
-            self.assertEqual(chain.state.get_account(pk)["balance"], 25)
+            self.assertEqual(chain.state.get_account(pk)["balances"][""], 25)
 
         with patch.object(main_module, "P2PNetwork", FakeNetwork), patch.object(
             main_module, "cli_loop", fake_cli_loop
@@ -119,7 +119,7 @@ class TestPersistenceRuntime(unittest.IsolatedAsyncioTestCase):
             )
 
         restored = load(self.tmpdir)
-        self.assertEqual(restored.state.get_account(fixed_pk)["balance"], 25)
+        self.assertEqual(restored.state.get_account(fixed_pk)["balances"][""], 25)
         self.assertEqual(len(restored.chain), 1)
 
 

@@ -81,7 +81,7 @@ class Blockchain:
                 logger.error("Invalid genesis balance for %s: %s. Must be a non-negative integer.", address, balance)
                 sys.exit(1)
             account = self.state.get_account(address)
-            account['balance'] = balance
+            account['balances'][''] = balance
             total_alloc += balance
 
         initial_supply = config.get("initial_supply")
