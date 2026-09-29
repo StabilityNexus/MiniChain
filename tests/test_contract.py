@@ -133,7 +133,7 @@ raise Exception("boom")
         """Verify sender balance and nonce after deploy and call."""
 
         sender_before = self.state.get_account(self.pk)
-        initial_balance = sender_before["balance"]
+        initial_balance = sender_before["balances"][""]
         initial_nonce = sender_before["nonce"]
 
         code = "storage['x'] = 1"
@@ -150,7 +150,7 @@ raise Exception("boom")
         # Verify balance and nonce after deploy
         # We spent 10 amount + 500 gas for deploy = 510 total deduction
         sender_after = self.state.get_account(self.pk)
-        self.assertEqual(sender_after["balance"], initial_balance - receipt.gas_used - 10)
+        self.assertEqual(sender_after["balances"][""], initial_balance - receipt.gas_used - 10)
         self.assertEqual(sender_after["nonce"], initial_nonce + 1)
 
     def test_out_of_gas(self):
@@ -169,7 +169,7 @@ raise Exception("boom")
         tx_call = Transaction(self.pk, contract_addr, 0, 1, gas_limit=1000, fee_per_gas=1, data="loop")
         tx_call.sign(self.sk)
         
-        balance_before = self.state.get_account(self.pk)["balance"]
+        balance_before = self.state.get_account(self.pk)["balances"][""]
         
         receipt_call = self.state.apply_transaction(tx_call)
         
@@ -177,7 +177,7 @@ raise Exception("boom")
         self.assertEqual(receipt_call.error_message, "Out of gas!")
         self.assertEqual(receipt_call.gas_used, 1000)
         
-        balance_after = self.state.get_account(self.pk)["balance"]
+        balance_after = self.state.get_account(self.pk)["balances"][""]
         # Entire fee should be deducted because gas was completely consumed
         self.assertEqual(balance_after, balance_before - 1000)
 

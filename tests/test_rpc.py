@@ -167,7 +167,7 @@ async def test_rpc_getBalance_unknown_address(rpc_server):
         payload = {"jsonrpc": "2.0", "method": "mc_getBalance", "params": ["nobody"], "id": 8}
         async with session.post(f"http://127.0.0.1:{port}/", json=payload) as resp:
             data = await resp.json()
-            assert data["result"] == 0
+            assert data["result"] == {}
 
 
 @pytest.mark.anyio

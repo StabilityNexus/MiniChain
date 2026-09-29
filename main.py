@@ -7,8 +7,9 @@ Usage:
 
 Commands (type in the terminal while the node is running):
     balance                 — show all account balances
-    send <to> <amount>      - send coins                        
-    deploy <file>           - deploy a contract                 
+    send <to> <amount>      - send coins
+    create-asset <t> <amt> <to> - create & mint a native asset
+    deploy <file>           - deploy a contract
     call <addr> <data>      - call a contract                   
     mine                    — mine a block from the mempool
     peers                   — show connected peers
@@ -394,6 +395,7 @@ HELP_TEXT = f"""
 {C_CYAN}╔══════════════════════════════════════════════════════════════╗{C_RESET}
 {C_CYAN}║{C_RESET}  {C_GREEN}balance{C_RESET}                 - show all balances                 {C_CYAN}║{C_RESET}
 {C_CYAN}║{C_RESET}  {C_GREEN}send <to> <amount>{C_RESET}      - send coins                        {C_CYAN}║{C_RESET}
+{C_CYAN}║{C_RESET}  {C_GREEN}create-asset <t> <amt> <to>{C_RESET} - create & mint a native asset  {C_CYAN}║{C_RESET}
 {C_CYAN}║{C_RESET}  {C_GREEN}deploy <file>{C_RESET}           - deploy a contract                 {C_CYAN}║{C_RESET}
 {C_CYAN}║{C_RESET}  {C_GREEN}call <addr> <data>{C_RESET}      - call a contract                   {C_CYAN}║{C_RESET}
 {C_CYAN}║{C_RESET}  {C_GREEN}mine{C_RESET}                    - mine a block                      {C_CYAN}║{C_RESET}
@@ -438,7 +440,7 @@ async def cli_loop(sk, pk, chain, mempool, network, datadir: str | None = None):
             for addr, acc in accounts.items():
                 tag = f" {C_GREEN}(you){C_RESET}" if addr == pk else ""
                 contract_tag = f" {C_CYAN}[Contract]{C_RESET}" if acc.get("code") else ""
-                print(f"  {C_BOLD}{addr[:12]}...{C_RESET}  balance={C_YELLOW}{acc['balance']}{C_RESET}  nonce={acc['nonce']}{tag}{contract_tag}")
+                print(f"  {C_BOLD}{addr[:12]}...{C_RESET}  balances={C_YELLOW}{acc['balances']}{C_RESET}  nonce={acc['nonce']}{tag}{contract_tag}")
 
         # ── send ──
         elif cmd == "send":
@@ -466,6 +468,40 @@ async def cli_loop(sk, pk, chain, mempool, network, datadir: str | None = None):
                 chain, mempool, network, tx,
                 f"  {C_GREEN}✅ Tx sent:{C_RESET} {amount} coins → {receiver[:12]}...",
                 f"  {C_RED}❌ Transaction rejected{C_RESET} (invalid sig, duplicate, or mempool full).",
+            )
+
+        # ── create-asset ──
+        elif cmd == "create-asset":
+            if len(parts) < 4:
+                print("  Usage: create-asset <ticker> <amount> <recipient> [gas_limit] [fee_per_gas]")
+                continue
+            ticker = parts[1]
+            if not ticker or "." in ticker:
+                print("  Invalid ticker. Must be non-empty and must not contain '.'.")
+                continue
+            recipient = parts[3]
+            if not is_valid_receiver(recipient):
+                print("  Invalid recipient format. Expected 40 or 64 hex characters.")
+                continue
+            try:
+                amount = int(parts[2])
+                gas_limit = int(parts[4]) if len(parts) > 4 else 0
+                fee_per_gas = int(parts[5]) if len(parts) > 5 else 0
+            except ValueError:
+                print("  Values must be integers.")
+                continue
+            if amount <= 0 or gas_limit < 0 or fee_per_gas < 0:
+                print("  Amount must be greater than 0; gas values cannot be negative.")
+                continue
+
+            nonce = chain.state.get_account(pk).get("nonce", 0)
+            tx = Transaction(sender=pk, receiver=recipient, amount=amount, nonce=nonce, gas_limit=gas_limit, fee_per_gas=fee_per_gas, ticker=ticker, chain_id=chain.chain_id)
+            tx.sign(sk)
+
+            await submit_and_broadcast(
+                chain, mempool, network, tx,
+                f"  {C_GREEN}✅ Asset created:{C_RESET} {pk[:12]}...{ticker} x{amount} → {recipient[:12]}...",
+                f"  {C_RED}❌ Transaction rejected{C_RESET} (invalid sig, duplicate ticker, or mempool full).",
             )
 
         # ── deploy ──
