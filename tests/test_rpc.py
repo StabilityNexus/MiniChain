@@ -171,6 +171,41 @@ async def test_rpc_getBalance_unknown_address(rpc_server):
 
 
 @pytest.mark.anyio
+async def test_rpc_getAssetBalance_missing_params(rpc_server):
+    server, port, chain, mempool = rpc_server
+
+    async with aiohttp.ClientSession() as session:
+        payload = {"jsonrpc": "2.0", "method": "mc_getAssetBalance", "id": 9}
+        async with session.post(f"http://127.0.0.1:{port}/", json=payload) as resp:
+            data = await resp.json()
+            assert data["error"]["code"] == -32000
+            assert "Missing address or asset_id" in data["error"]["message"]
+
+
+@pytest.mark.anyio
+async def test_rpc_getAssetBalance_success(rpc_server):
+    server, port, chain, mempool = rpc_server
+
+    chain.state.credit_mining_reward("some_addr", reward=100)
+    # Give some asset
+    chain.state.accounts.setdefault("some_addr", {})
+    chain.state.accounts["some_addr"].setdefault("balances", {})
+    chain.state.accounts["some_addr"]["balances"]["my_asset"] = 50
+
+    async with aiohttp.ClientSession() as session:
+        payload = {"jsonrpc": "2.0", "method": "mc_getAssetBalance", "params": ["some_addr", "my_asset"], "id": 10}
+        async with session.post(f"http://127.0.0.1:{port}/", json=payload) as resp:
+            data = await resp.json()
+            assert data["result"] == 50
+
+        # test missing asset
+        payload = {"jsonrpc": "2.0", "method": "mc_getAssetBalance", "params": ["some_addr", "missing_asset"], "id": 11}
+        async with session.post(f"http://127.0.0.1:{port}/", json=payload) as resp:
+            data = await resp.json()
+            assert data["result"] == 0
+
+
+@pytest.mark.anyio
 async def test_rpc_sendTransaction_missing_params(rpc_server):
     server, port, chain, mempool = rpc_server
 
