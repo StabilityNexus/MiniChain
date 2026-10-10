@@ -26,6 +26,7 @@ import logging
 import re
 import sys
 import os
+import shlex
 import json
 import time
 
@@ -91,14 +92,29 @@ def parse_tx_params(parts, start):
     """Parse optional non-negative amount, gas_limit, fee_per_gas.
     Returns (amount, gas_limit, fee_per_gas), or None if invalid."""
     try:
-        amount = int(parts[start]) if len(parts) > start else 0
+        amt_str = parts[start] if len(parts) > start else "0"
+        if amt_str.startswith("{"):
+            try:
+                amount = json.loads(amt_str)
+                if not isinstance(amount, dict):
+                    print("  Amount must be a JSON dictionary.")
+                    return None
+            except json.JSONDecodeError as e:
+                print(f"  Invalid JSON for amount: {e}")
+                return None
+        else:
+            amount = int(amt_str)
+            if amount < 0:
+                print("  Amount cannot be negative.")
+                return None
+
         gas_limit = int(parts[start + 1]) if len(parts) > start + 1 else 0
         fee_per_gas = int(parts[start + 2]) if len(parts) > start + 2 else 0
     except ValueError:
-        print("  Values must be integers.")
+        print("  Values must be integers or valid JSON dictionary.")
         return None
-    if amount < 0 or gas_limit < 0 or fee_per_gas < 0:
-        print("  Values cannot be negative.")
+    if gas_limit < 0 or fee_per_gas < 0:
+        print("  Gas values cannot be negative.")
         return None
     return amount, gas_limit, fee_per_gas
 
@@ -427,7 +443,11 @@ async def cli_loop(sk, pk, chain, mempool, network, datadir: str | None = None):
         except (EOFError, KeyboardInterrupt):
             break
 
-        parts = raw.strip().split()
+        try:
+            parts = shlex.split(raw.strip())
+        except ValueError as e:
+            print(f"  CLI parsing error: {e}")
+            continue
         if not parts:
             continue
         cmd = parts[0].lower()
@@ -495,7 +515,9 @@ async def cli_loop(sk, pk, chain, mempool, network, datadir: str | None = None):
                 continue
 
             nonce = chain.state.get_account(pk).get("nonce", 0)
-            tx = Transaction(sender=pk, receiver=recipient, amount=amount, nonce=nonce, gas_limit=gas_limit, fee_per_gas=fee_per_gas, ticker=ticker, chain_id=chain.chain_id)
+            from minichain.transaction import ALLOW_MINT
+            asset_name = f"{pk}.{ticker}"
+            tx = Transaction(sender=pk, receiver=recipient, amount={asset_name: amount}, nonce=nonce, gas_limit=gas_limit, fee_per_gas=fee_per_gas, flags=ALLOW_MINT, chain_id=chain.chain_id)
             tx.sign(sk)
 
             await submit_and_broadcast(
