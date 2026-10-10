@@ -17,11 +17,12 @@ if msg['data'] == 'init':
     # Initialize the liquidity pool
     if storage.get('k') is not None:
         raise Exception("Already initialized")
-    if msg['value'] <= 0:
+    native_coins = msg['value'].get('', 0)
+    if native_coins <= 0:
         raise Exception("Must provide initial native coin liquidity")
     
     # We will arbitrarily mint 1000 DEX tokens to match the initial coin liquidity
-    storage['native_reserve'] = msg['value']
+    storage['native_reserve'] = native_coins
     storage['token_reserve'] = 1000
     storage['k'] = storage['native_reserve'] * storage['token_reserve']
     
@@ -32,12 +33,13 @@ elif msg['data'] == 'buy':
     # User sends native coins to buy DEX tokens
     if storage.get('k') is None:
         raise Exception("Not initialized")
-    if msg['value'] <= 0:
+    native_coins = msg['value'].get('', 0)
+    if native_coins <= 0:
         raise Exception("Must send coins to buy tokens")
     
     # Calculate how many tokens to give using x * y = k
-    # (native_reserve + msg['value']) * (token_reserve - tokens_out) = k
-    new_native_reserve = storage['native_reserve'] + msg['value']
+    # (native_reserve + native_coins) * (token_reserve - tokens_out) = k
+    new_native_reserve = storage['native_reserve'] + native_coins
     new_token_reserve = storage['k'] // new_native_reserve
     
     tokens_out = storage['token_reserve'] - new_token_reserve
