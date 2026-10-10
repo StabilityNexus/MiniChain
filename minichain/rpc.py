@@ -74,6 +74,11 @@ class JSONRPCServer:
                     raise ValueError("Missing address")
                 address = params[0]
                 result = self.chain.state.get_account(address)["balances"]
+            elif method == "mc_getAssetBalance":
+                if len(params) < 2:
+                    raise ValueError("Missing address or asset_id")
+                address, asset_id = params[0], params[1]
+                result = self.chain.state.get_account(address)["balances"].get(asset_id, 0)
             elif method == "mc_sendTransaction":
                 if not params:
                     raise ValueError("Missing transaction payload")
