@@ -71,8 +71,13 @@ def _safe_exec_worker(code, globals_dict, context_dict, child_conn, gas_limit):
         transfers = []
         
         def transfer_out(address, amount):
-            if not isinstance(amount, int) or amount <= 0:
+            if isinstance(amount, int) and not isinstance(amount, bool):
+                amount = {"": amount}
+            if not isinstance(amount, dict) or not amount:
                 raise ValueError("Invalid transfer amount")
+            for k, v in amount.items():
+                if not isinstance(k, str) or isinstance(v, bool) or not isinstance(v, int) or v <= 0:
+                    raise ValueError("Invalid transfer amount")
             if not isinstance(address, str):
                 raise ValueError("Invalid address type")
             if not address or len(address) not in (40, 64):
@@ -86,6 +91,13 @@ def _safe_exec_worker(code, globals_dict, context_dict, child_conn, gas_limit):
         globals_dict["__builtins__"]["transfer_out"] = transfer_out
 
         def call_contract(address, payload, amount=0):
+            if isinstance(amount, int) and not isinstance(amount, bool):
+                amount = {"": amount}
+            if not isinstance(amount, dict):
+                raise ValueError("Invalid call amount")
+            for k, v in amount.items():
+                if not isinstance(k, str) or isinstance(v, bool) or not isinstance(v, int) or v < 0:
+                    raise ValueError("Invalid call amount")
             child_conn.send({"type": "call", "address": address, "payload": payload, "amount": amount})
             resp = child_conn.recv()
             if not resp.get("success"):
@@ -186,6 +198,13 @@ class ContractMachine:
             "__builtins__": safe_builtins
         }
 
+        if isinstance(amount, int) and not isinstance(amount, bool):
+            amount = {"": amount}
+        elif isinstance(amount, dict):
+            amount = dict(amount)
+        else:
+            amount = {}
+
         # Execution context (locals)
         context = {
             "storage": storage,
@@ -214,7 +233,7 @@ class ContractMachine:
             result = None
 
             while p.is_alive() or parent_conn.poll():
-                if time.time() - start_time > 5:
+                if time.time() - start_time > 15:
                     p.kill()
                     logger.error("Contract execution timed out")
                     return self._fail("Execution timed out", gas_limit)
@@ -223,14 +242,16 @@ class ContractMachine:
                     msg = parent_conn.recv()
                     if msg.get("type") == "call":
                         # Execute internal sub-call recursively
+                        sub_start = time.time()
                         sub_result = self.state.execute_internal_call(
                             sender=contract_address, # Caller is the current contract!
                             receiver_address=msg["address"],
-                            amount=msg.get("amount", 0),
+                            amount=msg.get("amount", {}),
                             payload=msg["payload"],
                             gas_limit=gas_limit, # Let inner call use remaining gas
                             depth=depth + 1
                         )
+                        start_time += (time.time() - sub_start)
                         parent_conn.send(sub_result)
                     elif msg.get("type") == "return":
                         result = msg

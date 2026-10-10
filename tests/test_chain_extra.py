@@ -180,7 +180,7 @@ def test_genesis_initial_supply_matching_alloc_succeeds(tmpdir):
         "initial_supply": 100,
     })
     bc = Blockchain(genesis_path=path)
-    assert bc.state.get_account("deadbeef" * 5)["balance"] == 100
+    assert bc.state.get_account("deadbeef" * 5)["balances"][""] == 100
 
 
 def test_genesis_missing_target_exits(tmpdir):

@@ -42,7 +42,7 @@ from minichain.state import State
 def _run_worker(code, gas_limit=100_000, context=None):
     parent_conn, child_conn = multiprocessing.Pipe()
     try:
-        globals_dict = {"__builtins__": {"True": True, "False": False, "range": range, "int": int, "Exception": Exception}}
+        globals_dict = {"__builtins__": {"True": True, "False": False, "range": range, "int": int, "dict": dict, "Exception": Exception}}
         context_dict = context if context is not None else {"storage": {}}
         outer_trace = sys.gettrace()
         try:
@@ -81,7 +81,14 @@ def test_worker_transfer_out_valid():
     code = "transfer_out('ab' * 20, 5)"
     msg = _run_worker(code)
     assert msg["status"] == "success"
-    assert msg["transfers"] == [{"to": "ab" * 20, "amount": 5}]
+    assert msg["transfers"] == [{"to": "ab" * 20, "amount": {"": 5}}]
+
+
+def test_worker_transfer_out_dict():
+    code = "transfer_out('ab' * 20, {'': 5, 'alice.TOKEN': 10})"
+    msg = _run_worker(code)
+    assert msg["status"] == "success"
+    assert msg["transfers"] == [{"to": "ab" * 20, "amount": {"": 5, "alice.TOKEN": 10}}]
 
 
 @pytest.mark.parametrize("bad_call", [
@@ -89,6 +96,12 @@ def test_worker_transfer_out_valid():
     "transfer_out('ab' * 20, -5)",         # amount negative
     "transfer_out('zz' * 20, 5)",          # not valid hex
     "transfer_out('ab', 5)",               # wrong length
+    "transfer_out('ab' * 20, {})",         # empty dict
+    "transfer_out('ab' * 20, {'': 0})",    # non-positive dict value
+    "transfer_out('ab' * 20, {'': -1})",   # negative dict value
+    "transfer_out('ab' * 20, {123: 5})",   # non-string dict key
+    "transfer_out('ab' * 20, {'': 'bad'})",# non-int dict value
+    "transfer_out('ab' * 20, {'': True})", # bool dict value
 ])
 def test_worker_transfer_out_rejects_invalid_input(bad_call):
     msg = _run_worker(bad_call)
@@ -146,6 +159,41 @@ def test_worker_call_contract_failure_raises_in_contract_code():
         child_conn.close()
     assert return_msg["status"] == "error"
     assert "receiver reverted" in return_msg["error"]
+
+
+def test_worker_call_contract_sends_dict_amount():
+    parent_conn, child_conn = multiprocessing.Pipe()
+    try:
+        parent_conn.send({"success": True, "result": "pong"})
+
+        code = "storage['reply'] = call_contract('cd' * 20, 'ping', {'': 10, 'token': 20})"
+        globals_dict = {"__builtins__": {}}
+        context_dict = {"storage": {}}
+        outer_trace = sys.gettrace()
+        try:
+            _safe_exec_worker(code, globals_dict, context_dict, child_conn, gas_limit=100_000)
+        finally:
+            sys.settrace(outer_trace)
+
+        call_msg = parent_conn.recv()
+        assert call_msg["type"] == "call"
+        assert call_msg["address"] == "cd" * 20
+        assert call_msg["payload"] == "ping"
+        assert call_msg["amount"] == {"": 10, "token": 20}
+
+        return_msg = parent_conn.recv()
+        assert return_msg["status"] == "success"
+    finally:
+        parent_conn.close()
+        child_conn.close()
+
+
+def test_worker_call_contract_rejects_invalid_amount():
+    code = "call_contract('cd' * 20, 'ping', -1)"
+    msg = _run_worker(code)
+    assert msg["status"] == "error"
+    assert "Invalid" in msg["error"]
+
 
 
 # ------------------------------------------------------------------
@@ -322,3 +370,107 @@ def test_validate_code_ast_rejects_syntax_error(state):
 def test_validate_code_ast_accepts_safe_code(state):
     machine = ContractMachine(state)
     assert machine._validate_code_ast("storage['x'] = 1 + 1\nif storage['x'] > 0:\n    storage['y'] = 2") is True
+
+
+def test_contract_machine_normalizes_integer_amount_to_dict(state):
+    machine = ContractMachine(state)
+    account = state.get_account("norm-contract")
+    account["code"] = "storage['got_value'] = msg['value']"
+    result = machine.execute("norm-contract", "sender", "payload", 42, gas_limit=100_000)
+    assert result["success"] is True
+    assert result["storage"]["got_value"] == {"": 42}
+
+
+def test_execute_internal_call_multi_asset_success():
+    state = State()
+    sender = "sender-addr"
+    receiver = "receiver-contract"
+    target = "target-addr"
+    state.accounts[sender] = {"balances": {"": 100, "alice.TOKEN": 50}, "nonce": 0, "code": None, "storage": {}, "registry": []}
+    state.accounts[receiver] = {"balances": {"": 0, "alice.TOKEN": 0}, "nonce": 0, "code": "storage['ok'] = True", "storage": {}, "registry": []}
+    state.accounts[target] = {"balances": {"": 0, "alice.TOKEN": 0}, "nonce": 0, "code": None, "storage": {}, "registry": []}
+
+    fake_result = {
+        "success": True,
+        "gas_used": 10,
+        "storage": {"ok": True},
+        "transfers": [{"to": target, "amount": {"": 15, "alice.TOKEN": 20}}],
+    }
+    with patch.object(state.contract_machine, "execute", return_value=fake_result):
+        result = state.execute_internal_call(
+            sender=sender,
+            receiver_address=receiver,
+            amount={"": 30, "alice.TOKEN": 40},
+            payload="call",
+            gas_limit=1000,
+            depth=0,
+            is_top_level=False,
+        )
+
+    assert result["success"] is True
+    # Sender was debited 30 native and 40 token
+    assert state.accounts[sender]["balances"][""] == 70
+    assert state.accounts[sender]["balances"]["alice.TOKEN"] == 10
+    # Receiver got 30 native and 40 token, then transferred 15 native and 20 token
+    assert state.accounts[receiver]["balances"][""] == 15
+    assert state.accounts[receiver]["balances"]["alice.TOKEN"] == 20
+    # Target received 15 native and 20 token
+    assert state.accounts[target]["balances"][""] == 15
+    assert state.accounts[target]["balances"]["alice.TOKEN"] == 20
+
+
+def test_execute_internal_call_multi_asset_insufficient_balance():
+    state = State()
+    sender = "sender-addr"
+    receiver = "receiver-contract"
+    state.accounts[sender] = {"balances": {"": 100, "alice.TOKEN": 5}, "nonce": 0, "code": None, "storage": {}, "registry": []}
+    state.accounts[receiver] = {"balances": {"": 0}, "nonce": 0, "code": "storage['x'] = 1", "storage": {}, "registry": []}
+
+    result = state.execute_internal_call(
+        sender=sender,
+        receiver_address=receiver,
+        amount={"": 10, "alice.TOKEN": 20},
+        payload="call",
+        gas_limit=1000,
+        depth=0,
+    )
+
+    assert result["success"] is False
+    assert result["error"] == "Insufficient balance"
+    # Balances must be untouched
+    assert state.accounts[sender]["balances"][""] == 100
+    assert state.accounts[sender]["balances"]["alice.TOKEN"] == 5
+    assert state.accounts[receiver]["balances"][""] == 0
+
+
+def test_execute_internal_call_multi_asset_reverts_on_transfer_failure():
+    state = State()
+    sender = "sender-addr"
+    receiver = "receiver-contract"
+    state.accounts[sender] = {"balances": {"": 100, "alice.TOKEN": 50}, "nonce": 0, "code": None, "storage": {}, "registry": []}
+    state.accounts[receiver] = {"balances": {"": 0, "alice.TOKEN": 0}, "nonce": 0, "code": "storage['x'] = 1", "storage": {}, "registry": []}
+
+    fake_result = {
+        "success": True,
+        "gas_used": 10,
+        "storage": {"x": 1},
+        "transfers": [{"to": "someone", "amount": {"alice.TOKEN": 999}}],
+    }
+    with patch.object(state.contract_machine, "execute", return_value=fake_result):
+        result = state.execute_internal_call(
+            sender=sender,
+            receiver_address=receiver,
+            amount={"": 20, "alice.TOKEN": 30},
+            payload="call",
+            gas_limit=1000,
+            depth=0,
+        )
+
+    assert result["success"] is False
+    assert "Insufficient contract balance for transfers" in result["error"]
+    # Balances must be restored to pre-call state
+    assert state.accounts[sender]["balances"][""] == 100
+    assert state.accounts[sender]["balances"]["alice.TOKEN"] == 50
+    assert state.accounts[receiver]["balances"][""] == 0
+    assert state.accounts[receiver]["balances"]["alice.TOKEN"] == 0
+

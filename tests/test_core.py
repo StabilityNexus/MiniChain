@@ -46,8 +46,8 @@ class TestCore(unittest.TestCase):
         self.assertTrue(result)
         
         # 3. Check Balances
-        self.assertEqual(self.state.get_account(self.alice_pk)['balance'], 60)
-        self.assertEqual(self.state.get_account(self.bob_pk)['balance'], 40)
+        self.assertEqual(self.state.get_account(self.alice_pk)['balances'][''], 60)
+        self.assertEqual(self.state.get_account(self.bob_pk)['balances'][''], 40)
 
     def test_insufficient_funds(self):
         """Test that you cannot spend more than you have."""
@@ -59,8 +59,8 @@ class TestCore(unittest.TestCase):
         result = self.state.apply_transaction(tx)
         self.assertFalse(result)
         
-        self.assertEqual(self.state.get_account(self.alice_pk)['balance'], 10)
-        self.assertEqual(self.state.get_account(self.bob_pk)['balance'], 0)
+        self.assertEqual(self.state.get_account(self.alice_pk)['balances'][''], 10)
+        self.assertEqual(self.state.get_account(self.bob_pk)['balances'].get('', 0), 0)
 
     def test_transaction_fee(self):
         """Test that transaction fees are properly deducted and credited."""
@@ -73,9 +73,9 @@ class TestCore(unittest.TestCase):
         self.assertIsNotNone(receipt)
         
         # Check sender balance (100 - 40 - 5 = 55)
-        self.assertEqual(self.state.get_account(self.alice_pk)['balance'], 55)
+        self.assertEqual(self.state.get_account(self.alice_pk)['balances'][''], 55)
         # Check receiver balance (40)
-        self.assertEqual(self.state.get_account(self.bob_pk)['balance'], 40)
+        self.assertEqual(self.state.get_account(self.bob_pk)['balances'][''], 40)
         
         # Test miner reward with fee
         from minichain.block import Block, calculate_receipt_root
@@ -102,15 +102,15 @@ class TestCore(unittest.TestCase):
         mempool.add_transaction(tx)
         
         # Revert state to before tx since mine_and_process_block will re-apply it
-        self.chain.state.accounts[self.alice_pk]['balance'] = 100
+        self.chain.state.accounts[self.alice_pk]['balances'][''] = 100
         self.chain.state.accounts[self.alice_pk]['nonce'] = 0
-        self.chain.state.accounts[self.bob_pk]['balance'] = 0
+        self.chain.state.accounts[self.bob_pk]['balances'][''] = 0
         
         mined_block = main.mine_and_process_block(self.chain, mempool, self.bob_pk)
         self.assertIsNotNone(mined_block)
         
         # Bob was the miner. Bob gets amount(40) + mining_reward(50) + fee(5) = 95
-        self.assertEqual(self.chain.state.get_account(self.bob_pk)['balance'], 95)
+        self.assertEqual(self.chain.state.get_account(self.bob_pk)['balances'][''], 95)
 
     def test_transaction_wrong_signer(self):
         """Test that a transaction signed with the wrong key is invalid."""

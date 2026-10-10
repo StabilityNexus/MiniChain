@@ -117,12 +117,12 @@ class TestPersistence(unittest.TestCase):
         save(bc, path=self.tmpdir)
         restored = load(path=self.tmpdir)
         self.assertEqual(
-            restored.state.get_account(alice_pk)["balance"],
-            bc.state.get_account(alice_pk)["balance"],
+            restored.state.get_account(alice_pk)["balances"],
+            bc.state.get_account(alice_pk)["balances"],
         )
         self.assertEqual(
-            restored.state.get_account(bob_pk)["balance"],
-            bc.state.get_account(bob_pk)["balance"],
+            restored.state.get_account(bob_pk)["balances"],
+            bc.state.get_account(bob_pk)["balances"],
         )
 
     def test_tampered_hash_rejected(self):

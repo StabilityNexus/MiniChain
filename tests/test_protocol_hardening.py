@@ -69,7 +69,7 @@ class TestMempoolQueue(unittest.TestCase):
 
         selected = mempool.get_transactions_for_block()
         self.assertEqual(len(selected), 1)
-        self.assertEqual(selected[0].amount, 2)
+        self.assertEqual(selected[0].amount, {"": 2})
 
     def test_remove_transactions_keeps_other_pending(self):
         mempool = Mempool()

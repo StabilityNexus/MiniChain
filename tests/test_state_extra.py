@@ -109,8 +109,8 @@ def test_internal_call_insufficient_balance_for_non_top_level_call():
     state = State()
     sender = "caller-contract"
     receiver = "callee-contract"
-    state.accounts[sender] = {"balance": 5, "nonce": 0, "code": "x", "storage": {}}
-    state.accounts[receiver] = {"balance": 0, "nonce": 0, "code": "storage['x'] = 1", "storage": {}}
+    state.accounts[sender] = {"balances": {"": 5}, "nonce": 0, "code": "x", "storage": {}, "registry": []}
+    state.accounts[receiver] = {"balances": {"": 0}, "nonce": 0, "code": "storage['x'] = 1", "storage": {}, "registry": []}
 
     result = state.execute_internal_call(
         sender=sender, receiver_address=receiver, amount=100, payload="go",
@@ -119,8 +119,8 @@ def test_internal_call_insufficient_balance_for_non_top_level_call():
     assert result["success"] is False
     assert result["error"] == "Insufficient balance"
     # The balances must be untouched -- the guard fires before any transfer.
-    assert state.accounts[sender]["balance"] == 5
-    assert state.accounts[receiver]["balance"] == 0
+    assert state.accounts[sender]["balances"][""] == 5
+    assert state.accounts[receiver]["balances"][""] == 0
 
 
 def test_internal_call_rolls_back_when_transfers_exceed_receiver_balance():
@@ -129,8 +129,8 @@ def test_internal_call_rolls_back_when_transfers_exceed_receiver_balance():
     state = State()
     sender = "caller-contract"
     receiver = "callee-contract"
-    state.accounts[sender] = {"balance": 100, "nonce": 0, "code": "x", "storage": {}}
-    state.accounts[receiver] = {"balance": 0, "nonce": 0, "code": "irrelevant", "storage": {}}
+    state.accounts[sender] = {"balances": {"": 100}, "nonce": 0, "code": "x", "storage": {}, "registry": []}
+    state.accounts[receiver] = {"balances": {"": 0}, "nonce": 0, "code": "irrelevant", "storage": {}, "registry": []}
 
     fake_result = {
         "success": True,
@@ -147,8 +147,8 @@ def test_internal_call_rolls_back_when_transfers_exceed_receiver_balance():
     assert result["success"] is False
     assert "Insufficient contract balance for transfers" in result["error"]
     # Provisional amount transfer (sender -> receiver) must be fully undone.
-    assert state.accounts[sender]["balance"] == 100
-    assert state.accounts[receiver]["balance"] == 0
+    assert state.accounts[sender]["balances"][""] == 100
+    assert state.accounts[receiver]["balances"][""] == 0
 
 
 # ------------------------------------------------------------------

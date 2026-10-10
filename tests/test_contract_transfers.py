@@ -32,8 +32,8 @@ transfer_out(target, 25)
         contract_addr = receipt.contract_address
 
         # Sender sent 100 to contract, plus 1000 fee
-        self.assertEqual(self.state.get_account(contract_addr)['balance'], 100)
-        self.assertEqual(self.state.get_account(self.target_pk)['balance'], 0)
+        self.assertEqual(self.state.get_account(contract_addr)['balances'].get('', 0), 100)
+        self.assertEqual(self.state.get_account(self.target_pk)['balances'].get('', 0), 0)
 
         # 2. Call Contract to transfer out 75 coins
         call_tx = self._sign(Transaction(self.sender_pk, contract_addr, amount=0, nonce=1, data={"target": self.target_pk}, gas_limit=50000, fee_per_gas=1))
@@ -42,10 +42,10 @@ transfer_out(target, 25)
         self.assertEqual(receipt2.status, 1)
         
         # Contract balance should be 100 - 75 = 25
-        self.assertEqual(self.state.get_account(contract_addr)['balance'], 25)
+        self.assertEqual(self.state.get_account(contract_addr)['balances'].get('', 0), 25)
         
         # Target should have 75
-        self.assertEqual(self.state.get_account(self.target_pk)['balance'], 75)
+        self.assertEqual(self.state.get_account(self.target_pk)['balances'].get('', 0), 75)
 
     def test_failed_transfer_out_insufficient_balance(self):
         # 1. Deploy Contract
@@ -69,13 +69,13 @@ storage['malicious_state'] = 'corrupted'
         self.assertEqual(receipt2.error_message, "Insufficient contract balance for transfers")
 
         # State should be completely rolled back (target balance 0, contract balance remains 100)
-        self.assertEqual(self.state.get_account(contract_addr)['balance'], 100)
-        self.assertEqual(self.state.get_account(self.target_pk)['balance'], 0)
+        self.assertEqual(self.state.get_account(contract_addr)['balances'].get('', 0), 100)
+        self.assertEqual(self.state.get_account(self.target_pk)['balances'].get('', 0), 0)
         
         # Sender's balance should have decreased by only the fee amount (or gas_used if refunded) as the 50 amount was refunded
         # Starting balance 1000000, minus 100 amount for deploy
         # Call tx net cost is receipt2.gas_used
-        self.assertEqual(self.state.get_account(self.sender_pk)['balance'], 1000000 - 100 - receipt.gas_used - receipt2.gas_used)
+        self.assertEqual(self.state.get_account(self.sender_pk)['balances'].get('', 0), 1000000 - 100 - receipt.gas_used - receipt2.gas_used)
 
         # Storage should NOT be updated
         self.assertEqual(self.state.get_account(contract_addr)['storage'], {})
@@ -92,7 +92,7 @@ transfer_out(target, msg['value'])
         self.assertEqual(receipt.status, 1)
         contract_addr = receipt.contract_address
 
-        self.assertEqual(self.state.get_account(contract_addr)['balance'], 0)
+        self.assertEqual(self.state.get_account(contract_addr)['balances'].get('', 0), 0)
 
         # 2. Call Contract sending 50 coins
         call_tx = self._sign(Transaction(self.sender_pk, contract_addr, amount=50, nonce=1, data={"target": self.target_pk}, gas_limit=50000, fee_per_gas=1))
@@ -101,10 +101,10 @@ transfer_out(target, msg['value'])
         self.assertEqual(receipt2.status, 1)
         
         # Contract balance should be 0 (received 50, sent 50)
-        self.assertEqual(self.state.get_account(contract_addr)['balance'], 0)
+        self.assertEqual(self.state.get_account(contract_addr)['balances'].get('', 0), 0)
         
         # Target should have exactly 50
-        self.assertEqual(self.state.get_account(self.target_pk)['balance'], 50)
+        self.assertEqual(self.state.get_account(self.target_pk)['balances'].get('', 0), 50)
 
 if __name__ == '__main__':
     unittest.main()

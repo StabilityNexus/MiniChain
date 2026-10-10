@@ -154,7 +154,7 @@ def test_wrong_chain_id_rejected(alice, bob, funded_state):
 
     assert not funded_state.apply_transaction(tx), "Transaction for a different chain_id must be rejected."
     # Ensure the rejected transaction did not mutate the ledger
-    assert funded_state.get_account(alice_pk)["balance"] == 100, \
+    assert funded_state.get_account(alice_pk)["balances"][""] == 100, \
         "Alice's balance must remain unchanged after a cross-chain rejection."
     assert funded_state.get_account(alice_pk)["nonce"] == 0, \
         "Alice's nonce must remain unchanged after a cross-chain rejection."
@@ -170,7 +170,7 @@ def test_replay_attack_same_nonce_rejected(alice, bob, funded_state):
     assert funded_state.apply_transaction(tx), "First submission must succeed."
     assert not funded_state.apply_transaction(tx), "Replayed transaction must be rejected."
     # Ensure the rejected replay did not mutate the ledger
-    assert funded_state.get_account(alice_pk)["balance"] == 90, \
+    assert funded_state.get_account(alice_pk)["balances"][""] == 90, \
         "Alice's balance must not change after a rejected replay."
     assert funded_state.get_account(alice_pk)["nonce"] == 1, \
         "Alice's nonce must not advance after a rejected replay."
@@ -186,7 +186,7 @@ def test_out_of_order_nonce_rejected(alice, bob, funded_state):
 
     assert not funded_state.apply_transaction(tx), "A transaction with a skipped nonce must be rejected."
     # Ensure the rejected transaction did not mutate the ledger
-    assert funded_state.get_account(alice_pk)["balance"] == 100, \
+    assert funded_state.get_account(alice_pk)["balances"][""] == 100, \
         "Alice's balance must remain unchanged after a rejected transaction."
     assert funded_state.get_account(alice_pk)["nonce"] == 0, \
         "Alice's nonce must remain unchanged after a rejected transaction."
@@ -207,7 +207,7 @@ def test_sequential_nonces_accepted(alice, bob, funded_state):
 
     assert funded_state.get_account(alice_pk)["nonce"] == 2, \
         "Alice's nonce should advance to 2 after two accepted transactions."
-    assert funded_state.get_account(alice_pk)["balance"] == 80, \
+    assert funded_state.get_account(alice_pk)["balances"][""] == 80, \
         "Alice's balance should be 80 after two 10-coin transfers."
-    assert funded_state.get_account(bob_pk)["balance"] == 20, \
+    assert funded_state.get_account(bob_pk)["balances"][""] == 20, \
         "Bob's balance should be 20 after receiving two transfers."
