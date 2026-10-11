@@ -218,3 +218,72 @@ def test_genesis_hash_matching_config_succeeds(tmpdir):
     path2 = _write_genesis(tmpdir, overrides={"hash": real_hash})
     bc2 = Blockchain(genesis_path=path2)
     assert bc2.chain[0].hash == real_hash
+
+
+def test_genesis_multi_asset_alloc_succeeds(tmpdir):
+    addr = "deadbeef" * 5
+    path = _write_genesis(tmpdir, overrides={
+        "alloc": {
+            addr: {
+                "balances": {
+                    "": 100,
+                    "alice.GOLD": 500,
+                    "bob.SILVER": 250,
+                }
+            }
+        },
+        "initial_supply": 100,
+    })
+    bc = Blockchain(genesis_path=path)
+    acc = bc.state.get_account(addr)
+    assert acc["balances"][""] == 100
+    assert acc["balances"]["alice.GOLD"] == 500
+    assert acc["balances"]["bob.SILVER"] == 250
+
+
+def test_genesis_multi_asset_dict_balance_succeeds(tmpdir):
+    addr = "deadbeef" * 5
+    path = _write_genesis(tmpdir, overrides={
+        "alloc": {
+            addr: {
+                "balance": {
+                    "": 200,
+                    "custom.TOKEN": 300,
+                }
+            }
+        },
+        "initial_supply": 200,
+    })
+    bc = Blockchain(genesis_path=path)
+    acc = bc.state.get_account(addr)
+    assert acc["balances"][""] == 200
+    assert acc["balances"]["custom.TOKEN"] == 300
+
+
+def test_genesis_multi_asset_negative_balance_exits(tmpdir):
+    addr = "deadbeef" * 5
+    path = _write_genesis(tmpdir, overrides={
+        "alloc": {
+            addr: {
+                "balances": {
+                    "": 100,
+                    "alice.GOLD": -5,
+                }
+            }
+        },
+        "initial_supply": 100,
+    })
+    with pytest.raises(SystemExit):
+        Blockchain(genesis_path=path)
+
+
+def test_genesis_multi_asset_non_dict_alloc_entry_exits(tmpdir):
+    addr = "deadbeef" * 5
+    path = _write_genesis(tmpdir, overrides={
+        "alloc": {
+            addr: "not-a-dict"
+        }
+    })
+    with pytest.raises(SystemExit):
+        Blockchain(genesis_path=path)
+

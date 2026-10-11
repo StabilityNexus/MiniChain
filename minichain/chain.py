@@ -74,19 +74,34 @@ class Blockchain:
         
         # Apply genesis allocations
         alloc = config.get("alloc", {})
-        total_alloc = 0
+        total_native_alloc = 0
         for address, data in alloc.items():
-            balance = data.get("balance", 0)
-            if not isinstance(balance, int) or balance < 0:
-                logger.error("Invalid genesis balance for %s: %s. Must be a non-negative integer.", address, balance)
+            if not isinstance(data, dict):
+                logger.error("Invalid genesis alloc data for %s: must be a dict.", address)
                 sys.exit(1)
             account = self.state.get_account(address)
-            account['balances'][''] = balance
-            total_alloc += balance
+            raw_balances = data.get("balances") if "balances" in data else data.get("balance", 0)
+            if isinstance(raw_balances, int) and not isinstance(raw_balances, bool):
+                if raw_balances < 0:
+                    logger.error("Invalid genesis balance for %s: %s. Must be a non-negative integer.", address, raw_balances)
+                    sys.exit(1)
+                account['balances'][''] = account['balances'].get('', 0) + raw_balances
+                total_native_alloc += raw_balances
+            elif isinstance(raw_balances, dict):
+                for asset, amt in raw_balances.items():
+                    if not isinstance(asset, str) or isinstance(amt, bool) or not isinstance(amt, int) or amt < 0:
+                        logger.error("Invalid genesis balance for %s [%s]: %s. Must be non-negative integer.", address, asset, amt)
+                        sys.exit(1)
+                    account['balances'][asset] = account['balances'].get(asset, 0) + amt
+                    if asset == "":
+                        total_native_alloc += amt
+            else:
+                logger.error("Invalid genesis balance for %s: %s. Must be an integer or dict.", address, raw_balances)
+                sys.exit(1)
 
         initial_supply = config.get("initial_supply")
-        if initial_supply is not None and initial_supply != total_alloc:
-            logger.error("Genesis allocation mismatch: initial_supply is %s but alloc sum is %s", initial_supply, total_alloc)
+        if initial_supply is not None and initial_supply != total_native_alloc:
+            logger.error("Genesis allocation mismatch: initial_supply is %s but alloc sum is %s", initial_supply, total_native_alloc)
             sys.exit(1)
 
         self.chain_id = config.get("chain_id", "minichain-default")

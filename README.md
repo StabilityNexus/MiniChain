@@ -109,11 +109,18 @@ This runs the Proof-of-Work algorithm, validates transactions, computes the new 
 Once your node is running, you can perform basic blockchain operations directly in your terminal.
 
 **Making a Transfer**
-Send coins to another public key:
+Send native coins or custom assets to another public key:
 ```text
-minichain> send <receiver_address> <amount> <fee>
+minichain> send <receiver_address> <amount> [gas_limit] [fee_per_gas]
 ```
-*Example: `send 8b3401abedb875aff7279b5ab58cb9a0c... 100 1`*
+*Example (native currency): `send 8b3401abedb875aff7279b5ab58cb9a0c... 100 21000 1`*  
+*Example (multi-asset dictionary): `send 8b3401abedb875aff7279b5ab58cb9a0c... '{"": 100, "alice.GOLD": 50}' 21000 1`*
+
+**Creating & Minting Native Assets**
+```text
+minichain> create-asset <ticker> <amount> <recipient> [gas_limit] [fee_per_gas]
+```
+*Example: `create-asset GOLD 1000 8b3401abedb875aff7279b5ab58cb9a0c...`*
 
 **Checking Balances**
 View the state of all active accounts and contracts on the chain:
@@ -130,10 +137,31 @@ minichain> address # View your own public key
 
 ---
 
+## Native Multi-Asset Architecture
+
+MiniChain treats native currency and custom tokens uniformly:
+- **Account Balances:** Stored as `dict[str, int]` mapping asset identifiers to balances. The native asset is represented by the empty string `""`, while custom tokens are namespaced by the creator's address: `<creator_address>.<ticker>`.
+- **Transaction Flags:** Transactions include bitmask `flags: int`:
+  - `ALLOW_MINT = 1`: Allows authorized creators to mint tokens namespaced to their own address without requiring pre-existing balance.
+  - `ALLOW_BURN = 2`: Allows burning tokens by sending them to `BURN_ADDRESS` (`"0000000000000000000000000000000000000000"`).
+- **Genesis Allocation:** `genesis.json` supports direct multi-asset distribution at genesis:
+  ```json
+  "alloc": {
+    "0000000000000000000000000000000000000001": {
+      "balances": {
+        "": 1000000000,
+        "0000000000000000000000000000000000000001.GOV": 50000000
+      }
+    }
+  }
+  ```
+
+---
+
 ## Smart Contracts
 
 MiniChain supports fully-functional smart contracts written directly in Python! 
-The execution engine uses `sys.settrace` for precise **Gas Metering** (charging 1 gas per executed opcode) and `multiprocessing` for **Sandboxed Execution** to ensure network security.
+The execution engine uses `sys.settrace` for precise **Gas Metering** (charging 1 gas per executed opcode) and `multiprocessing` for **Sandboxed Execution** to ensure network security. Contracts can hold, receive, and transfer multi-asset dictionaries via `msg["value"]`, `transfer_out`, and `call_contract`.
 
 ### Writing a Contract
 Smart contracts in MiniChain have access to a persistent `storage` dictionary and a `msg` dictionary containing transaction context (`sender`, `value`, `data`).
@@ -166,7 +194,7 @@ curl -X POST http://127.0.0.1:8545/ \
   -d '{"jsonrpc": "2.0", "method": "mc_blockNumber", "id": 1}'
 ```
 
-Available endpoints include: `mc_blockNumber`, `mc_getBlockByNumber`, `mc_getBalance`, and `mc_sendTransaction`.
+Available endpoints include: `mc_blockNumber`, `mc_getBlockByNumber`, `mc_getBalance`, `mc_getAssetBalance`, and `mc_sendTransaction`.
 
 ---
 
