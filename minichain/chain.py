@@ -211,9 +211,19 @@ class Blockchain:
                 return status, target, avg_block_time
             receipts.append(receipt)
 
-        total_fees = sum(getattr(r, 'gas_used', 0) * getattr(tx, 'fee_per_gas', 0) for r, tx in zip(receipts, block.transactions))
+        fees_by_asset = {}
+        for r, tx in zip(receipts, block.transactions):
+            fee_asset = getattr(tx, "fee_asset", "") or ""
+            fee_amt = getattr(r, 'gas_used', 0) * getattr(tx, 'fee_per_gas', 0)
+            if fee_amt > 0:
+                fees_by_asset[fee_asset] = fees_by_asset.get(fee_asset, 0) + fee_amt
+
         if block.miner:
-            state.credit_mining_reward(block.miner, reward=state.DEFAULT_MINING_REWARD + total_fees)
+            state.credit_mining_reward(block.miner, reward=state.DEFAULT_MINING_REWARD + fees_by_asset.get("", 0))
+            miner_acc = state.get_account(block.miner)
+            for asset, amt in fees_by_asset.items():
+                if asset != "":
+                    miner_acc['balances'][asset] = miner_acc['balances'].get(asset, 0) + amt
 
         computed_receipt_root = calculate_receipt_root(receipts)
         if block.receipt_root != computed_receipt_root:

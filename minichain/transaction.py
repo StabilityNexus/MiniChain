@@ -23,6 +23,7 @@ class Transaction:
         "chain_id",
         "signature",
         "flags",
+        "fee_asset",
     })
 
     def __setattr__(self, name, value) -> None:
@@ -53,6 +54,7 @@ class Transaction:
         signature=None,
         timestamp=None,
         flags=0,
+        fee_asset="",
     ):
         self.sender = sender
         self.receiver = receiver
@@ -70,6 +72,7 @@ class Transaction:
         self.timestamp = self._normalize_ts(timestamp) if timestamp is not None else round(time.time() * 1000)
         self.signature = signature
         self.flags = int(flags) if isinstance(flags, int) and not isinstance(flags, bool) else flags
+        self.fee_asset = str(fee_asset) if fee_asset is not None else ""
         self._cached_tx_id = None
         self._sealed = False
 
@@ -86,6 +89,7 @@ class Transaction:
             "timestamp": self.timestamp,
             "signature": self.signature,
             "flags": self.flags,
+            "fee_asset": self.fee_asset,
         }
 
     def to_signing_dict(self):
@@ -100,6 +104,7 @@ class Transaction:
             "chain_id": self.chain_id,
             "timestamp": self.timestamp,
             "flags": self.flags,
+            "fee_asset": self.fee_asset,
         }
 
     @classmethod
@@ -117,6 +122,7 @@ class Transaction:
             signature=payload.get("signature"),
             timestamp=payload.get("timestamp"),
             flags=flags,
+            fee_asset=payload.get("fee_asset", ""),
         )
 
     @property

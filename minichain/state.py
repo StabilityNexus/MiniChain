@@ -132,17 +132,31 @@ class State:
 
         sender_acc = self.get_account(tx.sender)
         gas_cost = getattr(tx, 'gas_limit', 0) * getattr(tx, 'fee_per_gas', 0)
+        fee_asset = getattr(tx, 'fee_asset', "") or ""
         native_amt = tx.amount.get('', 0) if isinstance(tx.amount, dict) else (tx.amount if isinstance(tx.amount, int) and not isinstance(tx.amount, bool) else 0)
-
-        if sender_acc['balances'].get('', 0) < native_amt + gas_cost:
-            logger.warning("Invalid tx %s: insufficient balance", tx.tx_id)
-            return ValidationStatus.FAILED
 
         sender_prefix = f"{tx.sender}."
         can_mint = bool(flags & ALLOW_MINT)
+
+        if fee_asset == "":
+            if sender_acc['balances'].get('', 0) < native_amt + gas_cost:
+                logger.warning("Invalid tx %s: insufficient native balance", tx.tx_id)
+                return ValidationStatus.FAILED
+        else:
+            if sender_acc['balances'].get('', 0) < native_amt:
+                logger.warning("Invalid tx %s: insufficient native balance", tx.tx_id)
+                return ValidationStatus.FAILED
+            transfer_fee_asset = tx.amount.get(fee_asset, 0) if isinstance(tx.amount, dict) else 0
+            needed_fee_asset = gas_cost
+            if not (can_mint and fee_asset.startswith(sender_prefix)):
+                needed_fee_asset += transfer_fee_asset
+            if sender_acc['balances'].get(fee_asset, 0) < needed_fee_asset:
+                logger.warning("Invalid tx %s: insufficient fee_asset balance for %s", tx.tx_id, fee_asset)
+                return ValidationStatus.FAILED
+
         if isinstance(tx.amount, dict):
             for asset, amt in tx.amount.items():
-                if asset == "":
+                if asset == "" or asset == fee_asset:
                     continue
                 if amt > 0:
                     if can_mint and asset.startswith(sender_prefix):
@@ -201,6 +215,10 @@ class State:
         if isinstance(fee_per_gas, bool) or not isinstance(fee_per_gas, int) or fee_per_gas < 0:
             return False
 
+        fee_asset = getattr(tx, "fee_asset", "")
+        if not isinstance(fee_asset, str):
+            return False
+
         return True
 
     def validate_and_apply_with_status(self, tx):
@@ -238,15 +256,16 @@ class State:
         kind = self.classify_tx(tx)
         sender = self.accounts[tx.sender]
         gas_cost = getattr(tx, 'gas_limit', 0) * getattr(tx, 'fee_per_gas', 0)
+        fee_asset = getattr(tx, 'fee_asset', "") or ""
 
-        sender['balances'][''] = sender['balances'].get('', 0) - gas_cost
+        sender['balances'][fee_asset] = sender['balances'].get(fee_asset, 0) - gas_cost
         sender['nonce'] += 1
 
         def rollback_and_refund(error_message, gas_used):
             journal.rollback()
             self.accounts = original_accounts
             refund_acc = self.accounts[tx.sender]
-            refund_acc['balances'][''] = refund_acc['balances'].get('', 0) - (gas_used * getattr(tx, 'fee_per_gas', 0))
+            refund_acc['balances'][fee_asset] = refund_acc['balances'].get(fee_asset, 0) - (gas_used * getattr(tx, 'fee_per_gas', 0))
             refund_acc['nonce'] += 1
             return Receipt(tx.tx_id, status=0, error_message=error_message, gas_used=gas_used)
 
@@ -278,7 +297,7 @@ class State:
             self.create_contract(contract_address, tx.data, initial_balance=tx.amount)
             gas_refund = gas_used - code_gas
             if gas_refund > 0:
-                self.accounts[tx.sender]['balances'][''] += (gas_refund * getattr(tx, 'fee_per_gas', 0))
+                self.accounts[tx.sender]['balances'][fee_asset] = self.accounts[tx.sender]['balances'].get(fee_asset, 0) + (gas_refund * getattr(tx, 'fee_per_gas', 0))
 
             journal.commit()
             self.accounts = original_accounts
@@ -306,7 +325,7 @@ class State:
 
             gas_refund = gas_limit - gas_used
             if gas_refund > 0:
-                self.accounts[tx.sender]['balances'][''] += (gas_refund * getattr(tx, 'fee_per_gas', 0))
+                self.accounts[tx.sender]['balances'][fee_asset] = self.accounts[tx.sender]['balances'].get(fee_asset, 0) + (gas_refund * getattr(tx, 'fee_per_gas', 0))
 
             journal.commit()
             self.accounts = original_accounts
