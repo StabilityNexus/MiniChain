@@ -51,7 +51,7 @@
 ---
 
 <div align="center">
-<h1>MiniChain</h1>
+  <img alt="MiniChain" src="public/minichain-banner.png" width="600" />
 </div>
 
 MiniChain is a minimal fully functional blockchain implemented in Python, with 3 goals:
