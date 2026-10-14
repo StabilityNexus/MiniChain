@@ -205,3 +205,32 @@ def test_remove_transactions(alice, bob, carol):
     assert len(mempool) == 1
     remaining = mempool.get_transactions_for_block()
     assert remaining[0].tx_id == tx1.tx_id
+
+
+# ------------------------------------------------------------------
+# 7. Miner-configurable fee assets allowlist
+# ------------------------------------------------------------------
+
+def test_fee_asset_accepted_by_allowlist(alice, bob):
+    alice_sk, alice_pk = alice
+    _, bob_pk = bob
+    mempool = Mempool(accepted_fee_assets=["", "alice.TOKEN"])
+
+    tx_native = Transaction(alice_pk, bob_pk, amount=1, nonce=0, fee_asset="")
+    tx_native.sign(alice_sk)
+    assert mempool.add_transaction(tx_native) is True
+
+    tx_token = Transaction(alice_pk, bob_pk, amount=1, nonce=1, fee_asset="alice.TOKEN")
+    tx_token.sign(alice_sk)
+    assert mempool.add_transaction(tx_token) is True
+
+
+def test_fee_asset_rejected_when_not_in_allowlist(alice, bob):
+    alice_sk, alice_pk = alice
+    _, bob_pk = bob
+    mempool = Mempool(accepted_fee_assets=[""])
+
+    tx = Transaction(alice_pk, bob_pk, amount=1, nonce=0, fee_asset="unaccepted.TOKEN")
+    tx.sign(alice_sk)
+    assert mempool.add_transaction(tx) is False
+    assert len(mempool) == 0

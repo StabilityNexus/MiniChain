@@ -825,3 +825,100 @@ def test_contract_call_failure_rollback_prevents_negative_balance(alice, funded_
     assert funded_state.get_account(alice_pk)["balances"].get(token_asset, 0) == 0
 
 
+# ------------------------------------------------------------------
+# Miner-Configurable Fee Assets
+# ------------------------------------------------------------------
+
+def test_fee_paid_in_custom_asset(alice, bob, funded_state):
+    alice_sk, alice_pk = alice
+    _, bob_pk = bob
+    token = f"{alice_pk}.FEECOIN"
+
+    # Give Alice 100 FEECOIN
+    funded_state.get_account(alice_pk)["balances"][token] = 100
+
+    # Alice sends 5 native coins, paying gas fees in FEECOIN
+    tx = Transaction(
+        alice_pk,
+        bob_pk,
+        amount=5,
+        nonce=0,
+        gas_limit=10,
+        fee_per_gas=2,
+        fee_asset=token,
+    )
+    tx.sign(alice_sk)
+
+    receipt = funded_state.apply_transaction(tx)
+    assert receipt.status == 1
+
+    # Native: Alice was at 100, spent 5 -> 95
+    assert funded_state.get_account(alice_pk)["balances"][""] == 95
+    # Token: Alice was at 100, spent 10 * 2 = 20 fee -> 80
+    assert funded_state.get_account(alice_pk)["balances"][token] == 80
+    # Bob received 5 native
+    assert funded_state.get_account(bob_pk)["balances"][""] == 5
+
+
+def test_fee_paid_in_custom_asset_insufficient_fee_balance(alice, bob, funded_state):
+    alice_sk, alice_pk = alice
+    _, bob_pk = bob
+    token = f"{alice_pk}.FEECOIN"
+
+    # Alice only has 10 FEECOIN
+    funded_state.get_account(alice_pk)["balances"][token] = 10
+
+    # Gas cost requires 10 * 2 = 20 FEECOIN
+    tx = Transaction(
+        alice_pk,
+        bob_pk,
+        amount=5,
+        nonce=0,
+        gas_limit=10,
+        fee_per_gas=2,
+        fee_asset=token,
+    )
+    tx.sign(alice_sk)
+
+    status = funded_state.verify_transaction_logic(tx)
+    assert status == ValidationStatus.FAILED
+
+
+def test_block_miner_receives_custom_asset_fees(alice, bob):
+    alice_sk, alice_pk = alice
+    bob_sk, bob_pk = bob
+    from minichain.chain import Blockchain
+    from minichain.mempool import Mempool
+    from main import mine_and_process_block
+
+    bc = Blockchain()
+    miner_pk = "11" * 32
+    token = f"{alice_pk}.PAYFEE"
+    mempool = Mempool(accepted_fee_assets=["", token])
+
+    # Fund Alice with native and token
+    bc.state.credit_mining_reward(alice_pk, 100)
+    bc.state.get_account(alice_pk)["balances"][token] = 50
+
+    tx = Transaction(
+        alice_pk,
+        bob_pk,
+        amount=1,
+        nonce=0,
+        gas_limit=10,
+        fee_per_gas=3,
+        fee_asset=token,
+    )
+    tx.sign(alice_sk)
+    assert mempool.add_transaction(tx) is True
+
+    mined_block = mine_and_process_block(bc, mempool, miner_pk)
+    assert mined_block is not None
+
+    # Miner gets block reward (50 native) and custom fees (30 PAYFEE)
+    miner_acc = bc.state.get_account(miner_pk)
+    assert miner_acc["balances"][""] == bc.state.DEFAULT_MINING_REWARD
+    assert miner_acc["balances"][token] == 30
+
+
+

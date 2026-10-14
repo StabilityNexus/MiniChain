@@ -167,8 +167,18 @@ def mine_and_process_block(chain, mempool, miner_pk):
     if stale_txs:
         mempool.remove_transactions(stale_txs)
 
-    total_fees = sum(getattr(r, 'gas_used', 0) * getattr(tx, 'fee_per_gas', 0) for r, tx in zip(receipts, mineable_txs))
-    temp_state.credit_mining_reward(miner_pk, reward=temp_state.DEFAULT_MINING_REWARD + total_fees)
+    fees_by_asset = {}
+    for r, tx in zip(receipts, mineable_txs):
+        fee_asset = getattr(tx, "fee_asset", "") or ""
+        fee_amt = getattr(r, 'gas_used', 0) * getattr(tx, 'fee_per_gas', 0)
+        if fee_amt > 0:
+            fees_by_asset[fee_asset] = fees_by_asset.get(fee_asset, 0) + fee_amt
+
+    temp_state.credit_mining_reward(miner_pk, reward=temp_state.DEFAULT_MINING_REWARD + fees_by_asset.get("", 0))
+    miner_acc = temp_state.get_account(miner_pk)
+    for asset, amt in fees_by_asset.items():
+        if asset != "":
+            miner_acc['balances'][asset] = miner_acc['balances'].get(asset, 0) + amt
 
     # Timestamps are milliseconds and a block must be strictly newer than its parent.
     # Blocks can be mined inside the same millisecond, so clamp forward rather than
@@ -465,7 +475,7 @@ async def cli_loop(sk, pk, chain, mempool, network, datadir: str | None = None):
         # ── send ──
         elif cmd == "send":
             if len(parts) < 3:
-                print("  Usage: send <receiver_address> <amount> [gas_limit] [fee_per_gas]")
+                print("  Usage: send <receiver_address> <amount> [gas_limit] [fee_per_gas] [fee_asset]")
                 continue
             receiver = parts[1]
             if not is_valid_receiver(receiver):
@@ -475,13 +485,19 @@ async def cli_loop(sk, pk, chain, mempool, network, datadir: str | None = None):
             if parsed is None:
                 continue
             amount, gas_limit, fee_per_gas = parsed
+            fee_asset = parts[5] if len(parts) > 5 else ""
 
-            if amount <= 0:
-                print("  Amount must be greater than 0.")
-                continue
+            if isinstance(amount, int):
+                if amount <= 0:
+                    print("  Amount must be greater than 0.")
+                    continue
+            elif isinstance(amount, dict):
+                if not any(v > 0 for v in amount.values()):
+                    print("  At least one asset amount must be greater than 0.")
+                    continue
 
             nonce = chain.state.get_account(pk).get("nonce", 0)
-            tx = Transaction(sender=pk, receiver=receiver, amount=amount, nonce=nonce, gas_limit=gas_limit, fee_per_gas=fee_per_gas, chain_id=chain.chain_id)
+            tx = Transaction(sender=pk, receiver=receiver, amount=amount, nonce=nonce, gas_limit=gas_limit, fee_per_gas=fee_per_gas, fee_asset=fee_asset, chain_id=chain.chain_id)
             tx.sign(sk)
 
             await submit_and_broadcast(

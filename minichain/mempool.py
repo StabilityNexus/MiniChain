@@ -1,20 +1,26 @@
 import logging
 import threading
 
-from .node_config import MEMPOOL_MAX_SIZE, MEMPOOL_TX_PER_BLOCK
+from .node_config import MEMPOOL_MAX_SIZE, MEMPOOL_TX_PER_BLOCK, ACCEPTED_FEE_ASSETS
 
 logger = logging.getLogger(__name__)
 
 class Mempool:
-    def __init__(self, max_size=None, transactions_per_block=None):
+    def __init__(self, max_size=None, transactions_per_block=None, accepted_fee_assets=None):
         self._list = []  # Sorted list of transactions (highest fee first, then oldest)
         self.max_size = max_size if max_size is not None else MEMPOOL_MAX_SIZE
         self.transactions_per_block = transactions_per_block if transactions_per_block is not None else MEMPOOL_TX_PER_BLOCK
+        self.accepted_fee_assets = set(accepted_fee_assets) if accepted_fee_assets is not None else set(ACCEPTED_FEE_ASSETS)
         self._lock = threading.Lock()
 
     def add_transaction(self, tx):
         if not tx.verify():
             logger.warning("Mempool: Invalid signature rejected")
+            return False
+
+        fee_asset = getattr(tx, "fee_asset", "") or ""
+        if self.accepted_fee_assets is not None and fee_asset not in self.accepted_fee_assets:
+            logger.warning("Mempool: Fee asset '%s' not accepted by miner allowlist", fee_asset)
             return False
 
         with self._lock:

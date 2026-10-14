@@ -29,3 +29,8 @@ MINING_INITIAL_NONCE_MAX = 2**32 - 1
 
 # State Config
 MAX_STATE_SNAPSHOTS = 10     # Number of recent block states to keep in memory for reorg optimization
+
+# Accepted Fee Assets (Miner Policy)
+# Node operators/miners can configure which assets they accept for transaction fee payment.
+# Default is [""] (native currency only).
+ACCEPTED_FEE_ASSETS = [""]
