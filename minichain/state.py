@@ -6,8 +6,8 @@ from nacl.encoding import HexEncoder
 from .contract import ContractMachine
 from .mpt import Trie
 from .receipt import Receipt
-from .network_config import DEFAULT_MINING_REWARD
-from .transaction import ALLOW_MINT, ALLOW_BURN, BURN_ADDRESS
+from .network_config import DEFAULT_MINING_REWARD, MAX_TX_COMPONENTS
+from .transaction import ALLOW_MINT, ALLOW_BURN, BURN_ADDRESS, _normalize_amount
 
 logger = logging.getLogger(__name__)
 
@@ -23,7 +23,6 @@ class StateJournal:
     def __getitem__(self, key):
         if key not in self.cache:
             if key in self.backing:
-                import copy
                 self.cache[key] = copy.deepcopy(self.backing[key])
             else:
                 raise KeyError(key)
@@ -106,68 +105,70 @@ class State:
         return self.accounts[address]
 
     @staticmethod
-    def classify_tx(tx):
-        """Infers the transaction kind from its fields (no explicit type field)."""
-        if tx.receiver is None or tx.receiver == "":
-            return "deploy"
-        if tx.data:
-            return "call"
-        return "transfer"
+    def _mints(asset, signer, flags):
+        """True if `signer` may create `asset` out of thin air under `flags`."""
+        return bool(flags & ALLOW_MINT) and asset.startswith(f"{signer}.")
+
+    @staticmethod
+    def _add(balances, asset, delta):
+        balances[asset] = balances.get(asset, 0) + delta
+
+    def _peek(self, address):
+        """Read an account without creating it."""
+        return self.accounts.get(address) or {'balances': {}, 'nonce': 0}
 
     def verify_transaction_logic(self, tx):
         from .validators import ValidationStatus
         if not tx.verify():
-            logger.error("Error: Invalid signature for tx from %s...", tx.sender[:8])
+            logger.error("Error: Invalid signature for tx from %s...", (tx.sender or "")[:8])
             return ValidationStatus.INVALID
 
-        if getattr(tx, "chain_id", None) != self.chain_id:
-            logger.error("Error: Invalid chain_id in tx from %s...", tx.sender[:8])
+        if tx.chain_id != self.chain_id:
+            logger.error("Error: Invalid chain_id in tx from %s...", (tx.sender or "")[:8])
             return ValidationStatus.INVALID
 
-        flags = getattr(tx, "flags", 0)
-        if tx.receiver == BURN_ADDRESS:
-            if not (flags & ALLOW_BURN):
-                logger.warning("Invalid tx %s: transfer to burn address requires ALLOW_BURN flag", tx.tx_id)
-                return ValidationStatus.FAILED
+        flags = tx.flags
+        signers = tx.required_signers
 
-        sender_acc = self.get_account(tx.sender)
-        gas_cost = getattr(tx, 'gas_limit', 0) * getattr(tx, 'fee_per_gas', 0)
-        fee_asset = getattr(tx, 'fee_asset', "") or ""
-        native_amt = tx.amount.get('', 0) if isinstance(tx.amount, dict) else (tx.amount if isinstance(tx.amount, int) and not isinstance(tx.amount, bool) else 0)
-
-        sender_prefix = f"{tx.sender}."
-        can_mint = bool(flags & ALLOW_MINT)
-
-        if fee_asset == "":
-            if sender_acc['balances'].get('', 0) < native_amt + gas_cost:
-                logger.warning("Invalid tx %s: insufficient native balance", tx.tx_id)
-                return ValidationStatus.FAILED
-        else:
-            if sender_acc['balances'].get('', 0) < native_amt:
-                logger.warning("Invalid tx %s: insufficient native balance", tx.tx_id)
-                return ValidationStatus.FAILED
-            transfer_fee_asset = tx.amount.get(fee_asset, 0) if isinstance(tx.amount, dict) else 0
-            needed_fee_asset = gas_cost
-            if not (can_mint and fee_asset.startswith(sender_prefix)):
-                needed_fee_asset += transfer_fee_asset
-            if sender_acc['balances'].get(fee_asset, 0) < needed_fee_asset:
-                logger.warning("Invalid tx %s: insufficient fee_asset balance for %s", tx.tx_id, fee_asset)
-                return ValidationStatus.FAILED
-
-        if isinstance(tx.amount, dict):
-            for asset, amt in tx.amount.items():
-                if asset == "" or asset == fee_asset:
-                    continue
-                if amt > 0:
-                    if can_mint and asset.startswith(sender_prefix):
-                        continue
-                    if sender_acc['balances'].get(asset, 0) < amt:
-                        logger.warning("Invalid tx %s: insufficient balance for asset %s", tx.tx_id, asset)
-                        return ValidationStatus.FAILED
-
-        if sender_acc['nonce'] != tx.nonce:
-            logger.error("Error: Invalid nonce. Expected %s, got %s", sender_acc['nonce'], tx.nonce)
+        if not flags & ALLOW_BURN and any(d.receiver == BURN_ADDRESS for d in tx.deposits):
+            logger.warning("Invalid tx %s: deposit to burn address requires ALLOW_BURN flag", tx.tx_id)
             return ValidationStatus.FAILED
+
+        for signer in signers:
+            expected = self._peek(signer)['nonce']
+            if tx.nonces.get(signer) != expected:
+                logger.error("Error: Invalid nonce for %s. Expected %s, got %s", signer[:8], expected, tx.nonces.get(signer))
+                return ValidationStatus.FAILED
+
+        # Per-signer solvency: withdrawals (minted assets exempt) plus gas for the fee payer.
+        needed = {tx.fee_payer: {tx.fee_asset: tx.gas_limit * tx.fee_per_gas}}
+        total_withdrawn = {}
+        for w in tx.withdrawals:
+            for asset, amt in w.amount.items():
+                total_withdrawn[asset] = total_withdrawn.get(asset, 0) + amt
+                if not self._mints(asset, w.sender, flags):
+                    self._add(needed.setdefault(w.sender, {}), asset, amt)
+
+        for signer, assets in needed.items():
+            balances = self._peek(signer)['balances']
+            for asset, amt in assets.items():
+                if balances.get(asset, 0) < amt:
+                    logger.warning("Invalid tx %s: insufficient balance for %s on %s", tx.tx_id, asset, signer[:8])
+                    return ValidationStatus.FAILED
+
+        # Balance pool: withdrawals must equal deposits plus call amounts; burns are explicit deposits.
+        total_distributed = {}
+        for item in (*tx.deposits, *tx.calls):
+            for asset, amt in item.amount.items():
+                total_distributed[asset] = total_distributed.get(asset, 0) + amt
+
+        for asset in total_withdrawn.keys() | total_distributed.keys():
+            if any(self._mints(asset, s, flags) for s in signers):
+                continue
+            withdrawn, distributed = total_withdrawn.get(asset, 0), total_distributed.get(asset, 0)
+            if withdrawn != distributed:
+                logger.warning("Invalid tx %s: unbalanced pool for %s (withdrawn %s != distributed %s)", tx.tx_id, asset, withdrawn, distributed)
+                return ValidationStatus.FAILED
 
         return ValidationStatus.VALID
 
@@ -195,31 +196,30 @@ class State:
         self.accounts = copy.deepcopy(snapshot_data)
 
     @staticmethod
+    def _valid_amount(amount):
+        return isinstance(amount, dict) and all(
+            isinstance(asset, str) and isinstance(amt, int) and not isinstance(amt, bool) and amt >= 0
+            for asset, amt in amount.items()
+        )
+
+    @staticmethod
     def _amounts_well_formed(tx):
-        """Semantic guard: amount dict, flags, and gas parameters must be well-formed."""
-        if not isinstance(tx.amount, dict):
+        """Semantic guard: components, amounts, flags, and gas parameters must be well-formed."""
+        if not all(isinstance(x, list) for x in (tx.withdrawals, tx.deposits, tx.calls)):
             return False
-        for asset, amt in tx.amount.items():
-            if not isinstance(asset, str) or isinstance(amt, bool) or not isinstance(amt, int) or amt < 0:
+        if len(tx.withdrawals) + len(tx.deposits) + len(tx.calls) > MAX_TX_COMPONENTS:
+            return False
+        parts = [(w.sender, w.amount) for w in tx.withdrawals]
+        parts += [(d.receiver, d.amount) for d in tx.deposits]
+        parts += [(c.caller, c.amount) for c in tx.calls]
+        if not all(party and State._valid_amount(amount) for party, amount in parts):
+            return False
+
+        for value in (tx.flags, tx.gas_limit, tx.fee_per_gas):
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
                 return False
 
-        flags = getattr(tx, "flags", 0)
-        if isinstance(flags, bool) or not isinstance(flags, int) or flags < 0:
-            return False
-
-        gas_limit = getattr(tx, "gas_limit", 0)
-        if isinstance(gas_limit, bool) or not isinstance(gas_limit, int) or gas_limit < 0:
-            return False
-
-        fee_per_gas = getattr(tx, "fee_per_gas", 0)
-        if isinstance(fee_per_gas, bool) or not isinstance(fee_per_gas, int) or fee_per_gas < 0:
-            return False
-
-        fee_asset = getattr(tx, "fee_asset", "")
-        if not isinstance(fee_asset, str):
-            return False
-
-        return True
+        return isinstance(tx.fee_asset, str)
 
     def validate_and_apply_with_status(self, tx):
         """
@@ -253,131 +253,119 @@ class State:
         journal = StateJournal(original_accounts)
         self.accounts = journal
 
-        kind = self.classify_tx(tx)
-        sender = self.accounts[tx.sender]
-        gas_cost = getattr(tx, 'gas_limit', 0) * getattr(tx, 'fee_per_gas', 0)
-        fee_asset = getattr(tx, 'fee_asset', "") or ""
+        payer = tx.fee_payer
+        fee_asset = tx.fee_asset
+        gas_limit = tx.gas_limit
+        flags = tx.flags
+        signers = tx.required_signers
 
-        sender['balances'][fee_asset] = sender['balances'].get(fee_asset, 0) - gas_cost
-        sender['nonce'] += 1
+        self._add(self.get_account(payer)['balances'], fee_asset, -gas_limit * tx.fee_per_gas)
+        for signer in signers:
+            self.get_account(signer)['nonce'] += 1
 
         def rollback_and_refund(error_message, gas_used):
             journal.rollback()
             self.accounts = original_accounts
-            refund_acc = self.accounts[tx.sender]
-            refund_acc['balances'][fee_asset] = refund_acc['balances'].get(fee_asset, 0) - (gas_used * getattr(tx, 'fee_per_gas', 0))
-            refund_acc['nonce'] += 1
+            self._add(self.get_account(payer)['balances'], fee_asset, -gas_used * tx.fee_per_gas)
+            for signer in signers:
+                self.get_account(signer)['nonce'] += 1
             return Receipt(tx.tx_id, status=0, error_message=error_message, gas_used=gas_used)
 
-        flags = getattr(tx, 'flags', 0)
-        can_mint = bool(flags & ALLOW_MINT)
-        sender_prefix = f"{tx.sender}."
+        for w in tx.withdrawals:
+            balances = self.get_account(w.sender)['balances']
+            for asset, amt in w.amount.items():
+                if amt > 0 and not self._mints(asset, w.sender, flags):
+                    self._add(balances, asset, -amt)
 
-        # LOGIC BRANCH 1: Contract Deployment
-        if kind == "deploy":
-            for asset, amt in tx.amount.items():
+        for d in tx.deposits:
+            balances = self.get_account(d.receiver)['balances']
+            for asset, amt in d.amount.items():
                 if amt > 0:
-                    if not (can_mint and asset.startswith(sender_prefix)):
-                        sender['balances'][asset] = sender['balances'].get(asset, 0) - amt
+                    self._add(balances, asset, amt)
 
-            contract_address = self.derive_contract_address(tx.sender, tx.nonce)
-            gas_used = getattr(tx, 'gas_limit', 0)
+        total_gas_used = 0
+        deployed_contracts = []
+        for index, c in enumerate(tx.calls):
+            remaining_gas = gas_limit - total_gas_used
+            if not c.address:
+                from .network_config import GAS_PER_BYTE
+                nonce = tx.nonces[c.caller]
+                contract_address = self.derive_contract_address(c.caller, nonce if index == 0 else f"{nonce}:{index}")
+                code_gas = (len(c.data.encode('utf-8')) if c.data else 0) * GAS_PER_BYTE
 
-            from .network_config import GAS_PER_BYTE
-            code_bytes = len(tx.data.encode('utf-8')) if tx.data else 0
-            code_gas = code_bytes * GAS_PER_BYTE
+                if code_gas > remaining_gas:
+                    return rollback_and_refund("Out of gas (Code size exceeded limit)", gas_limit)
 
-            if code_gas > gas_used:
-                return rollback_and_refund("Out of gas (Code size exceeded limit)", gas_used)
+                existing = self.accounts.get(contract_address)
+                if existing and existing.get("code"):
+                    return rollback_and_refund("Contract collision", gas_limit)
 
-            existing = self.accounts.get(contract_address)
-            if existing and existing.get("code"):
-                return rollback_and_refund("Contract collision", gas_used)
+                self.create_contract(contract_address, c.data, initial_balance=c.amount)
+                total_gas_used += code_gas
+                deployed_contracts.append(contract_address)
+            else:
+                balances = self.get_account(c.address)['balances']
+                for asset, amt in c.amount.items():
+                    if amt > 0:
+                        self._add(balances, asset, amt)
 
-            self.create_contract(contract_address, tx.data, initial_balance=tx.amount)
-            gas_refund = gas_used - code_gas
-            if gas_refund > 0:
-                self.accounts[tx.sender]['balances'][fee_asset] = self.accounts[tx.sender]['balances'].get(fee_asset, 0) + (gas_refund * getattr(tx, 'fee_per_gas', 0))
+                result = self.execute_internal_call(
+                    sender=c.caller,
+                    receiver_address=c.address,
+                    amount=c.amount,
+                    payload=c.data,
+                    gas_limit=remaining_gas,
+                    depth=0,
+                    is_top_level=True,
+                    flags=flags,
+                    skip_transfer=True
+                )
+                total_gas_used += result.get("gas_used", remaining_gas)
 
-            journal.commit()
-            self.accounts = original_accounts
-            return Receipt(tx.tx_id, status=1, contract_address=contract_address, gas_used=code_gas)
+                if not result.get("success"):
+                    return rollback_and_refund(result.get("error", "Execution failed"), total_gas_used)
 
-        # LOGIC BRANCH 2: Contract Call
-        if kind == "call":
-            gas_limit = getattr(tx, 'gas_limit', 0)
-            
-            result = self.execute_internal_call(
-                sender=tx.sender,
-                receiver_address=tx.receiver,
-                amount=tx.amount,
-                payload=tx.data,
-                gas_limit=gas_limit,
-                depth=0,
-                is_top_level=True,
-                flags=flags
-            )
-
-            gas_used = result.get("gas_used", gas_limit)
-
-            if not result.get("success"):
-                return rollback_and_refund(result.get("error", "Execution failed"), gas_used)
-
-            gas_refund = gas_limit - gas_used
-            if gas_refund > 0:
-                self.accounts[tx.sender]['balances'][fee_asset] = self.accounts[tx.sender]['balances'].get(fee_asset, 0) + (gas_refund * getattr(tx, 'fee_per_gas', 0))
-
-            journal.commit()
-            self.accounts = original_accounts
-            return Receipt(tx.tx_id, status=1, gas_used=gas_used)
-
-        # LOGIC BRANCH 3: Regular Transfer
-        receiver = self.get_account(tx.receiver)
-        for asset, amt in tx.amount.items():
-            if amt > 0:
-                if not (can_mint and asset.startswith(sender_prefix)):
-                    sender['balances'][asset] = sender['balances'].get(asset, 0) - amt
-                receiver['balances'][asset] = receiver['balances'].get(asset, 0) + amt
-        gas_used = getattr(tx, 'gas_limit', 0)
+        if not tx.calls:
+            total_gas_used = gas_limit
+        if gas_limit > total_gas_used:
+            self._add(self.get_account(payer)['balances'], fee_asset, (gas_limit - total_gas_used) * tx.fee_per_gas)
 
         journal.commit()
         self.accounts = original_accounts
-        return Receipt(tx.tx_id, status=1, gas_used=gas_used)
+        return Receipt(tx.tx_id, status=1, contract_address=deployed_contracts[0] if deployed_contracts else "", gas_used=total_gas_used)
 
-    def execute_internal_call(self, sender, receiver_address, amount, payload, gas_limit, depth, is_top_level=False, flags=0):
+    def execute_internal_call(self, sender, receiver_address, amount, payload, gas_limit, depth, is_top_level=False, flags=0, skip_transfer=False):
         receiver = self.accounts.get(receiver_address)
         if not receiver or not receiver.get("code"):
             return {"success": False, "error": "Contract not found", "gas_used": gas_limit}
 
         sender_acc = self.get_account(sender)
 
-        if isinstance(amount, int) and not isinstance(amount, bool):
-            amount = {"": amount}
-        elif isinstance(amount, dict):
-            amount = dict(amount)
-        else:
+        amount = _normalize_amount(amount)
+        if not isinstance(amount, dict):
             amount = {}
 
         can_mint = bool(flags & ALLOW_MINT)
         sender_prefix = f"{sender}."
 
-        for asset, amt in amount.items():
-            if not isinstance(asset, str) or isinstance(amt, bool) or not isinstance(amt, int) or amt < 0:
-                return {"success": False, "error": "Invalid amount", "gas_used": gas_limit}
-            if amt > 0:
-                if can_mint and asset.startswith(sender_prefix):
-                    continue
-                if sender_acc['balances'].get(asset, 0) < amt:
-                    return {"success": False, "error": "Insufficient balance", "gas_used": gas_limit}
-
         pre_sender_balances = dict(sender_acc['balances'])
         pre_receiver_balances = dict(receiver['balances'])
 
-        for asset, amt in amount.items():
-            if amt > 0:
-                if not (can_mint and asset.startswith(sender_prefix)):
-                    sender_acc['balances'][asset] = sender_acc['balances'].get(asset, 0) - amt
-                receiver['balances'][asset] = receiver['balances'].get(asset, 0) + amt
+        if not skip_transfer:
+            for asset, amt in amount.items():
+                if not isinstance(asset, str) or isinstance(amt, bool) or not isinstance(amt, int) or amt < 0:
+                    return {"success": False, "error": "Invalid amount", "gas_used": gas_limit}
+                if amt > 0:
+                    if can_mint and asset.startswith(sender_prefix):
+                        continue
+                    if sender_acc['balances'].get(asset, 0) < amt:
+                        return {"success": False, "error": "Insufficient balance", "gas_used": gas_limit}
+
+            for asset, amt in amount.items():
+                if amt > 0:
+                    if not (can_mint and asset.startswith(sender_prefix)):
+                        sender_acc['balances'][asset] = sender_acc['balances'].get(asset, 0) - amt
+                    receiver['balances'][asset] = receiver['balances'].get(asset, 0) + amt
 
         result = self.contract_machine.execute(
             contract_address=receiver_address,
@@ -389,21 +377,18 @@ class State:
         )
 
         if not result.get("success"):
-            sender_acc['balances'] = dict(pre_sender_balances)
-            receiver['balances'] = dict(pre_receiver_balances)
+            if not skip_transfer:
+                sender_acc['balances'] = dict(pre_sender_balances)
+                receiver['balances'] = dict(pre_receiver_balances)
             return result
 
         transfers = result.get("transfers", [])
         total_transferred_by_asset = {}
         for t in transfers:
-            t_amount = t.get("amount", {})
-            if isinstance(t_amount, int) and not isinstance(t_amount, bool):
-                t_amount = {"": t_amount}
-                t["amount"] = t_amount
-            elif isinstance(t_amount, dict):
-                t_amount = dict(t_amount)
-            else:
+            t_amount = _normalize_amount(t.get("amount", {}))
+            if not isinstance(t_amount, dict):
                 t_amount = {}
+            t["amount"] = t_amount
             for asset, amt in t_amount.items():
                 if amt > 0:
                     total_transferred_by_asset[asset] = total_transferred_by_asset.get(asset, 0) + amt
@@ -425,11 +410,7 @@ class State:
 
         for t in transfers:
             target_acc = self.get_account(t["to"])
-            t_amount = t.get("amount", {})
-            if isinstance(t_amount, int) and not isinstance(t_amount, bool):
-                t_amount = {"": t_amount}
-            elif not isinstance(t_amount, dict):
-                t_amount = {}
+            t_amount = t["amount"]
             for asset, amt in t_amount.items():
                 if amt > 0:
                     target_acc['balances'][asset] = target_acc['balances'].get(asset, 0) + amt
@@ -441,11 +422,8 @@ class State:
         return sha256(raw, encoder=HexEncoder).decode()[:40]
 
     def create_contract(self, contract_address, code, initial_balance=0):
-        if isinstance(initial_balance, int) and not isinstance(initial_balance, bool):
-            init_dict = {'': initial_balance}
-        elif isinstance(initial_balance, dict):
-            init_dict = dict(initial_balance)
-        else:
+        init_dict = _normalize_amount(initial_balance)
+        if not isinstance(init_dict, dict):
             init_dict = {}
 
         balances = dict(self.accounts.get(contract_address, {}).get('balances', {}))

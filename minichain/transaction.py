@@ -164,8 +164,8 @@ class Transaction:
 
         if signature and sender:
             self.signatures[sender] = signature
-        if nonce is not None and sender:
-            self.nonces[sender] = nonce
+        if sender and (nonce is not None or self._is_legacy):
+            self.nonces[sender] = self.nonce
 
         if self._is_legacy and sender:
             if data is not None:
@@ -199,9 +199,8 @@ class Transaction:
                 self.nonce = next(iter(self.nonces.values()))
             if self.sender in self.signatures:
                 self.signature = self.signatures[self.sender]
-            fee_payer = fee_payer or self.sender
 
-        self.fee_payer = fee_payer
+        self.fee_payer = fee_payer or self.sender
         self.gas_limit = gas_limit
         self.fee_per_gas = fee_per_gas
         self.chain_id = chain_id
