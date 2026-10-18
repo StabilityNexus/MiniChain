@@ -17,3 +17,5 @@ MAX_CALL_DEPTH = 10  # Maximum depth for cross-contract calls
 MAX_TARGET = int("F" * 64, 16)
 MIN_TARGET = 1
 
+
+MAX_TX_COMPONENTS = 64  # Max withdrawals + deposits + calls per transaction

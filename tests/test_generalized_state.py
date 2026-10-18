@@ -317,3 +317,78 @@ if msg['data'] == 'ping':
     # Check contract storage
     contract_acc = state.get_account(contract_addr)
     assert contract_acc["storage"]["pings"] == 1
+
+
+# ---------------------------------------------------------------------------
+# Regression tests: deploy addresses, minter gas solvency, component limit
+# ---------------------------------------------------------------------------
+
+CODE = "def run(ctx):\n    return None\n"
+
+
+def test_two_deploys_in_one_tx_get_distinct_addresses(alice, state):
+    sk, pk = alice
+    state.credit_mining_reward(pk, 10_000_000)
+    tx = Transaction(
+        calls=[ContractCall(pk, None, 0, CODE), ContractCall(pk, None, 0, CODE)],
+        nonces={pk: 0},
+        gas_limit=100_000,
+        fee_per_gas=1,
+    )
+    tx.sign(sk)
+    receipt = state.apply_transaction(tx)
+    assert receipt is not None and receipt.status == 1
+    first = state.derive_contract_address(pk, 0)
+    second = state.derive_contract_address(pk, "0:1")
+    assert first != second
+    assert state.accounts[first]["code"] and state.accounts[second]["code"]
+
+
+def test_generalized_deploy_does_not_collide_with_previous_deploy(alice, state):
+    sk, pk = alice
+    state.credit_mining_reward(pk, 10_000_000)
+    for nonce in (0, 1):
+        tx = Transaction(calls=[ContractCall(pk, None, 0, CODE)], nonces={pk: nonce}, gas_limit=100_000, fee_per_gas=1)
+        tx.sign(sk)
+        receipt = state.apply_transaction(tx)
+        assert receipt.status == 1
+        assert receipt.contract_address == state.derive_contract_address(pk, nonce)
+
+
+def test_minter_cannot_skip_gas_in_own_token(alice, bob, state):
+    sk, pk = alice
+    _, bob_pk = bob
+    asset = f"{pk}.TOK"
+    tx = Transaction(
+        transfers=[Transfer(pk, bob_pk, {asset: 10})],
+        nonces={pk: 0},
+        flags=ALLOW_MINT,
+        gas_limit=10,
+        fee_per_gas=1,
+        fee_asset=asset,
+    )
+    tx.sign(sk)
+    assert state.verify_transaction_logic(tx) == ValidationStatus.FAILED
+    state.get_account(pk)["balances"][asset] = 10
+    assert state.verify_transaction_logic(tx) == ValidationStatus.VALID
+
+
+def test_too_many_components_is_malformed(alice, state):
+    sk, pk = alice
+    state.credit_mining_reward(pk, 1000)
+    tx = Transaction(
+        withdrawals=[Withdrawal(pk, 100)],
+        deposits=[Deposit(f"{i:040x}", 1) for i in range(100)],
+        nonces={pk: 0},
+    )
+    tx.sign(sk)
+    status, receipt = state.validate_and_apply_with_status(tx)
+    assert status == ValidationStatus.MALFORMED and receipt is None
+
+
+def test_validation_does_not_create_accounts(alice, state):
+    sk, pk = alice
+    tx = Transaction(transfers=[Transfer(pk, "b" * 40, 1)], nonces={pk: 0})
+    tx.sign(sk)
+    assert state.verify_transaction_logic(tx) == ValidationStatus.FAILED
+    assert pk not in state.accounts
