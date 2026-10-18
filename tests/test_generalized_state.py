@@ -392,3 +392,25 @@ def test_validation_does_not_create_accounts(alice, state):
     tx.sign(sk)
     assert state.verify_transaction_logic(tx) == ValidationStatus.FAILED
     assert pk not in state.accounts
+
+
+def test_pool_surplus_is_rejected_and_burn_must_be_explicit(alice, state):
+    sk, pk = alice
+    state.credit_mining_reward(pk, 1000)
+
+    surplus = Transaction(
+        withdrawals=[Withdrawal(pk, 100)], deposits=[Deposit("b" * 40, 90)], nonces={pk: 0}
+    )
+    surplus.sign(sk)
+    assert state.verify_transaction_logic(surplus) == ValidationStatus.FAILED
+
+    burn = Transaction(
+        withdrawals=[Withdrawal(pk, 100)],
+        deposits=[Deposit("b" * 40, 90), Deposit(BURN_ADDRESS, 10)],
+        nonces={pk: 0},
+        flags=ALLOW_BURN,
+    )
+    burn.sign(sk)
+    assert state.apply_transaction(burn).status == 1
+    assert get_bal(state, BURN_ADDRESS) == 10
+    assert get_bal(state, pk) == 900

@@ -156,17 +156,18 @@ class State:
                     logger.warning("Invalid tx %s: insufficient balance for %s on %s", tx.tx_id, asset, signer[:8])
                     return ValidationStatus.FAILED
 
-        # Balance pool: everything deposited or sent to contracts must come from withdrawals.
+        # Balance pool: withdrawals must equal deposits plus call amounts; burns are explicit deposits.
         total_distributed = {}
         for item in (*tx.deposits, *tx.calls):
             for asset, amt in item.amount.items():
                 total_distributed[asset] = total_distributed.get(asset, 0) + amt
 
-        for asset, needed_amt in total_distributed.items():
+        for asset in total_withdrawn.keys() | total_distributed.keys():
             if any(self._mints(asset, s, flags) for s in signers):
                 continue
-            if total_withdrawn.get(asset, 0) < needed_amt:
-                logger.warning("Invalid tx %s: deficit in pool for %s (available %s < needed %s)", tx.tx_id, asset, total_withdrawn.get(asset, 0), needed_amt)
+            withdrawn, distributed = total_withdrawn.get(asset, 0), total_distributed.get(asset, 0)
+            if withdrawn != distributed:
+                logger.warning("Invalid tx %s: unbalanced pool for %s (withdrawn %s != distributed %s)", tx.tx_id, asset, withdrawn, distributed)
                 return ValidationStatus.FAILED
 
         return ValidationStatus.VALID
