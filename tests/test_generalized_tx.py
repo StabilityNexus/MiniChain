@@ -299,3 +299,50 @@ def test_legacy_tx_automatically_derives_generalized_structures(alice, bob):
     assert restored.receiver == bob_pk
     assert restored.amount == {"": 50}
     assert restored.verify() is True
+
+
+def test_mixed_transfers_and_deposits_survive_roundtrip(alice, bob):
+    sk, a = alice
+    _, b = bob
+    tx = Transaction(
+        transfers=[Transfer(a, b, 5)],
+        withdrawals=[Withdrawal(a, 3)],
+        deposits=[Deposit("c" * 40, 3)],
+        nonces={a: 0},
+    )
+    tx.sign(sk)
+    restored = Transaction.from_dict(tx.to_dict())
+    assert restored.withdrawals == tx.withdrawals
+    assert restored.deposits == tx.deposits
+    assert restored.tx_id == tx.tx_id
+    assert restored.verify()
+
+
+def test_extra_signatures_are_rejected(alice, bob):
+    sk, a = alice
+    _, b = bob
+    tx = Transaction(transfers=[Transfer(a, b, 5)], nonces={a: 0})
+    tx.sign(sk)
+    payload = tx.to_dict()
+    payload["signatures"]["ff" * 32] = "00" * 64
+    assert not Transaction.from_dict(payload).verify()
+
+
+def test_fee_payer_roundtrips_and_must_be_signer(alice, bob):
+    sk, a = alice
+    _, b = bob
+    tx = Transaction(transfers=[Transfer(a, b, 5)], nonces={a: 0}, fee_payer=a)
+    tx.sign(sk)
+    assert Transaction.from_dict(tx.to_dict()).fee_payer == a
+
+    bad = Transaction(transfers=[Transfer(a, b, 5)], nonces={a: 0}, fee_payer=b)
+    bad.sign(sk)
+    assert not bad.verify()
+
+
+def test_nonces_must_match_signers(alice, bob):
+    sk, a = alice
+    _, b = bob
+    tx = Transaction(transfers=[Transfer(a, b, 5)], nonces={a: 0, b: 0})
+    tx.sign(sk)
+    assert not tx.verify()
