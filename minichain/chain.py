@@ -286,8 +286,19 @@ class Blockchain:
                     logger.warning("Reorg failed: Fast PoW check failed for block %s (hash >= target)", b.index)
                     return False, []
 
-            current_work = self.get_total_work()
-            new_work = self.get_total_work(proposed_chain)
+            # Both chains share everything before the first differing block, so that prefix
+            # adds the same work to each side. Compare only from the divergence point on:
+            # the cost then depends on the length of the fork, not of the whole chain.
+            diverge = next(
+                (k for k, b in enumerate(new_chain_list)
+                 if b.index >= len(self.chain) or self.chain[b.index].hash != b.hash),
+                len(new_chain_list),
+            )
+            if diverge == len(new_chain_list):
+                logger.debug("Incoming chain adds nothing beyond our own. Rejecting.")
+                return False, []
+            current_work = self.get_total_work(self.chain[new_chain_list[diverge].index:])
+            new_work = self.get_total_work(new_chain_list[diverge:])
 
             if new_work <= current_work:
                 logger.debug("Incoming chain (work: %s) is not heavier than local chain (work: %s). Rejecting.", new_work, current_work)

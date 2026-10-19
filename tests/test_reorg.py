@@ -114,3 +114,38 @@ def test_resolve_conflicts_rejects_lighter_chain(genesis_file):
     assert success is False
     assert len(orphans) == 0
     assert node_a.get_total_work() > node_b.get_total_work()
+
+
+def test_work_comparison_skips_common_prefix(genesis_file, monkeypatch):
+    g_path, sk, pk = genesis_file
+    node_a = Blockchain(genesis_path=g_path)
+    node_b = Blockchain(genesis_path=g_path)
+
+    for _ in range(5):
+        assert mine_and_process_block(node_a, Mempool(), pk) is not None
+    assert node_b.resolve_conflicts(node_a.chain)[0] is True
+
+    # The chains now share 6 blocks and fork: A adds 1 block, B adds 2.
+    assert mine_and_process_block(node_a, Mempool(), pk) is not None
+    for _ in range(2):
+        assert mine_and_process_block(node_b, Mempool(), pk) is not None
+
+    summed = []
+    real = node_a.get_total_work
+    monkeypatch.setattr(node_a, "get_total_work", lambda chain_list=None: (summed.append(len(chain_list or node_a.chain)), real(chain_list))[1])
+
+    # Peer sends its whole chain, common prefix included.
+    success, _ = node_a.resolve_conflicts(node_b.chain)
+
+    assert success is True
+    assert node_a.last_block.hash == node_b.last_block.hash
+    assert summed == [1, 2]  # only the blocks after the fork point were summed
+
+
+def test_chain_that_adds_nothing_is_rejected(genesis_file):
+    g_path, sk, pk = genesis_file
+    node_a = Blockchain(genesis_path=g_path)
+    for _ in range(3):
+        mine_and_process_block(node_a, Mempool(), pk)
+    assert node_a.resolve_conflicts(list(node_a.chain)) == (False, [])
+    assert node_a.resolve_conflicts(node_a.chain[:2]) == (False, [])
