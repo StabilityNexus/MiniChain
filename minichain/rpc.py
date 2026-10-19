@@ -79,13 +79,21 @@ class JSONRPCServer:
                     raise ValueError("Missing address or asset_id")
                 address, asset_id = params[0], params[1]
                 result = self.chain.state.get_account(address)["balances"].get(asset_id, 0)
+            elif method == "mc_getNonce":
+                if not params:
+                    raise ValueError("Missing address")
+                account = self.chain.state.accounts.get(params[0])
+                result = account["nonce"] if account else 0
             elif method == "mc_sendTransaction":
                 if not params:
                     raise ValueError("Missing transaction payload")
                 tx_data = params[0]
-                tx = Transaction.from_dict(tx_data)
+                try:
+                    tx = Transaction.from_dict(tx_data)
+                except (KeyError, TypeError, ValueError, AttributeError) as e:
+                    raise ValueError(f"Malformed transaction payload: {e!r}")
                 if not tx.verify():
-                    raise ValueError("Invalid signature")
+                    raise ValueError("Invalid signature (every sender and caller must sign)")
                 from .validators import ValidationStatus
                 if self.chain.state.verify_transaction_logic(tx) != ValidationStatus.VALID:
                     raise ValueError("Transaction failed state validation")

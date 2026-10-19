@@ -152,11 +152,6 @@ def mine_and_process_block(chain, mempool, miner_pk):
     stale_txs = []
     receipts = []
     for tx in pending_txs:
-        expected_nonce = temp_state.get_account(tx.sender).get("nonce", 0)
-        if tx.nonce < expected_nonce:
-            stale_txs.append(tx)
-            continue
-            
         receipt = temp_state.validate_and_apply(tx)
         if receipt is not None:
             mineable_txs.append(tx)
