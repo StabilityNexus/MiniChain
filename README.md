@@ -203,6 +203,7 @@ Check out the `/examples` directory for tutorials:
 - `examples/counter.py` - A basic state mutation example.
 - `examples/stablecoin.py` - A minimal ERC-20 style fungible token.
 - `examples/dex.py` - An Automated Market Maker (AMM) using the constant product formula (x * y = k).
+- `examples/batch_auction.py` - A batch-auction DEX: orders collect in a batch and `clear` settles them all at one uniform price.
 
 ### Interacting via CLI
 Start the interactive node using `python main.py` and use the following commands:
