@@ -158,6 +158,39 @@ MiniChain treats native currency and custom tokens uniformly:
 
 ---
 
+## Generalized Transactions
+
+Besides the simple `sender → receiver` form, a transaction can move value between several accounts atomically. It is built from:
+- **`transfers`**: `{sender, receiver, amount}` shorthand for the common case.
+- **`withdrawals`** / **`deposits`**: take amounts out of accounts into the transaction's pool, and pay them out of it.
+- **`calls`**: `{caller, address, amount, data}` contract calls (or deployments when `address` is empty), funded from the pool.
+
+Rules:
+- Every sender in a withdrawal and every caller must sign, and each signer has its own entry in `nonces`.
+- Per asset, withdrawals must exactly equal deposits plus call amounts. Burning is explicit: deposit to `BURN_ADDRESS` with `ALLOW_BURN` set.
+- Gas is paid by `fee_payer` (defaults to the first sender), which must be one of the signers.
+
+**Co-signing from the CLI**
+
+Write the transaction as JSON (this is the same format the network uses), for example a swap between Alice and Bob:
+```json
+{
+  "transfers": [
+    {"sender": "<alice_pubkey>", "receiver": "<bob_pubkey>", "amount": {"<alice_pubkey>.GOLD": 10}},
+    {"sender": "<bob_pubkey>", "receiver": "<alice_pubkey>", "amount": {"": 50}}
+  ]
+}
+```
+Each party signs the same file, then anyone submits it:
+```text
+alice> tx-sign swap.json     # fills chain_id and both nonces, adds Alice's signature
+bob>   tx-sign swap.json     # adds Bob's signature
+bob>   tx-submit swap.json   # checks every signer has signed, then sends it
+```
+After the first signature the file's contents are fixed; changing anything invalidates the signatures. Use the `mc_getNonce` RPC to look up an account's current nonce.
+
+---
+
 ## Smart Contracts
 
 MiniChain supports fully-functional smart contracts written directly in Python! 
@@ -194,7 +227,7 @@ curl -X POST http://127.0.0.1:8545/ \
   -d '{"jsonrpc": "2.0", "method": "mc_blockNumber", "id": 1}'
 ```
 
-Available endpoints include: `mc_blockNumber`, `mc_getBlockByNumber`, `mc_getBalance`, `mc_getAssetBalance`, and `mc_sendTransaction`.
+Available endpoints include: `mc_blockNumber`, `mc_getBlockByNumber`, `mc_getBalance`, `mc_getAssetBalance`, `mc_getNonce`, and `mc_sendTransaction`.
 
 ---
 

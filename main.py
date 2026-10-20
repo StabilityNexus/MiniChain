@@ -11,6 +11,8 @@ Commands (type in the terminal while the node is running):
     create-asset <t> <amt> <to> - create & mint a native asset
     deploy <file>           - deploy a contract
     call <addr> <data>      - call a contract                   
+    tx-sign <file>          - sign a multi-party transaction file
+    tx-submit <file>        - submit a fully signed transaction file
     mine                    — mine a block from the mempool
     peers                   — show connected peers
     connect <multiaddr>     — connect to another node
@@ -129,6 +131,43 @@ async def submit_and_broadcast(chain, mempool, network, tx, ok_msg, reject_msg):
         print(ok_msg)
     else:
         print(reject_msg)
+
+
+def sign_tx_file(path, sk, pk, chain):
+    """
+    Sign the multi-party transaction stored as JSON in `path` and write it back.
+    The file is the transaction's wire format, so co-signers just pass it around.
+    Before the first signature, a missing chain_id and nonces are filled in from the
+    chain; after that the signed payload is fixed and nothing is changed.
+    """
+    with open(path) as f:
+        payload = json.load(f)
+    if not any(payload.get(k) for k in ("transfers", "withdrawals", "deposits", "calls")):
+        raise ValueError("Not a multi-party transaction: needs transfers, withdrawals, deposits or calls")
+    if not payload.get("signatures"):
+        payload.setdefault("chain_id", chain.chain_id)
+        nonces = payload.setdefault("nonces", {})
+        for signer in Transaction.from_dict(payload).required_signers:
+            nonces.setdefault(signer, chain.state.accounts.get(signer, {}).get("nonce", 0))
+    tx = Transaction.from_dict(payload)
+    if pk not in tx.required_signers:
+        raise ValueError("This wallet is not a sender or caller in this transaction")
+    tx.sign(sk)
+    with open(path, "w") as f:
+        json.dump(tx.to_dict(), f, indent=2)
+    return tx
+
+
+def load_signed_tx_file(path):
+    """Load a transaction file; raises if a required signer has not signed yet."""
+    with open(path) as f:
+        tx = Transaction.from_dict(json.load(f))
+    missing = tx.required_signers - set(tx.signatures)
+    if missing:
+        raise ValueError("Still waiting for signatures from: " + ", ".join(s[:12] + "..." for s in sorted(missing)))
+    if not tx.verify():
+        raise ValueError("Transaction has an invalid signature")
+    return tx
 
 
 # ──────────────────────────────────────────────
@@ -419,6 +458,8 @@ HELP_TEXT = f"""
 {C_CYAN}║{C_RESET}  {C_GREEN}create-asset <t> <amt> <to>{C_RESET} - create & mint a native asset  {C_CYAN}║{C_RESET}
 {C_CYAN}║{C_RESET}  {C_GREEN}deploy <file>{C_RESET}           - deploy a contract                 {C_CYAN}║{C_RESET}
 {C_CYAN}║{C_RESET}  {C_GREEN}call <addr> <data>{C_RESET}      - call a contract                   {C_CYAN}║{C_RESET}
+{C_CYAN}║{C_RESET}  {C_GREEN}tx-sign <file>{C_RESET}          - sign a multi-party tx file        {C_CYAN}║{C_RESET}
+{C_CYAN}║{C_RESET}  {C_GREEN}tx-submit <file>{C_RESET}        - submit a fully signed tx file     {C_CYAN}║{C_RESET}
 {C_CYAN}║{C_RESET}  {C_GREEN}mine{C_RESET}                    - mine a block                      {C_CYAN}║{C_RESET}
 {C_CYAN}║{C_RESET}  {C_GREEN}peers{C_RESET}                   - show connected peers              {C_CYAN}║{C_RESET}
 {C_CYAN}║{C_RESET}  {C_GREEN}connect <multiaddr>{C_RESET}     - connect to a peer                 {C_CYAN}║{C_RESET}
@@ -685,6 +726,34 @@ async def cli_loop(sk, pk, chain, mempool, network, datadir: str | None = None):
             from minichain.persistence import unban_peer
             unban_peer(peer_id, path=datadir or ".")
             print(f"  ✅ Peer {peer_id} unbanned.")
+
+        # ── tx-sign / tx-submit (multi-party transactions) ──
+        elif cmd == "tx-sign":
+            if len(parts) < 2:
+                print("  Usage: tx-sign <file>")
+                continue
+            try:
+                tx = sign_tx_file(parts[1], sk, pk, chain)
+            except (OSError, ValueError, KeyError, TypeError, AttributeError) as e:
+                print(f"  ❌ Could not sign: {e}")
+                continue
+            waiting = len(tx.required_signers - set(tx.signatures))
+            print(f"  ✅ Signed {parts[1]}. " + (f"Waiting for {waiting} more signer(s)." if waiting else "Ready for tx-submit."))
+
+        elif cmd == "tx-submit":
+            if len(parts) < 2:
+                print("  Usage: tx-submit <file>")
+                continue
+            try:
+                tx = load_signed_tx_file(parts[1])
+            except (OSError, ValueError, KeyError, TypeError, AttributeError) as e:
+                print(f"  ❌ Could not submit: {e}")
+                continue
+            await submit_and_broadcast(
+                chain, mempool, network, tx,
+                f"  {C_GREEN}✅ Multi-party tx sent:{C_RESET} {tx.tx_id[:12]}...",
+                f"  {C_RED}❌ Transaction rejected{C_RESET} (duplicate, nonce conflict, or mempool full).",
+            )
 
         # ── help ──
         elif cmd == "help":
