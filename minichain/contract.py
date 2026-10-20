@@ -191,6 +191,8 @@ class ContractMachine:
             "dict": dict,
             "tuple": tuple,
             "sum": sum,
+            "int": int,
+            "sorted": sorted,
             "Exception": Exception, # Added to allow contracts to raise exceptions
         }
 
