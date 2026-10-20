@@ -217,6 +217,30 @@ minichain> deploy examples/counter.py 0 100
 
 ---
 
+## Batch-Auction DEX
+
+`examples/batch_auction.py` is a decentralized exchange for one market (a base asset priced in a quote asset). Instead of matching each order as it arrives, orders collect in a batch and `clear` settles all of them at a single price: the one that trades the most. Everyone in the batch trades at that price, so it doesn't matter who got their order in first. Prices are integers, in quote units per one base unit.
+
+From the CLI (each step needs a mined block before the next one):
+```text
+minichain> deploy examples/batch_auction.py 0 100000
+           # prints the contract address
+minichain> call <dex> init:<creator>.GOLD: 0 200000                    # GOLD priced in native coins ("")
+minichain> call <dex> sell:10:5 '{"<creator>.GOLD": 10}' 200000        # sell 10 GOLD at >= 5 each
+minichain> call <dex> buy:8:7 '{"": 56}' 200000                        # buy 8 GOLD at <= 7 each (escrow 8 x 7)
+minichain> call <dex> cancel:<order_id> 0 200000                       # owner only, before clear
+minichain> call <dex> clear 0 200000                                   # anyone; settles and refunds
+```
+- An order must send exactly its escrow: `amount x price` of the quote asset for a buy, `amount` of the base asset for a sell.
+- `clear` fills the best prices first (oldest first on ties), partly fills the last order if needed, and refunds everything that didn't trade. Buyers get back any quote they escrowed above the clearing price.
+- A batch holds at most 100 orders, which keeps the gas of every call bounded.
+- Read the open orders and the last clearing price and volume with the `mc_getStorage` RPC:
+  ```bash
+  curl -X POST http://127.0.0.1:8545/ -H "Content-Type: application/json"     -d '{"jsonrpc": "2.0", "method": "mc_getStorage", "params": ["<dex>"], "id": 1}'
+  ```
+
+---
+
 ## JSON-RPC 2.0 Server
 
 MiniChain automatically spins up a JSON-RPC 2.0 server alongside the P2P node. By default, it binds to `port 8545` (the standard EVM RPC port). External wallets and dApps can use this to interact with the chain asynchronously.
@@ -228,7 +252,7 @@ curl -X POST http://127.0.0.1:8545/ \
   -d '{"jsonrpc": "2.0", "method": "mc_blockNumber", "id": 1}'
 ```
 
-Available endpoints include: `mc_blockNumber`, `mc_getBlockByNumber`, `mc_getBalance`, `mc_getAssetBalance`, `mc_getNonce`, and `mc_sendTransaction`.
+Available endpoints include: `mc_blockNumber`, `mc_getBlockByNumber`, `mc_getBalance`, `mc_getAssetBalance`, `mc_getNonce`, `mc_getStorage`, and `mc_sendTransaction`.
 
 ---
 
