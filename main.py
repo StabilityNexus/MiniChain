@@ -602,7 +602,7 @@ async def cli_loop(sk, pk, chain, mempool, network, datadir: str | None = None):
 
             await submit_and_broadcast(
                 chain, mempool, network, tx,
-                f"  ✅ Deploy Tx sent (nonce={nonce}). Mine a block to confirm.",
+                f"  ✅ Deploy Tx sent (nonce={nonce}). Contract address: {chain.state.derive_contract_address(pk, nonce)}. Mine a block to confirm.",
                 "  ❌ Deploy Transaction rejected.",
             )
 

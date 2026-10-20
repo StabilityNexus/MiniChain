@@ -268,3 +268,23 @@ async def test_rpc_sendTransaction_success(rpc_server):
             data = await resp.json()
             assert data["result"] == tx.tx_id
             assert len(mempool) == 1
+
+
+@pytest.mark.anyio
+async def test_rpc_getStorage(rpc_server):
+    server, port, chain, mempool = rpc_server
+    chain.state.accounts["c" * 40] = {"balances": {}, "nonce": 0, "code": "x = 1", "storage": {"orders": {"0": ["a", "buy", 1, 2]}}}
+
+    async with aiohttp.ClientSession() as session:
+        payload = {"jsonrpc": "2.0", "method": "mc_getStorage", "params": ["c" * 40], "id": 20}
+        async with session.post(f"http://127.0.0.1:{port}/", json=payload) as resp:
+            assert (await resp.json())["result"] == {"orders": {"0": ["a", "buy", 1, 2]}}
+
+        payload = {"jsonrpc": "2.0", "method": "mc_getStorage", "params": ["d" * 40], "id": 21}
+        async with session.post(f"http://127.0.0.1:{port}/", json=payload) as resp:
+            assert (await resp.json())["result"] == {}
+        assert "d" * 40 not in chain.state.accounts
+
+        payload = {"jsonrpc": "2.0", "method": "mc_getStorage", "params": [], "id": 22}
+        async with session.post(f"http://127.0.0.1:{port}/", json=payload) as resp:
+            assert "Missing address" in (await resp.json())["error"]["message"]
