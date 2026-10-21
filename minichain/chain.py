@@ -168,6 +168,12 @@ class Blockchain:
         
         return max(MIN_TARGET, min(MAX_TARGET, new_target))
 
+    def _difficulty_after(self, block):
+        """The (target, avg_block_time) in effect for the block that follows `block`."""
+        if block.index == 0:
+            return block.target, self.target_block_time
+        return self._next_target(block.target, block.avg_block_time), block.avg_block_time
+
     def _apply_block(self, prev_block, block, state, target, avg_block_time):
         """
         Canonical block-application pipeline shared by add_block and resolve_conflicts.
@@ -240,6 +246,7 @@ class Blockchain:
             self.state = temp_state
             self.current_target = new_target
             self.avg_block_time = new_avg
+            block.avg_block_time = new_avg
             self.chain.append(block)
 
             self._state_snapshots.append((block.hash, self.state.snapshot()))
@@ -249,7 +256,8 @@ class Blockchain:
     def resolve_conflicts(self, new_chain_list) -> tuple[bool, list]:
         """
         Evaluates a competing partial or full chain. If it has strictly greater cumulative work,
-        attempts a reorg. Rebuilds state from genesis to guarantee validity.
+        attempts a reorg. Re-executes the new blocks from the state at the fork point (or from
+        genesis when no snapshot of the fork point is kept) to guarantee validity.
         Returns: (success_bool, list_of_orphaned_transactions)
         """
         from .validators import ValidationStatus
@@ -258,27 +266,38 @@ class Blockchain:
             return False, []
 
         with self._lock:
-            first_block = new_chain_list[0]
-            fork_idx = first_block.index
-            
-            if fork_idx == 0:
-                if first_block.hash != self.chain[0].hash:
-                    logger.warning("Reorg failed: Genesis hash mismatch.")
-                    return False, []
-            else:
-                if fork_idx > len(self.chain):
-                    logger.warning("Reorg failed: Partial chain does not connect to our history.")
-                    return False, []
-                if first_block.previous_hash != self.chain[fork_idx - 1].hash:
-                    logger.warning("Reorg failed: Partial chain hash mismatch at fork point.")
-                    return False, []
+            # Forks almost always share a long prefix and differ only near the tip, so find
+            # the split by walking backward from the incoming tip to the last block we
+            # already have. Blocks up to that one are taken from our own chain, never from
+            # the peer, so the cost here depends on the fork length, not the chain height.
+            diverge = len(new_chain_list)
+            while diverge > 0:
+                b = new_chain_list[diverge - 1]
+                if 0 <= b.index < len(self.chain) and self.chain[b.index].hash == b.hash:
+                    break
+                diverge -= 1
+            if diverge == len(new_chain_list):
+                logger.debug("Incoming chain adds nothing beyond our own. Rejecting.")
+                return False, []
 
-            proposed_chain = self.chain[:fork_idx] + new_chain_list
+            new_blocks = new_chain_list[diverge:]
+            first_block = new_blocks[0]
+            fork_idx = first_block.index
+
+            if fork_idx <= 0:
+                logger.warning("Reorg failed: Genesis hash mismatch.")
+                return False, []
+            if fork_idx > len(self.chain):
+                logger.warning("Reorg failed: Partial chain does not connect to our history.")
+                return False, []
+            if first_block.previous_hash != self.chain[fork_idx - 1].hash:
+                logger.warning("Reorg failed: Partial chain hash mismatch at fork point.")
+                return False, []
 
             # Fast PoW Check: Ensure incoming blocks actually satisfy their declared target
             # before we trust their target to calculate total_work and rebuild state.
             from .network_config import MAX_TARGET
-            for b in new_chain_list:
+            for b in new_blocks:
                 if not isinstance(b.target, int) or b.target <= 0 or b.target > MAX_TARGET:
                     logger.warning("Reorg failed: Fast PoW check failed for block %s (invalid target)", b.index)
                     return False, []
@@ -286,8 +305,10 @@ class Blockchain:
                     logger.warning("Reorg failed: Fast PoW check failed for block %s (hash >= target)", b.index)
                     return False, []
 
-            current_work = self.get_total_work()
-            new_work = self.get_total_work(proposed_chain)
+            # The shared prefix adds the same work to both sides, so compare only what follows it.
+            old_blocks = self.chain[fork_idx:]
+            current_work = self.get_total_work(old_blocks)
+            new_work = self.get_total_work(new_blocks)
 
             if new_work <= current_work:
                 logger.debug("Incoming chain (work: %s) is not heavier than local chain (work: %s). Rejecting.", new_work, current_work)
@@ -295,54 +316,46 @@ class Blockchain:
 
             logger.info("Incoming chain is heavier (%s > %s). Attempting reorg...", new_work, current_work)
 
-            original_chain = list(self.chain)
-
             temp_state = State()
             temp_state.chain_id = self.chain_id
 
-            fork_base_hash = self.chain[fork_idx - 1].hash if fork_idx > 0 else None
+            fork_base_hash = self.chain[fork_idx - 1].hash
 
-            temp_target = proposed_chain[0].target
-            temp_avg_block_time = self.target_block_time
-            
-            snapshot_found = None
-            if fork_base_hash:
-                for h, snap in self._state_snapshots:
-                    if h == fork_base_hash:
-                        snapshot_found = snap
-                        break
-            
+            snapshot_found = next((snap for h, snap in self._state_snapshots if h == fork_base_hash), None)
+
+            # Resume from the fork base if we kept its state, otherwise from genesis. The
+            # difficulty after the base is read from the base block itself.
             if snapshot_found is not None:
                 logger.info("Reorg optimization: Restoring state from in-memory snapshot at block %s", fork_idx - 1)
+                base_idx = fork_idx - 1
                 temp_state.restore(snapshot_found)
-                
-                # Fast forward target and avg_block_time without executing state
-                for i in range(1, fork_idx):
-                    block_time = proposed_chain[i].timestamp - proposed_chain[i-1].timestamp
-                    temp_avg_block_time = self.alpha * block_time + (1 - self.alpha) * temp_avg_block_time
-                    temp_target = self._next_target(temp_target, temp_avg_block_time)
-
-                start_idx = fork_idx
             else:
+                base_idx = 0
                 temp_state.restore(self._genesis_state_snapshot)
-                start_idx = 1
+            temp_target, temp_avg_block_time = self._difficulty_after(self.chain[base_idx])
+            replay = self.chain[base_idx:fork_idx] + new_blocks
 
-            for i in range(start_idx, len(proposed_chain)):
+            for i in range(1, len(replay)):
                 status, temp_target, temp_avg_block_time = self._apply_block(
-                    proposed_chain[i - 1], proposed_chain[i], temp_state, temp_target, temp_avg_block_time
+                    replay[i - 1], replay[i], temp_state, temp_target, temp_avg_block_time
                 )
                 if hasattr(temp_state.accounts, 'commit'):
                     temp_state.accounts.commit()
                     temp_state.accounts = temp_state.accounts.backing
                 if status != ValidationStatus.VALID:
-                    logger.warning("Reorg failed at block %s", proposed_chain[i].index)
+                    logger.warning("Reorg failed at block %s", replay[i].index)
                     return False, []
+                replay[i].avg_block_time = temp_avg_block_time
 
-            old_txs = {tx.tx_id: tx for b in original_chain[1:] for tx in b.transactions}
-            new_tx_ids = {tx.tx_id for b in proposed_chain[1:] for tx in b.transactions}
-            orphans = [tx for tx_id, tx in old_txs.items() if tx_id not in new_tx_ids]
+            # Only blocks we drop can orphan a transaction; the shared prefix is in both chains.
+            new_tx_ids = {tx.tx_id for b in new_blocks for tx in b.transactions}
+            orphans = list({
+                tx.tx_id: tx for b in old_blocks for tx in b.transactions if tx.tx_id not in new_tx_ids
+            }.values())
 
-            self.chain = proposed_chain
+            # A single slice assignment: it touches only the replaced tail, and readers never
+            # see the chain half-updated.
+            self.chain[fork_idx:] = new_blocks
             self.state = temp_state
             self.current_target = temp_target
             self.avg_block_time = temp_avg_block_time

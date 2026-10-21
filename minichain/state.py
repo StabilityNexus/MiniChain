@@ -22,8 +22,9 @@ class StateJournal:
     def __getitem__(self, key):
         if key not in self.cache:
             if key in self.backing:
-                import copy
-                self.cache[key] = copy.deepcopy(self.backing[key])
+                # Read without marking the backing entry changed: we only keep a copy of it.
+                raw = dict.__getitem__ if isinstance(self.backing, dict) else type(self.backing).__getitem__
+                self.cache[key] = copy.deepcopy(raw(self.backing, key))
             else:
                 raise KeyError(key)
         return self.cache[key]
@@ -71,24 +72,126 @@ class StateJournal:
         self.cache.clear()
 
 
+def _is_empty_account(acc):
+    return acc.get('balance', 0) == 0 and acc.get('nonce', 0) == 0 and not acc.get('code') and not acc.get('storage')
+
+
+def _sync_leaf(trie, address, acc):
+    """Make `trie` reflect `acc` for `address` (empty accounts are not part of the state)."""
+    if acc is None or _is_empty_account(acc):
+        trie.delete(address)
+    else:
+        trie.put(address, json.dumps(acc, sort_keys=True))
+
+
+class AccountStore(dict):
+    """
+    The live accounts dict. It remembers which accounts may have changed since its
+    state trie was last brought up to date, so the state root only costs work
+    proportional to the accounts a block touched, not to all accounts.
+
+    Any access that hands out an account marks it as possibly changed, so callers
+    must fetch an account from the store before mutating it (not keep a stale reference).
+    """
+    # The trie never forgets replaced nodes; rebuild it once they outnumber live ones.
+    _MAX_NODES_PER_ACCOUNT = 6
+    _NODE_SLACK = 1000
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._trie = None
+        self._dirty = set()
+
+    def __getitem__(self, key):
+        value = super().__getitem__(key)
+        self._dirty.add(key)
+        return value
+
+    def get(self, key, default=None):
+        return self[key] if key in self else default
+
+    def __setitem__(self, key, value):
+        self._dirty.add(key)
+        super().__setitem__(key, value)
+
+    def __delitem__(self, key):
+        self._dirty.add(key)
+        super().__delitem__(key)
+
+    def setdefault(self, key, default=None):
+        if key not in self:
+            self[key] = default
+        return self[key]
+
+    def pop(self, key, *default):
+        self._dirty.add(key)
+        return super().pop(key, *default)
+
+    def update(self, *args, **kwargs):
+        for key, value in dict(*args, **kwargs).items():
+            self[key] = value
+
+    def values(self):
+        self._trie = None  # hands out every account at once; cannot track what the caller does
+        return super().values()
+
+    def items(self):
+        self._trie = None
+        return super().items()
+
+    def __deepcopy__(self, memo):
+        clone = AccountStore()
+        for key, value in dict.items(self):
+            dict.__setitem__(clone, key, copy.deepcopy(value, memo))
+        return clone
+
+    def synced_trie(self):
+        """The state trie, brought up to date with every account changed since the last call."""
+        if self._trie is None or self._trie.node_count() > self._MAX_NODES_PER_ACCOUNT * len(self) + self._NODE_SLACK:
+            self._trie = Trie()
+            self._dirty = set(dict.keys(self))
+        for address in self._dirty:
+            _sync_leaf(self._trie, address, dict.get(self, address))
+        self._dirty.clear()
+        return self._trie
+
+
 class State:
     def __init__(self):
         # { address: {'balance': int, 'nonce': int, 'code': str|None, 'storage': dict} }
-        self.accounts = {}
+        self.accounts = AccountStore()
         self.contract_machine = ContractMachine(self)
         self.chain_id = "minichain-default"
 
+    @property
+    def accounts(self):
+        return self._accounts
+
+    @accounts.setter
+    def accounts(self, value):
+        self._accounts = value if isinstance(value, (AccountStore, StateJournal)) else AccountStore(value)
+
     def state_root(self) -> str:
         """
-        Dynamically builds the Merkle Patricia Trie from the current state dictionary
-        and returns the cryptographic state root hash.
+        Returns the Merkle Patricia Trie root of the current state. The trie is kept
+        between calls and only the accounts that changed are updated; a state that is
+        a journal over the live store forks that trie and applies just its own changes.
         """
+        accounts = self.accounts
+        if isinstance(accounts, StateJournal) and isinstance(accounts.backing, AccountStore):
+            trie = accounts.backing.synced_trie().fork()
+            for address, acc in accounts.cache.items():
+                _sync_leaf(trie, address, acc)
+            return trie.root_hash()
+        if isinstance(accounts, AccountStore):
+            return accounts.synced_trie().root_hash()
+        return self._full_state_root()
+
+    def _full_state_root(self) -> str:
+        """Rebuild the trie from every account. Reference implementation for state_root()."""
         trie = Trie()
-        # Sort items to ensure deterministic insertion order if necessary (though MPT is order-independent)
-        for addr, acc in sorted(self.accounts.items()):
-            if acc.get('balance', 0) == 0 and acc.get('nonce', 0) == 0 and not acc.get('code') and not acc.get('storage'):
-                continue
-            trie.put(addr, json.dumps(acc, sort_keys=True))
+        for addr, acc in sorted(dict(self.accounts.items()).items()):
+            _sync_leaf(trie, addr, acc)
         return trie.root_hash()
 
     DEFAULT_MINING_REWARD = DEFAULT_MINING_REWARD
