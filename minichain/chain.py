@@ -134,13 +134,7 @@ class Blockchain:
         
         # Snapshot the state exactly after genesis allocation for clean reorg rebuilds
         self._genesis_state_snapshot = self.state.snapshot()
-        self._snapshot_tip()
-
-    def _snapshot_tip(self):
-        """Remember the state and difficulty after the tip, so a reorg can resume from it."""
-        self._state_snapshots.append(
-            (self.last_block.hash, self.state.snapshot(), self.current_target, self.avg_block_time)
-        )
+        self._state_snapshots.append((genesis_block.hash, self.state.snapshot()))
 
     @property
     def last_block(self):
@@ -173,6 +167,12 @@ class Blockchain:
         new_target = (target * int(avg_block_time)) // self.target_block_time
         
         return max(MIN_TARGET, min(MAX_TARGET, new_target))
+
+    def _difficulty_after(self, block):
+        """The (target, avg_block_time) in effect for the block that follows `block`."""
+        if block.index == 0:
+            return block.target, self.target_block_time
+        return self._next_target(block.target, block.avg_block_time), block.avg_block_time
 
     def _apply_block(self, prev_block, block, state, target, avg_block_time):
         """
@@ -246,9 +246,10 @@ class Blockchain:
             self.state = temp_state
             self.current_target = new_target
             self.avg_block_time = new_avg
+            block.avg_block_time = new_avg
             self.chain.append(block)
 
-            self._snapshot_tip()
+            self._state_snapshots.append((block.hash, self.state.snapshot()))
 
             return ValidationStatus.VALID
 
@@ -320,24 +321,19 @@ class Blockchain:
 
             fork_base_hash = self.chain[fork_idx - 1].hash
 
-            snapshot_found = None
-            for h, snap, target, avg_block_time in self._state_snapshots:
-                if h == fork_base_hash:
-                    snapshot_found = snap
-                    break
+            snapshot_found = next((snap for h, snap in self._state_snapshots if h == fork_base_hash), None)
 
-            # `replay` starts at a block whose resulting state we already have; every later
-            # block in it is re-executed.
+            # Resume from the fork base if we kept its state, otherwise from genesis. The
+            # difficulty after the base is read from the base block itself.
             if snapshot_found is not None:
                 logger.info("Reorg optimization: Restoring state from in-memory snapshot at block %s", fork_idx - 1)
+                base_idx = fork_idx - 1
                 temp_state.restore(snapshot_found)
-                temp_target, temp_avg_block_time = target, avg_block_time
-                replay = [self.chain[fork_idx - 1]] + new_blocks
             else:
+                base_idx = 0
                 temp_state.restore(self._genesis_state_snapshot)
-                temp_target = self.chain[0].target
-                temp_avg_block_time = self.target_block_time
-                replay = self.chain[:fork_idx] + new_blocks
+            temp_target, temp_avg_block_time = self._difficulty_after(self.chain[base_idx])
+            replay = self.chain[base_idx:fork_idx] + new_blocks
 
             for i in range(1, len(replay)):
                 status, temp_target, temp_avg_block_time = self._apply_block(
@@ -349,6 +345,7 @@ class Blockchain:
                 if status != ValidationStatus.VALID:
                     logger.warning("Reorg failed at block %s", replay[i].index)
                     return False, []
+                replay[i].avg_block_time = temp_avg_block_time
 
             # Only blocks we drop can orphan a transaction; the shared prefix is in both chains.
             new_tx_ids = {tx.tx_id for b in new_blocks for tx in b.transactions}
@@ -364,7 +361,7 @@ class Blockchain:
             self.avg_block_time = temp_avg_block_time
 
             # Repopulate snapshots for the new chain tip
-            self._snapshot_tip()
+            self._state_snapshots.append((self.last_block.hash, self.state.snapshot()))
 
             logger.info("Reorg successful! Switched to new chain tip: Block %s", self.last_block.index)
             return True, orphans

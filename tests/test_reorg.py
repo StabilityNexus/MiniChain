@@ -224,7 +224,7 @@ def test_reorg_resumes_difficulty_from_snapshot(genesis_file, monkeypatch):
 
     assert node_a.resolve_conflicts(node_b.chain)[0] is True
 
-    assert len(calls) == 2  # once per new block, nothing replayed from genesis
+    assert len(calls) == 3  # once for the fork base, once per new block; nothing from genesis
     assert node_a.current_target == node_b.current_target
     assert node_a.avg_block_time == node_b.avg_block_time
 
