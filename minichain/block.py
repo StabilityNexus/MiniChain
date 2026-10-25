@@ -63,6 +63,9 @@ class Block:
         self.hash: Optional[str] = None
         self.state_root: Optional[str] = state_root
         self.receipt_root: Optional[str] = receipt_root
+        # Difficulty EMA after this block. Local bookkeeping set when the block is
+        # accepted: not part of the header, the hash, or the wire format.
+        self.avg_block_time: Optional[float] = None
 
         # Compute merkle roots once
         self.merkle_root: Optional[str] = _calculate_merkle_root(self.transactions)
