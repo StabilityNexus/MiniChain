@@ -15,7 +15,7 @@ from collections import OrderedDict
 
 from .node_config import (
     MALFORMED_THRESHOLD, FAILED_THRESHOLD, INVALID_THRESHOLD, DECAY_INTERVAL_MINUTES,
-    SEEN_CACHE_MAX,
+    SEEN_CACHE_MAX, DEFAULT_P2P_PORT,
 )
 from .network_config import SUPPORTED_MESSAGE_TYPES, PROTOCOL_ID, MAX_FRAME_BYTES
 
@@ -99,7 +99,7 @@ class P2PNetwork:
 
     async def start(
         self,
-        port: int = 9000,
+        port: int = DEFAULT_P2P_PORT,
         host: str = "127.0.0.1",
         *,
         upnp: bool = False,

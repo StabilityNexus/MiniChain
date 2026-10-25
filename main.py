@@ -33,6 +33,7 @@ from nacl.encoding import HexEncoder
 
 from minichain import Transaction, Blockchain, Block, State, Mempool, P2PNetwork, mine_block
 from minichain.rpc import JSONRPCServer
+from minichain.node_config import DEFAULT_P2P_PORT, DEFAULT_RPC_PORT, KEY_FILE_MODE
 from minichain.validators import is_valid_receiver, ValidationStatus
 from minichain.block import calculate_receipt_root
 from minichain.persistence import remember_peer, get_known_peers, is_peer_banned
@@ -71,7 +72,7 @@ def load_or_create_wallet(datadir: str | None):
     
     os.makedirs(path, exist_ok=True)
     try:
-        with open(keystore_path, "w") as f:
+        with open(os.open(keystore_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, KEY_FILE_MODE), "w") as f:
             json.dump({"private_key": sk.encode(encoder=HexEncoder).decode()}, f)
         logger.info("Created new wallet at %s", keystore_path)
     except Exception as e:
@@ -174,6 +175,12 @@ def mine_and_process_block(chain, mempool, miner_pk):
 
     if chain.add_block(mined_block) == ValidationStatus.VALID:
         logger.info("✅ Block #%d mined and added (%d txs)", mined_block.index, len(mineable_txs))
+        for tx, r in zip(mineable_txs, receipts):
+            if r.status:
+                extra = f", contract {r.contract_address}" if r.contract_address else ""
+                print(f"  {C_GREEN}✅ {tx.tx_id[:12]}... succeeded{C_RESET} (gas used {r.gas_used}{extra})")
+            else:
+                print(f"  {C_RED}❌ {tx.tx_id[:12]}... failed:{C_RESET} {r.error_message or 'unknown error'} (gas used {r.gas_used})")
         mempool.remove_transactions(mineable_txs)
         return mined_block
     else:
@@ -403,8 +410,14 @@ HELP_TEXT = f"""
 {C_CYAN}║{C_RESET}  {C_GREEN}export_key{C_RESET}              - show your private key             {C_CYAN}║{C_RESET}
 {C_CYAN}║{C_RESET}  {C_GREEN}import_key <hex>{C_RESET}        - import a private key              {C_CYAN}║{C_RESET}
 {C_CYAN}║{C_RESET}  {C_GREEN}chain{C_RESET}                   - show chain summary                {C_CYAN}║{C_RESET}
+{C_CYAN}║{C_RESET}  {C_GREEN}ban <peer_id>{C_RESET}           - ban a peer                        {C_CYAN}║{C_RESET}
+{C_CYAN}║{C_RESET}  {C_GREEN}unban <peer_id>{C_RESET}         - unban a peer                      {C_CYAN}║{C_RESET}
+{C_CYAN}║{C_RESET}  {C_GREEN}list-banned{C_RESET}             - list banned peers                 {C_CYAN}║{C_RESET}
 {C_CYAN}║{C_RESET}  {C_GREEN}help{C_RESET}                    - show this help                    {C_CYAN}║{C_RESET}
 {C_CYAN}║{C_RESET}  {C_GREEN}quit{C_RESET}                    - shut down                         {C_CYAN}║{C_RESET}
+{C_CYAN}╠══════════════════════════════════════════════════════════════╣{C_RESET}
+{C_CYAN}║{C_RESET}  send/deploy/call: [amount] [gas_limit] [fee_per_gas]        {C_CYAN}║{C_RESET}
+{C_CYAN}║{C_RESET}  e.g. deploy examples/counter.py 0 20000 0                   {C_CYAN}║{C_RESET}
 {C_CYAN}╚══════════════════════════════════════════════════════════════╝{C_RESET}
 """
 
@@ -438,7 +451,7 @@ async def cli_loop(sk, pk, chain, mempool, network, datadir: str | None = None):
             for addr, acc in accounts.items():
                 tag = f" {C_GREEN}(you){C_RESET}" if addr == pk else ""
                 contract_tag = f" {C_CYAN}[Contract]{C_RESET}" if acc.get("code") else ""
-                print(f"  {C_BOLD}{addr[:12]}...{C_RESET}  balance={C_YELLOW}{acc['balance']}{C_RESET}  nonce={acc['nonce']}{tag}{contract_tag}")
+                print(f"  {C_BOLD}{addr}{C_RESET}  balance={C_YELLOW}{acc['balance']}{C_RESET}  nonce={acc['nonce']}{tag}{contract_tag}")
 
         # ── send ──
         elif cmd == "send":
@@ -465,7 +478,7 @@ async def cli_loop(sk, pk, chain, mempool, network, datadir: str | None = None):
             await submit_and_broadcast(
                 chain, mempool, network, tx,
                 f"  {C_GREEN}✅ Tx sent:{C_RESET} {amount} coins → {receiver[:12]}...",
-                f"  {C_RED}❌ Transaction rejected{C_RESET} (invalid sig, duplicate, or mempool full).",
+                f"  {C_RED}❌ Transaction rejected{C_RESET} (a tx with this nonce is probably already pending: mine a block first, or raise the fee to replace it; otherwise invalid sig or mempool full).",
             )
 
         # ── deploy ──
@@ -569,7 +582,7 @@ async def cli_loop(sk, pk, chain, mempool, network, datadir: str | None = None):
                 path = datadir or "."
                 keystore_path = os.path.join(path, "keystore.json")
                 os.makedirs(path, exist_ok=True)
-                with open(keystore_path, "w") as f:
+                with open(os.open(keystore_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, KEY_FILE_MODE), "w") as f:
                     json.dump({"private_key": new_sk.encode(encoder=HexEncoder).decode()}, f)
                 
                 sk, pk = new_sk, new_pk
@@ -688,7 +701,7 @@ async def run_node(port: int, host: str, connect_to: str | None, fund: int, data
                         relay=relay, relay_addr=relay_addr, announce=announce, datadir=datadir)
     
     # Start RPC server on a port correlated to the node port (e.g. 8545 if P2P is 9000)
-    rpc_port = 8545 + (port - 9000)
+    rpc_port = DEFAULT_RPC_PORT + (port - DEFAULT_P2P_PORT)
     await rpc_server.start(host=rpc_host, port=rpc_port)
 
     # Fund this node's wallet so it can transact in the demo. This is applied
@@ -728,7 +741,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="MiniChain Node — Testnet Demo")
     parser.add_argument("--host", type=str, default="127.0.0.1", help="Host/IP to bind the P2P server (default: 127.0.0.1)")
     parser.add_argument("--rpc-host", type=str, default="127.0.0.1", help="Host/IP to bind the JSON-RPC server (default: 127.0.0.1, loopback-only)")
-    parser.add_argument("--port", type=int, default=9000, help="TCP port to listen on (default: 9000)")
+    parser.add_argument("--port", type=int, default=DEFAULT_P2P_PORT, help=f"TCP port to listen on (default: {DEFAULT_P2P_PORT})")
     parser.add_argument("--connect", type=str, default=None, help="Peer address to connect to (multiaddr)")
     parser.add_argument("--fund", type=int, default=0, help="Initial coins to fund this wallet outside consensus (default: 0). Nonzero diverges state from every peer's -- see run_node.")
     parser.add_argument("--datadir", type=str, default=".minichain", help="Directory to save/load blockchain state (enables persistence)")

@@ -29,3 +29,11 @@ MINING_INITIAL_NONCE_MAX = 2**32 - 1
 
 # State Config
 MAX_STATE_SNAPSHOTS = 10     # Number of recent block states to keep in memory for reorg optimization
+
+# Network Ports
+# The RPC port follows the P2P port: rpc_port = DEFAULT_RPC_PORT + (p2p_port - DEFAULT_P2P_PORT).
+DEFAULT_P2P_PORT = 9000
+DEFAULT_RPC_PORT = 8545
+
+# File mode for private key files (keystore.json, nodekey): readable by the owner only.
+KEY_FILE_MODE = 0o600

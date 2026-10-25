@@ -15,6 +15,8 @@ import os
 from libp2p.crypto.ed25519 import Ed25519PrivateKey, create_new_key_pair
 from libp2p.crypto.keys import KeyPair
 
+from .node_config import KEY_FILE_MODE
+
 logger = logging.getLogger(__name__)
 
 _NODEKEY_FILE = "nodekey"
@@ -37,7 +39,7 @@ def load_or_create_keypair(datadir: str) -> KeyPair:
     os.makedirs(datadir, exist_ok=True)
     keypair = create_new_key_pair()
     seed = keypair.private_key.to_bytes()
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, KEY_FILE_MODE)
     with os.fdopen(fd, "wb") as f:
         f.write(seed)
     logger.info("Created new node identity at %s", path)
