@@ -3,6 +3,7 @@ import json
 import asyncio
 from aiohttp import web
 from minichain.transaction import Transaction
+from minichain.node_config import DEFAULT_RPC_PORT
 
 logger = logging.getLogger(__name__)
 
@@ -14,7 +15,7 @@ class JSONRPCServer:
         self.app = web.Application()
         self.app.add_routes([web.post('/', self.handle_rpc)])
 
-    async def start(self, host="127.0.0.1", port=8545):
+    async def start(self, host="127.0.0.1", port=DEFAULT_RPC_PORT):
         self.runner = web.AppRunner(self.app)
         await self.runner.setup()
         self.site = web.TCPSite(self.runner, host, port)

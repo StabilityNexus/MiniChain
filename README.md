@@ -145,13 +145,17 @@ Check out the `/examples` directory for tutorials:
 
 ### Interacting via CLI
 Start the interactive node using `python main.py` and use the following commands:
-1. **Deploy:** `deploy <filepath> [amount] [fee]`
-2. **Call:** `call <contract_address> <payload> [amount] [fee]`
+1. **Deploy:** `deploy <filepath> [amount] [gas_limit] [fee_per_gas]`
+2. **Call:** `call <contract_address> <payload> [amount] [gas_limit] [fee_per_gas]`
+
+Deploys and calls need a non-zero `gas_limit` (it defaults to 0, and the transaction then fails with "Out of gas"). `counter.py` needs about 15,220 gas to deploy. After `mine`, the CLI prints a result line for every transaction, so a failed deploy or call is shown.
 
 Example deployment:
 ```text
-minichain> deploy examples/counter.py 0 100
+minichain> deploy examples/counter.py 0 20000 0
 ```
+
+The wallet key is stored unencrypted in `keystore.json` (created readable only by you); keep it private.
 
 ---
 

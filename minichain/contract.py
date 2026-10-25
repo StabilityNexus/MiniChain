@@ -45,6 +45,9 @@ def _apply_sandbox_limits():
 def _sandboxed_worker(*args):
     """multiprocessing.Process entrypoint: apply OS resource limits to this
     (freshly forked, disposable) process, then run the real worker."""
+    # Tell the parent we are up, so process start-up (slow under "spawn") is not
+    # charged against the contract's execution time.
+    args[3].send({"type": "ready"})
     _apply_sandbox_limits()
     _safe_exec_worker(*args)
 
@@ -210,19 +213,26 @@ class ContractMachine:
             )
             p.start()
 
-            start_time = time.time()
+            from .network_config import CONTRACT_EXEC_TIMEOUT_SECONDS, CONTRACT_STARTUP_TIMEOUT_SECONDS
+            # The run-time budget starts when the sandbox says it is up ("ready"),
+            # and does not run while this contract waits on a sub-call, which has
+            # its own budget.
+            deadline = time.time() + CONTRACT_STARTUP_TIMEOUT_SECONDS
             result = None
 
             while p.is_alive() or parent_conn.poll():
-                if time.time() - start_time > 5:
+                if time.time() > deadline:
                     p.kill()
                     logger.error("Contract execution timed out")
                     return self._fail("Execution timed out", gas_limit)
 
                 if parent_conn.poll(0.1):
                     msg = parent_conn.recv()
-                    if msg.get("type") == "call":
+                    if msg.get("type") == "ready":
+                        deadline = time.time() + CONTRACT_EXEC_TIMEOUT_SECONDS
+                    elif msg.get("type") == "call":
                         # Execute internal sub-call recursively
+                        sub_start = time.time()
                         sub_result = self.state.execute_internal_call(
                             sender=contract_address, # Caller is the current contract!
                             receiver_address=msg["address"],
@@ -231,6 +241,7 @@ class ContractMachine:
                             gas_limit=gas_limit, # Let inner call use remaining gas
                             depth=depth + 1
                         )
+                        deadline += time.time() - sub_start
                         parent_conn.send(sub_result)
                     elif msg.get("type") == "return":
                         result = msg
