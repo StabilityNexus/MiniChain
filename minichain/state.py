@@ -11,78 +11,56 @@ from .network_config import DEFAULT_MINING_REWARD
 
 logger = logging.getLogger(__name__)
 
+_DELETED = object()
 _MIN_SNAPSHOT_DELTA_ENTRIES = 1024
 _MAX_SNAPSHOT_DELTA_DEPTH = 10_000
 
 
 class StateSnapshot(Mapping):
     """
-    An immutable view of account state, stored as a delta from a parent
-    snapshot. Only accounts touched since the parent are copied, so taking a
-    snapshot costs time proportional to the block's journal rather than to the
-    total number of accounts.
-
-    Snapshots form a linked history. Materializing one replays the deltas from
-    its nearest materialized ancestor, or from the root when none is cached.
+    An immutable account-state view stored as a delta from a parent snapshot.
+    Only accounts touched since the parent are copied. Materializing a snapshot
+    replays the deltas from its root.
     """
 
-    __slots__ = ("_parent", "_changes", "_deletions", "_depth", "_total_changes", "_state")
+    __slots__ = ("_parent", "_changes", "depth", "total_changes")
 
-    def __init__(self, parent=None, changes=None, deletions=None):
+    def __init__(self, parent=None, changes=None):
         self._parent = parent
         self._changes = changes if changes is not None else {}
-        self._deletions = frozenset(deletions or ())
-        self._depth = 0 if parent is None else parent._depth + 1
-        self._total_changes = 0
-        if parent is not None:
-            self._total_changes = (
-                parent._total_changes + len(self._changes) + len(self._deletions)
-            )
-        self._state = None
+        self.depth = 0 if parent is None else parent.depth + 1
+        self.total_changes = (
+            0 if parent is None else parent.total_changes + len(self._changes)
+        )
 
     @classmethod
     def full(cls, accounts):
         """Build a self-contained snapshot from a mapping of accounts."""
-        changes = {
+        return cls(changes={
             address: copy.deepcopy(account)
             for address, account in dict(accounts).items()
-        }
-        return cls(parent=None, changes=changes)
-
-    @property
-    def depth(self):
-        return self._depth
-
-    @property
-    def total_changes(self):
-        return self._total_changes
+        })
 
     def materialize(self):
         """Return the snapshot's accounts as a plain dictionary."""
-        if self._state is not None:
-            return self._state
-
         chain = []
         node = self
-        while node is not None and node._state is None:
+        while node is not None:
             chain.append(node)
             node = node._parent
 
-        state = dict(node._state) if node is not None else {}
+        state = {}
         for snapshot in reversed(chain):
-            state.update(snapshot._changes)
-            for address in snapshot._deletions:
-                state.pop(address, None)
-
-        self._state = state
+            for address, account in snapshot._changes.items():
+                if account is _DELETED:
+                    state.pop(address, None)
+                else:
+                    state[address] = account
         return state
 
     def to_dict(self):
         """Return an independent deep copy of the snapshot's accounts."""
-        return {
-            address: copy.deepcopy(account)
-            for address, account in self.materialize().items()
-        }
+        return copy.deepcopy(self.materialize())
 
     def copy(self):
         return self.to_dict()
@@ -100,21 +78,19 @@ class StateSnapshot(Mapping):
         return self.to_dict()
 
     def __repr__(self):
-        return f"StateSnapshot(depth={self._depth}, changes={len(self._changes)})"
+        return f"StateSnapshot(depth={self.depth}, changes={len(self._changes)})"
 
 
 class AccountStore(dict):
     """
-    The committed accounts dictionary. It records which accounts may have
-    changed since the last snapshot, allowing snapshots to copy only those
-    entries. Reads also mark an account because callers mutate account dicts
-    in place (e.g. ``state.accounts[addr]['balance'] += 1``).
+    The committed accounts dictionary. It records accounts that may have
+    changed since the last snapshot so snapshots can copy only those entries.
+    Reads also mark an account because callers may mutate it in place.
     """
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._dirty = set()
-        self._deleted = set()
         self._snapshot = None
 
     def __getitem__(self, key):
@@ -124,16 +100,11 @@ class AccountStore(dict):
 
     def __setitem__(self, key, value):
         self._dirty.add(key)
-        self._deleted.discard(key)
         dict.__setitem__(self, key, value)
 
     def __delitem__(self, key):
         self._dirty.add(key)
-        self._deleted.add(key)
         dict.__delitem__(self, key)
-
-    def __contains__(self, key):
-        return dict.__contains__(self, key)
 
     def get(self, key, default=None):
         if dict.__contains__(self, key):
@@ -149,7 +120,6 @@ class AccountStore(dict):
         if dict.__contains__(self, key):
             value = dict.pop(self, key)
             self._dirty.add(key)
-            self._deleted.add(key)
             return value
         if default:
             return default[0]
@@ -158,12 +128,10 @@ class AccountStore(dict):
     def popitem(self):
         key, value = dict.popitem(self)
         self._dirty.add(key)
-        self._deleted.add(key)
         return key, value
 
     def clear(self):
         self._dirty.update(dict.keys(self))
-        self._deleted.update(dict.keys(self))
         dict.clear(self)
 
     def update(self, *args, **kwargs):
@@ -349,32 +317,27 @@ class State:
 
         parent = accounts._snapshot
         dirty = accounts._dirty
-        deleted = accounts._deleted
 
-        if parent is not None and not dirty and not deleted:
+        if parent is not None and not dirty:
             return parent
 
         compact = parent is not None and (
-            parent._depth >= _MAX_SNAPSHOT_DELTA_DEPTH
-            or parent._total_changes
+            parent.depth >= _MAX_SNAPSHOT_DELTA_DEPTH
+            or parent.total_changes
             > max(_MIN_SNAPSHOT_DELTA_ENTRIES, len(accounts))
         )
         if parent is None or compact:
             snapshot = StateSnapshot.full(dict.items(accounts))
-            accounts._dirty.clear()
-            accounts._deleted.clear()
         else:
             changes = {}
-            deletions = set()
             for address in dirty:
                 if dict.__contains__(accounts, address):
                     changes[address] = copy.deepcopy(dict.__getitem__(accounts, address))
                 else:
-                    deletions.add(address)
-            snapshot = StateSnapshot(parent, changes, deletions)
-            accounts._dirty.clear()
-            accounts._deleted.clear()
+                    changes[address] = _DELETED
+            snapshot = StateSnapshot(parent, changes)
 
+        dirty.clear()
         accounts._snapshot = snapshot
         return snapshot
 
