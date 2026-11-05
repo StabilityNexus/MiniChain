@@ -2,7 +2,7 @@ from .pow import mine_block, calculate_hash, MiningExceededError
 from .block import Block
 from .chain import Blockchain
 from .transaction import Transaction
-from .state import State
+from .state import State, StateSnapshot
 from .contract import ContractMachine
 from .p2p import P2PNetwork
 from .mempool import Mempool
@@ -16,6 +16,7 @@ __all__ = [
     "Blockchain",
     "Transaction",
     "State",
+    "StateSnapshot",
     "ContractMachine",
     "P2PNetwork",
     "Mempool",

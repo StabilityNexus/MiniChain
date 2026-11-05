@@ -134,7 +134,7 @@ class Blockchain:
         
         # Snapshot the state exactly after genesis allocation for clean reorg rebuilds
         self._genesis_state_snapshot = self.state.snapshot()
-        self._state_snapshots.append((genesis_block.hash, self.state.snapshot()))
+        self._state_snapshots.append((genesis_block.hash, self._genesis_state_snapshot))
 
     @property
     def last_block(self):
