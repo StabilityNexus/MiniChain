@@ -46,7 +46,9 @@ SYNC_MESSAGE_TYPES = frozenset({"getheaders", "headers", "getblocks", "blocks"})
 class SyncError(ValueError):
     """A peer sent a sync message that cannot be processed safely."""
 
-    def __init__(self, message: str, status: ValidationStatus = ValidationStatus.MALFORMED):
+    def __init__(
+        self, message: str, status: ValidationStatus = ValidationStatus.MALFORMED
+    ):
         super().__init__(message)
         self.status = status
 
@@ -92,6 +94,7 @@ class _PendingRequest:
 class _SyncSession:
     peer_addr: str
     headers: list[BlockHeader]
+    common_ancestor: Block
     fork: bool
     next_index: int = 0
     blocks: list[Block] = field(default_factory=list)
@@ -159,7 +162,9 @@ def validate_header_chain(
             )
         if header.hash != header.compute_hash():
             raise SyncError(f"invalid header hash {header.hash}")
-        if not isinstance(header.target, int) or not (MIN_TARGET <= header.target <= MAX_TARGET):
+        if not isinstance(header.target, int) or not (
+            MIN_TARGET <= header.target <= MAX_TARGET
+        ):
             raise SyncError(f"invalid target {header.target}")
         try:
             hash_value = int(header.hash, 16)
@@ -277,7 +282,9 @@ class SyncManager:
 
     # ── inbound message handling ─────────────────────────────────────────────
 
-    def handle_message(self, peer_addr: str, message_type: str, payload) -> ValidationStatus | None:
+    def handle_message(
+        self, peer_addr: str, message_type: str, payload
+    ) -> ValidationStatus | None:
         """Handle one sync message. Returns a validation status for P2P scoring."""
         self._prune_pending()
         if not isinstance(payload, dict):
@@ -428,23 +435,37 @@ class SyncManager:
         except (TypeError, ValueError) as exc:
             raise SyncError(f"invalid header payload: {exc}") from exc
 
-        start_block = self._find_block(headers[0].previous_hash)
-        if start_block is None:
-            raise SyncError("headers do not connect to a known block")
+        session = self._sessions.get(peer_addr)
+        if session is not None:
+            # A fork with more than one header batch keeps requesting headers
+            # until the branch proves more work than our own suffix. Otherwise a
+            # deep reorg would be rejected after the first 1,000 headers.
+            if not session.fork or session.next_index != 0:
+                raise SyncError("unexpected headers response during body download")
+            previous = session.headers[-1]
+            if headers[0].previous_hash != previous.hash:
+                raise SyncError("headers do not continue the advertised fork")
+            validate_header_chain(headers, previous)
+            session.headers.extend(headers)
+        else:
+            start_block = self._find_block(headers[0].previous_hash)
+            if start_block is None:
+                raise SyncError("headers do not connect to a known block")
+            validate_header_chain(headers, start_block)
+            session = _SyncSession(
+                peer_addr=peer_addr,
+                headers=headers,
+                common_ancestor=start_block,
+                fork=start_block.hash != self.chain.last_block.hash,
+            )
+            self._sessions[peer_addr] = session
 
-        validate_header_chain(headers, start_block)
-
-        if _total_work(headers) <= self._suffix_work(start_block):
-            logger.info("Peer %s advertised a chain with no more work; not syncing", peer_addr)
-            self._drop_session(peer_addr)
+        if session.fork and _total_work(session.headers) <= self._suffix_work(
+            session.common_ancestor
+        ):
+            self._request_next_headers(session)
             return None
 
-        session = _SyncSession(
-            peer_addr=peer_addr,
-            headers=headers,
-            fork=start_block.hash != self.chain.last_block.hash,
-        )
-        self._sessions[peer_addr] = session
         self._request_next_blocks(session)
         return None
 
@@ -463,7 +484,9 @@ class SyncManager:
         if len(raw_blocks) > self.max_blocks:
             raise SyncError(f"too many blocks: {len(raw_blocks)}")
 
-        expected_headers = session.headers[session.next_index : session.next_index + self.max_blocks]
+        expected_headers = session.headers[
+            session.next_index : session.next_index + self.max_blocks
+        ]
         if not raw_blocks:
             raise SyncError("empty blocks response")
         if len(raw_blocks) > len(expected_headers):
@@ -510,8 +533,30 @@ class SyncManager:
 
     # ── session helpers ──────────────────────────────────────────────────────
 
+    def _request_next_headers(self, session: _SyncSession) -> None:
+        """Continue a fork's header range from its last known hash."""
+        request_id = self._new_request_id()
+        self._pending[request_id] = _PendingRequest(
+            peer_addr=session.peer_addr,
+            kind="headers",
+            created_at=self._clock(),
+        )
+        self._send(
+            session.peer_addr,
+            {
+                "type": "getheaders",
+                "data": {
+                    "request_id": request_id,
+                    "locator": [session.headers[-1].hash],
+                    "max": self.max_headers,
+                },
+            },
+        )
+
     def _request_next_blocks(self, session: _SyncSession) -> None:
-        batch = session.headers[session.next_index : session.next_index + self.max_blocks]
+        batch = session.headers[
+            session.next_index : session.next_index + self.max_blocks
+        ]
         if not batch:
             self._finish_session(session)
             return
@@ -535,9 +580,10 @@ class SyncManager:
 
     def _finish_session(self, session: _SyncSession) -> None:
         self._sessions.pop(session.peer_addr, None)
-        # A full header batch may be truncated; ask for the next one from our
-        # new tip. A short batch means the peer has caught us up.
-        if len(session.headers) == self.max_headers:
+        # A fork may have been adopted after only the prefix needed to prove more
+        # work, so always ask for what follows the new tip. A linear sync only
+        # needs another request when the peer filled a whole header batch.
+        if session.fork or len(session.headers) == self.max_headers:
             self.request_sync(session.peer_addr)
 
     def _drop_session(self, peer_addr: str) -> None:
@@ -546,7 +592,9 @@ class SyncManager:
             if pending.peer_addr == peer_addr:
                 self._pending.pop(request_id, None)
 
-    def _take_pending(self, peer_addr: str, kind: str, request_id) -> _PendingRequest | None:
+    def _take_pending(
+        self, peer_addr: str, kind: str, request_id
+    ) -> _PendingRequest | None:
         if not isinstance(request_id, str):
             return None
         pending = self._pending.get(request_id)

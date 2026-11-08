@@ -139,7 +139,9 @@ class TestLocator:
 
         locator = manager.locator()
 
-        expected = [chain.chain[i].hash for i in (99, 98, 97, 96, 95, 94, 93, 92, 91, 90)]
+        expected = [
+            chain.chain[i].hash for i in (99, 98, 97, 96, 95, 94, 93, 92, 91, 90)
+        ]
         expected += [chain.chain[i].hash for i in (88, 84, 76, 60, 28, 0)]
         assert locator == expected
         assert len(locator) <= 32
@@ -243,9 +245,10 @@ class TestSyncResponses:
 
     def test_header_response_honours_count_and_byte_limits(self):
         chain = _fake_chain(10)
-        header_size = len(
-            canonical_json_dumps(BlockHeader.from_block(chain.chain[1]).to_dict())
-        ) + 1
+        header_size = (
+            len(canonical_json_dumps(BlockHeader.from_block(chain.chain[1]).to_dict()))
+            + 1
+        )
         manager = SyncManager(
             chain,
             lambda *_: None,
@@ -413,9 +416,7 @@ class TestHeadersFirstSync:
         assert [block.index for block in applied] == [1, 2, 3, 4, 5]
         assert [m["type"] for m in receiver_sent].count("getheaders") == 2
         assert [
-            len(m["data"]["hashes"])
-            for m in receiver_sent
-            if m["type"] == "getblocks"
+            len(m["data"]["hashes"]) for m in receiver_sent if m["type"] == "getblocks"
         ] == [2, 2, 1]
 
     def test_invalid_headers_stop_before_any_body_download(self, genesis_file):
@@ -450,8 +451,12 @@ class TestHeadersFirstSync:
 
         receiver_pool = Mempool()
         tx_a = Transaction(
-            sender=pk, receiver="a" * 64, amount=10, nonce=0,
-            gas_limit=1, fee_per_gas=1,
+            sender=pk,
+            receiver="a" * 64,
+            amount=10,
+            nonce=0,
+            gas_limit=1,
+            fee_per_gas=1,
         )
         tx_a.sign(sk)
         receiver_pool.add_transaction(tx_a)
@@ -459,16 +464,24 @@ class TestHeadersFirstSync:
 
         sender_pool = Mempool()
         tx_b = Transaction(
-            sender=pk, receiver="b" * 64, amount=20, nonce=0,
-            gas_limit=1, fee_per_gas=1,
+            sender=pk,
+            receiver="b" * 64,
+            amount=20,
+            nonce=0,
+            gas_limit=1,
+            fee_per_gas=1,
         )
         tx_b.sign(sk)
         sender_pool.add_transaction(tx_b)
         assert mine_and_process_block(sender, sender_pool, pk) is not None
 
         tx_c = Transaction(
-            sender=pk, receiver="c" * 64, amount=30, nonce=1,
-            gas_limit=1, fee_per_gas=1,
+            sender=pk,
+            receiver="c" * 64,
+            amount=30,
+            nonce=1,
+            gas_limit=1,
+            fee_per_gas=1,
         )
         tx_c.sign(sk)
         sender_pool.add_transaction(tx_c)
@@ -489,3 +502,33 @@ class TestHeadersFirstSync:
         assert receiver.last_block.hash == sender.last_block.hash
         assert receiver.state.accounts == sender.state.accounts
         assert [tx.tx_id for tx in orphans] == [tx_a.tx_id]
+
+    def test_deep_fork_accumulates_headers_across_batches(self, genesis_file):
+        path, _, pk = genesis_file
+        receiver = Blockchain(genesis_path=path)
+        sender = Blockchain(genesis_path=path)
+        for _ in range(6):
+            assert mine_and_process_block(receiver, Mempool(), pk) is not None
+        for _ in range(8):
+            assert mine_and_process_block(sender, Mempool(), pk) is not None
+
+        client, server, receiver_out, sender_out, receiver_sent = _make_sync_pair(
+            receiver,
+            sender,
+            max_headers=2,
+            max_blocks=3,
+        )
+        client.request_sync("peer:test")
+
+        statuses = _pump(client, server, receiver_out, sender_out)
+
+        assert all(status is None for status in statuses)
+        assert receiver.last_block.hash == sender.last_block.hash
+        assert receiver.get_total_work() == sender.get_total_work()
+        assert receiver.state.accounts == sender.state.accounts
+        assert [m["type"] for m in receiver_sent].count("getheaders") == 5
+        assert [
+            len(m["data"]["hashes"]) for m in receiver_sent if m["type"] == "getblocks"
+        ] == [3, 3, 2]
+        assert not client._sessions
+        assert not client._pending

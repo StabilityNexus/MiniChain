@@ -129,10 +129,12 @@ advertises a chain with no more work than ours is ignored rather than punished.
 ## Reorgs
 
 When the common ancestor is not our tip, headers describe a competing branch.
-Bodies for that branch are buffered and handed to `Blockchain.resolve_conflicts`.
-If the branch is heavier and valid, the chain switches and transactions that are
-no longer confirmed are returned to the mempool. Otherwise the session is
-dropped.
+If that branch spans more than one header batch, the headers are accumulated
+across requests until the branch proves more work than our suffix. Bodies are
+only downloaded after that point. They are buffered and handed to
+`Blockchain.resolve_conflicts`. If the branch is heavier and valid, the chain
+switches and transactions that are no longer confirmed are returned to the
+mempool. Otherwise the session is dropped.
 
 ## Compatibility
 
