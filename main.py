@@ -33,6 +33,7 @@ from nacl.encoding import HexEncoder
 
 from minichain import Transaction, Blockchain, Block, State, Mempool, P2PNetwork, mine_block
 from minichain.rpc import JSONRPCServer
+from minichain.sync import SyncManager
 from minichain.validators import is_valid_receiver, ValidationStatus
 from minichain.block import calculate_receipt_root
 from minichain.persistence import remember_peer, get_known_peers, is_peer_banned
@@ -78,12 +79,6 @@ def load_or_create_wallet(datadir: str | None):
         logger.warning("Failed to save keystore: %s", e)
 
     return sk, pk
-
-
-def request_chain(network, start_index, limit):
-    """Broadcast a chain_request for blocks starting at start_index."""
-    req = {"type": "chain_request", "data": {"start_index": start_index, "limit": limit}}
-    asyncio.create_task(network._broadcast_raw(req))
 
 
 def parse_tx_params(parts, start):
@@ -190,16 +185,32 @@ def mine_and_process_block(chain, mempool, miner_pk):
 # Network message handler
 # ──────────────────────────────────────────────
 
-def make_network_handler(chain, mempool, network):
+def make_sync_manager(chain, mempool, network):
+    """Wire headers-first sync to the network and mempool."""
+    return SyncManager(
+        chain,
+        send=lambda peer, payload: asyncio.create_task(
+            network._unicast_raw(peer, payload)
+        ),
+        on_block_applied=lambda block: mempool.remove_transactions(block.transactions),
+        on_orphans=lambda orphans: [mempool.add_transaction(tx) for tx in orphans],
+    )
+
+
+def make_network_handler(chain, mempool, network, sync_manager=None):
     """Return an async callback that processes incoming P2P messages."""
+    sync = sync_manager or make_sync_manager(chain, mempool, network)
 
     async def handler(data):
         msg_type = data.get("type")
         payload = data.get("data")
         peer_addr = data.get("_peer_addr", "unknown")
 
-        if payload is None and msg_type in ("hello", "chain_request", "chain_response", "getaddr", "addr"):
-            return
+        if payload is None:
+            if sync.handles(msg_type):
+                return ValidationStatus.MALFORMED
+            if msg_type in ("hello", "chain_request", "chain_response", "getaddr", "addr"):
+                return
 
         if msg_type == "hello":
             peer_chain_id = payload.get("chain_id")
@@ -216,12 +227,18 @@ def make_network_handler(chain, mempool, network):
             logger.info("🔄 Handshake successful with %s", peer_addr)
             peer_tip = payload.get("latest_block_index", 0)
             if peer_tip > chain.last_block.index:
-                logger.info("📡 Peer %s is ahead (%d > %d). Initiating chunked sync...", peer_addr, peer_tip, chain.last_block.index)
-                request_chain(network, chain.last_block.index + 1, 500)
+                logger.info(
+                    "📡 Peer %s is ahead (%d > %d). Starting headers-first sync...",
+                    peer_addr, peer_tip, chain.last_block.index,
+                )
+                sync.request_sync(peer_addr)
 
             # Ask for more peers, so the network stays reachable after whoever we
             # were told about goes away, instead of only ever knowing our seed.
             asyncio.create_task(network._unicast_raw(peer_addr, {"type": "getaddr", "data": {}}))
+
+        elif sync.handles(msg_type):
+            return sync.handle_message(peer_addr, msg_type, payload)
 
         elif msg_type == "tx":
             try:
@@ -257,77 +274,37 @@ def make_network_handler(chain, mempool, network):
                 mempool.remove_transactions(block.transactions)
             else:
                 if block.index > chain.last_block.index + 1:
-                    logger.warning("📥 Received Block #%s — ahead of us (tip: %s). Requesting chunked sync...", block.index, chain.last_block.index)
-                    request_chain(network, chain.last_block.index + 1, 500)
+                    logger.warning(
+                        "📥 Received Block #%s — ahead of us (tip: %s). Starting headers-first sync...",
+                        block.index, chain.last_block.index,
+                    )
+                    sync.request_sync(peer_addr)
                 else:
-                    logger.warning("📥 Received Block #%s — rejected. Fork detected, trigger reorg sync.", block.index)
-                    request_chain(network, max(0, block.index - 50), 50)
+                    logger.warning(
+                        "📥 Received Block #%s — rejected. Fork detected, starting headers-first sync.",
+                        block.index,
+                    )
+                    sync.request_sync(peer_addr)
             return status
 
         elif msg_type == "chain_request":
-            start_index = payload.get("start_index", 0)
-            limit = payload.get("limit", 500)
+            # Deprecated compatibility path. New nodes use getheaders/getblocks;
+            # this path is still bounded so an old peer cannot request an
+            # arbitrarily large response.
+            try:
+                start_index = max(0, int(payload.get("start_index", 0)))
+                limit = max(1, min(int(payload.get("limit", sync.max_blocks)), sync.max_blocks))
+            except (TypeError, ValueError):
+                return ValidationStatus.MALFORMED
             logger.info("📡 Peer requested blocks from %d (limit %d).", start_index, limit)
-            
-            if start_index < len(chain.chain):
-                blocks_slice = chain.chain[start_index : start_index + limit]
-                blocks_dicts = [b.to_dict() for b in blocks_slice]
-            else:
-                blocks_dicts = []
-                
-            resp_payload = {"type": "chain_response", "data": {"blocks": blocks_dicts, "requested_limit": limit}}
+            resp_payload = sync.build_legacy_blocks_response(start_index, limit)
             asyncio.create_task(network._unicast_raw(peer_addr, resp_payload))
 
         elif msg_type == "chain_response":
-            blocks_payload = payload.get("blocks", [])
-            requested_limit = payload.get("requested_limit", 500)
-            if not blocks_payload:
-                return
-
-            new_chain = []
-            try:
-                new_chain = [Block.from_dict(b) for b in blocks_payload]
-            except Exception as e:
-                logger.warning("❌ Failed to parse chain_response: %s", e)
-                return
-
-            if new_chain:
-                # Differentiate between linear catchup and reorg
-                if new_chain[0].index == chain.last_block.index + 1 and new_chain[0].previous_hash == chain.last_block.hash:
-                    # Linear Catch-up
-                    all_added = True
-                    for block in new_chain:
-                        if block.index <= chain.last_block.index:
-                            continue # Ignore already known blocks
-                        if chain.add_block(block) == ValidationStatus.VALID:
-                            logger.info("📥 Synced Block #%d", block.index)
-                            mempool.remove_transactions(block.transactions)
-                        else:
-                            logger.warning("❌ Sync failed at Block #%d. Fork detected. Requesting chunk backward.", block.index)
-                            request_chain(network, max(0, block.index - 50), 50)
-                            all_added = False
-                            break
-
-                    if all_added and len(new_chain) == requested_limit:
-                        next_index = chain.last_block.index + 1
-                        logger.info("📡 Requesting next batch from index %d", next_index)
-                        request_chain(network, next_index, requested_limit)
-                else:
-                    # Fork / Reorg sync
-                    success, orphans = chain.resolve_conflicts(new_chain)
-                    if success:
-                        logger.info("🔄 Reorg complete! Restoring %d orphaned txs to mempool.", len(orphans))
-                        for tx in orphans:
-                            mempool.add_transaction(tx)
-                        
-                        if len(new_chain) == requested_limit:
-                            next_index = chain.last_block.index + 1
-                            request_chain(network, next_index, requested_limit)
-                    else:
-                        logger.warning("❌ Reorg failed. Fetching earlier blocks to find fork point...")
-                        earlier_start = max(0, new_chain[0].index - 50)
-                        if new_chain[0].index > 0:
-                            request_chain(network, earlier_start, 50)
+            # Deprecated: this node no longer sends chain_request. Ignoring an
+            # unsolicited response avoids keeping two competing sync paths alive.
+            logger.debug("Ignoring deprecated chain_response from %s", peer_addr)
+            return
 
         elif msg_type == "getaddr":
             # Share only peers we have ourselves successfully dialed: an inbound
@@ -662,7 +639,8 @@ async def run_node(port: int, host: str, connect_to: str | None, fund: int, data
     mempool = Mempool()
     network = P2PNetwork(data_path=datadir or ".")
 
-    handler = make_network_handler(chain, mempool, network)
+    sync = make_sync_manager(chain, mempool, network)
+    handler = make_network_handler(chain, mempool, network, sync)
     network.register_handler(handler)
     
     rpc_server = JSONRPCServer(chain, mempool, network)

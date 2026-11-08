@@ -29,3 +29,15 @@ MINING_INITIAL_NONCE_MAX = 2**32 - 1
 
 # State Config
 MAX_STATE_SNAPSHOTS = 10     # Number of recent block states to keep in memory for reorg optimization
+
+# Sync Config (node-local policy; not consensus)
+# 1000 JSON headers are roughly 540 KB, comfortably below MAX_FRAME_BYTES.
+MAX_HEADERS_PER_REQUEST = 1000
+MAX_BLOCKS_PER_REQUEST = 64
+MAX_LOCATOR_HASHES = 32
+# Leave headroom below MAX_FRAME_BYTES (1 MB) for envelope overhead and
+# multiple small blocks sharing one response frame.
+MAX_SYNC_RESPONSE_BYTES = 768 * 1024
+SYNC_REQUEST_TIMEOUT_SECONDS = 30.0
+SYNC_REQUESTS_PER_SECOND = 5.0
+SYNC_REQUEST_BURST = 10

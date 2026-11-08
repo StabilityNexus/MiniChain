@@ -1,5 +1,6 @@
 import time
 import hashlib
+from dataclasses import dataclass, replace
 from typing import Sequence, Optional
 
 from .transaction import Transaction
@@ -32,6 +33,100 @@ def calculate_receipt_root(receipts: Sequence[Receipt]) -> Optional[str]:
     if not receipts:
         return None
     return _calculate_merkle_tree([canonical_json_hash(r.to_dict()) for r in receipts])
+
+
+@dataclass(frozen=True)
+class BlockHeader:
+    """The consensus-critical header of a block, without its body.
+
+    Headers are what make headers-first sync cheap: a peer can prove proof-of-work
+    and chain linkage before this node downloads transactions and receipts.
+    """
+
+    index: int
+    previous_hash: str
+    merkle_root: Optional[str]
+    state_root: Optional[str]
+    receipt_root: Optional[str]
+    timestamp: int
+    target: int
+    nonce: int
+    miner: Optional[str] = None
+    hash: Optional[str] = None
+
+    @classmethod
+    def from_block(cls, block: "Block") -> "BlockHeader":
+        return cls(
+            index=block.index,
+            previous_hash=block.previous_hash,
+            merkle_root=block.merkle_root,
+            state_root=block.state_root,
+            receipt_root=block.receipt_root,
+            timestamp=block.timestamp,
+            target=block.target,
+            nonce=block.nonce,
+            miner=block.miner,
+            hash=block.hash,
+        )
+
+    @classmethod
+    def from_dict(cls, payload: dict) -> "BlockHeader":
+        if not isinstance(payload, dict):
+            raise ValueError("header must be an object")
+
+        try:
+            raw_target = payload["target"]
+            target = int(raw_target, 16) if isinstance(raw_target, str) else int(raw_target)
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError("invalid or missing header target") from exc
+
+        from .network_config import MAX_TARGET
+        if not isinstance(target, int) or target <= 0 or target > MAX_TARGET:
+            raise ValueError(f"invalid header target: {target}")
+
+        try:
+            header = cls(
+                index=int(payload["index"]),
+                previous_hash=str(payload["previous_hash"]),
+                merkle_root=payload.get("merkle_root"),
+                state_root=payload.get("state_root"),
+                receipt_root=payload.get("receipt_root"),
+                timestamp=int(payload["timestamp"]),
+                target=target,
+                nonce=int(payload.get("nonce") or 0),
+                miner=payload.get("miner"),
+                hash=payload.get("hash"),
+            )
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError("invalid header fields") from exc
+
+        expected_hash = header.compute_hash()
+        if header.hash is not None and header.hash != expected_hash:
+            raise ValueError("header hash does not match header")
+        if header.hash is None:
+            header = replace(header, hash=expected_hash)
+        return header
+
+    def to_dict(self, *, include_hash: bool = True) -> dict:
+        header = {
+            "index": self.index,
+            "previous_hash": self.previous_hash,
+            "merkle_root": self.merkle_root,
+            "state_root": self.state_root,
+            "receipt_root": self.receipt_root,
+            "timestamp": self.timestamp,
+            "target": hex(self.target),
+            "nonce": self.nonce,
+        }
+        if self.miner is not None:
+            header["miner"] = self.miner
+        if include_hash and self.hash is not None:
+            header["hash"] = self.hash
+        return header
+
+    def compute_hash(self) -> str:
+        return canonical_json_hash(self.to_dict(include_hash=False))
+
 
 class Block:
     def __init__(
@@ -75,20 +170,7 @@ class Block:
     # HEADER (used for mining)
     # -------------------------
     def to_header_dict(self):
-        header = {
-            "index": self.index,
-            "previous_hash": self.previous_hash,
-            "merkle_root": self.merkle_root,
-            "state_root": self.state_root,
-            "receipt_root": self.receipt_root,
-            "timestamp": self.timestamp,
-            "target": hex(self.target),
-            "nonce": self.nonce,
-        }
-        # Include miner in header only when present (optional field)
-        if self.miner is not None:
-            header["miner"] = self.miner          
-        return header
+        return BlockHeader.from_block(self).to_dict(include_hash=False)
         
     # -------------------------
     # BODY (transactions only)

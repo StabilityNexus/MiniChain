@@ -93,7 +93,7 @@ To connect a secondary node to the network, start a new instance on a different 
 ```bash
 python main.py --port 9001 --connect /ip4/127.0.0.1/tcp/9000/p2p/<seed-peer-id> --datadir ./node2_data
 ```
-The node will automatically sync the blockchain state via the P2P network using the Fork-Choice rule.
+The node will automatically sync the blockchain state via the P2P network using headers-first sync and the Fork-Choice rule (see [`docs/sync.md`](docs/sync.md)).
 
 ### 3. Mining Blocks
 To confirm pending transactions, you need to mine blocks. In the interactive CLI of your node, simply type:
