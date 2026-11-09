@@ -33,6 +33,7 @@ from .network_config import (
 )
 from .node_config import (
     MAX_BLOCKS_PER_REQUEST,
+    MAX_FORK_BODY_BYTES,
     MAX_FORK_HEADERS,
     MAX_HEADERS_PER_REQUEST,
     MAX_LOCATOR_HASHES,
@@ -137,6 +138,8 @@ class _PendingRequest:
     created_at: float
     expires_at: float = 0.0
     attempts: int = 1
+    group: str = ""
+    retired: bool = False
 
 
 @dataclass
@@ -153,6 +156,8 @@ class _SyncSession:
     fork: bool
     work: int = 0
     local_tip: str | None = None
+    start_tip: str | None = None
+    body_bytes: int = 0
     next_index: int = 0
     blocks: list[Block] = field(default_factory=list)
 
@@ -260,6 +265,7 @@ class SyncManager:
         max_response_bytes: int = MAX_SYNC_RESPONSE_BYTES,
         locator_size: int = MAX_LOCATOR_HASHES,
         max_fork_headers: int = MAX_FORK_HEADERS,
+        max_fork_body_bytes: int = MAX_FORK_BODY_BYTES,
         max_request_id_bytes: int = MAX_SYNC_REQUEST_ID_BYTES,
         request_timeout: float = SYNC_REQUEST_TIMEOUT_SECONDS,
         retry_seconds: float = SYNC_REQUEST_RETRY_SECONDS,
@@ -277,6 +283,8 @@ class SyncManager:
             raise ValueError("locator_size must be positive")
         if max_fork_headers <= 0:
             raise ValueError("max_fork_headers must be positive")
+        if max_fork_body_bytes <= 0:
+            raise ValueError("max_fork_body_bytes must be positive")
         if max_request_id_bytes <= 0:
             raise ValueError("max_request_id_bytes must be positive")
         if request_timeout <= 0 or retry_seconds <= 0 or max_retries < 0:
@@ -290,6 +298,7 @@ class SyncManager:
         self.max_response_bytes = max_response_bytes
         self.locator_size = locator_size
         self.max_fork_headers = max_fork_headers
+        self.max_fork_body_bytes = max_fork_body_bytes
         self.max_request_id_bytes = max_request_id_bytes
         self.request_timeout = request_timeout
         self.retry_seconds = retry_seconds
@@ -354,6 +363,7 @@ class SyncManager:
         locator: Sequence[str] | None = None,
         attempts: int = 1,
         expires_at: float | None = None,
+        group: str | None = None,
     ) -> None:
         now = self._clock()
         request_id = self._new_request_id()
@@ -365,6 +375,7 @@ class SyncManager:
                 now + self.request_timeout if expires_at is None else expires_at
             ),
             attempts=attempts,
+            group=group or request_id,
         )
         self._dispatch_sync(
             peer_addr,
@@ -503,6 +514,13 @@ class SyncManager:
             header = BlockHeader.from_block(block).to_dict()
             size = _encoded_size(header) + 1
             if used + size > budget:
+                if not headers:
+                    if self._fits_frame("headers", "headers", header, request_id, None):
+                        headers.append(header)
+                    else:
+                        logger.error(
+                            "Header %s does not fit in a response frame", block.hash
+                        )
                 break
             headers.append(header)
             used += size
@@ -620,7 +638,7 @@ class SyncManager:
                 # stalling sync on a block that fits the network limit. The
                 # encoded overhead is only needed for this single payload.
                 if not payloads and self._fits_frame(
-                    response_type, payload, request_id, extra
+                    response_type, "blocks", payload, request_id, extra
                 ):
                     payloads.append(payload)
                 break
@@ -631,11 +649,12 @@ class SyncManager:
     def _fits_frame(
         self,
         response_type: str,
+        collection_key: str,
         payload: dict,
         request_id: str | None,
         extra: dict | None,
     ) -> bool:
-        response = {"type": response_type, "data": {"blocks": [payload]}}
+        response = {"type": response_type, "data": {collection_key: [payload]}}
         if request_id is not None:
             response["data"]["request_id"] = request_id
         if extra:
@@ -680,9 +699,15 @@ class SyncManager:
                 raise SyncError("headers do not continue the advertised fork")
             validate_header_chain(headers, previous)
             if len(session.headers) + len(headers) > self.max_fork_headers:
-                raise SyncError(
-                    f"fork headers exceed the maximum of {self.max_fork_headers}"
+                # The retention cap is local policy, not a protocol violation,
+                # so drop the session without scoring an honest peer as bad.
+                logger.warning(
+                    "Fork headers from %s exceed the retention cap of %d",
+                    peer_addr,
+                    self.max_fork_headers,
                 )
+                self._drop_session(peer_addr)
+                return None
             session.headers.extend(headers)
             session.work += batch_work
         else:
@@ -690,12 +715,21 @@ class SyncManager:
             if start_block is None:
                 raise SyncError("headers do not connect to a known block")
             validate_header_chain(headers, start_block)
+            fork = start_block.hash != self._tip_hash()
+            if fork and len(headers) > self.max_fork_headers:
+                logger.warning(
+                    "Fork headers from %s exceed the retention cap of %d",
+                    peer_addr,
+                    self.max_fork_headers,
+                )
+                return None
             session = _SyncSession(
                 peer_addr=peer_addr,
                 headers=headers,
                 common_ancestor=start_block,
-                fork=start_block.hash != self._tip_hash(),
+                fork=fork,
                 work=batch_work,
+                start_tip=self._tip_hash(),
             )
             self._sessions[peer_addr] = session
 
@@ -740,6 +774,20 @@ class SyncManager:
             if block.hash != header.hash:
                 raise SyncError(f"received block {block.hash}, expected {header.hash}")
 
+        batch_bytes = 0
+        if session.fork:
+            batch_bytes = sum(_encoded_size(raw) + 1 for raw in raw_blocks)
+            if session.body_bytes + batch_bytes > self.max_fork_body_bytes:
+                # The branch may be valid but too large for our retention
+                # policy, so drop it without scoring the peer as bad.
+                logger.warning(
+                    "Fork bodies from %s exceed the retention cap of %d bytes",
+                    peer_addr,
+                    self.max_fork_body_bytes,
+                )
+                self._drop_session(peer_addr)
+                return None
+
         if not session.fork and session.local_tip != self._tip_hash():
             # A broadcast advanced our chain while this body request was in
             # flight, so the response is validated against an old tip. Start
@@ -751,6 +799,7 @@ class SyncManager:
 
         if session.fork:
             session.blocks.extend(blocks)
+            session.body_bytes += batch_bytes
         else:
             for block in blocks:
                 status = self.chain.add_block(block)
@@ -768,6 +817,17 @@ class SyncManager:
         if session.fork:
             success, orphans = self.chain.resolve_conflicts(session.blocks)
             if not success:
+                if session.start_tip != self._tip_hash():
+                    # The local chain gained work while the fork bodies were
+                    # downloading, so the comparison is stale rather than the
+                    # fork being invalid. Restart without penalizing the peer.
+                    logger.info(
+                        "Local tip changed during fork sync with %s; restarting",
+                        peer_addr,
+                    )
+                    self._drop_session(peer_addr)
+                    self.request_sync(peer_addr)
+                    return None
                 self._drop_session(peer_addr)
                 return ValidationStatus.INVALID
             for block in session.blocks:
@@ -785,6 +845,7 @@ class SyncManager:
         *,
         attempts: int = 1,
         expires_at: float | None = None,
+        group: str | None = None,
     ) -> None:
         """Continue a fork's header range from its last known hash."""
         self._send_headers_request(
@@ -792,6 +853,7 @@ class SyncManager:
             locator=[session.headers[-1].hash],
             attempts=attempts,
             expires_at=expires_at,
+            group=group,
         )
 
     def _request_next_blocks(
@@ -800,6 +862,7 @@ class SyncManager:
         *,
         attempts: int = 1,
         expires_at: float | None = None,
+        group: str | None = None,
     ) -> None:
         batch = session.headers[
             session.next_index : session.next_index + self.max_blocks
@@ -809,7 +872,12 @@ class SyncManager:
             return
 
         now = self._clock()
-        session.local_tip = self._tip_hash()
+        if attempts == 1:
+            # Retries resend the same batch, so keep the tip captured when the
+            # batch was first requested. If a broadcast changes the tip before
+            # the retry, the response must still trigger a restart instead of
+            # being applied on top of the new tip.
+            session.local_tip = self._tip_hash()
         request_id = self._new_request_id()
         self._pending[request_id] = _PendingRequest(
             peer_addr=session.peer_addr,
@@ -819,6 +887,7 @@ class SyncManager:
                 now + self.request_timeout if expires_at is None else expires_at
             ),
             attempts=attempts,
+            group=group or request_id,
         )
         self._dispatch_sync(
             session.peer_addr,
@@ -855,15 +924,32 @@ class SyncManager:
         pending = self._pending.get(request_id)
         if pending is None or pending.peer_addr != peer_addr or pending.kind != kind:
             return None
-        return self._pending.pop(request_id)
+        # A response to any attempt satisfies the whole group: stop waiting for
+        # the other attempts and retire their IDs so they cannot match again.
+        if pending.group:
+            for other_id, other in list(self._pending.items()):
+                if (
+                    other.group == pending.group
+                    and other.peer_addr == peer_addr
+                    and other.kind == kind
+                ):
+                    self._pending.pop(other_id, None)
+        else:
+            self._pending.pop(request_id, None)
+        return pending
 
     def _prune_pending(self) -> None:
         now = self._clock()
         for request_id, pending in list(self._pending.items()):
+            if pending.retired:
+                # Keep the ID valid for a late response until the deadline.
+                if now >= pending.expires_at:
+                    self._pending.pop(request_id, None)
+                continue
             if now - pending.created_at <= self.retry_seconds:
                 continue
             if pending.attempts <= self.max_retries:
-                self._pending.pop(request_id, None)
+                pending.retired = True
                 self._retry_request(pending)
             elif now >= pending.expires_at:
                 self._pending.pop(request_id, None)
@@ -878,12 +964,14 @@ class SyncManager:
                     pending.peer_addr,
                     attempts=attempts,
                     expires_at=pending.expires_at,
+                    group=pending.group,
                 )
             elif session.fork and session.next_index == 0:
                 self._request_next_headers(
                     session,
                     attempts=attempts,
                     expires_at=pending.expires_at,
+                    group=pending.group,
                 )
             else:
                 self._drop_session(pending.peer_addr)
@@ -892,6 +980,7 @@ class SyncManager:
                 session,
                 attempts=attempts,
                 expires_at=pending.expires_at,
+                group=pending.group,
             )
         else:
             self._drop_session(pending.peer_addr)

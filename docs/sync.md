@@ -123,6 +123,7 @@ Defaults live in [`minichain/node_config.py`](../minichain/node_config.py):
 | `SYNC_REQUESTS_PER_SECOND` / `SYNC_REQUEST_BURST` | 5 / 10 | Per-peer token bucket for serving requests and pacing outbound requests |
 | `SYNC_REQUEST_RETRY_SECONDS` / `SYNC_REQUEST_MAX_RETRIES` | 5 / 2 | Retry an unanswered request before dropping the session |
 | `MAX_FORK_HEADERS` | 16,000 | Cap on headers retained while following a fork |
+| `MAX_FORK_BODY_BYTES` | 64 MiB | Cap on bodies buffered while following a fork |
 
 A request's `max` field and a legacy `chain_request.limit` are clamped to their
 configured ranges, so an out-of-range value alone is not a validation failure.
@@ -136,8 +137,15 @@ requested count because of the byte budget, and the requester continues from the
 last received item; an empty header batch ends the sync. Outbound requests are
 paced against the same per-peer budget, and a request that would exceed it is
 queued briefly instead of being dropped. Unanswered requests are retried before
-a stalled session is dropped. A single valid block may exceed the soft response
-budget when its complete frame still fits within `MAX_FRAME_BYTES`.
+a stalled session is dropped; earlier attempt IDs stay valid until the session
+deadline so a late response can still complete the sync. A single valid header
+or block may exceed the soft response budget when its complete frame still fits
+within `MAX_FRAME_BYTES`.
+
+A fork that exceeds `MAX_FORK_HEADERS` or `MAX_FORK_BODY_BYTES` is dropped
+without penalizing the peer: the caps are local retention policy, not protocol
+violations. If the local chain gains work while fork bodies are downloading, the
+stale comparison restarts sync instead of treating the peer as invalid.
 
 ## Reorgs
 

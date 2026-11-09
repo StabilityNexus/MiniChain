@@ -402,6 +402,78 @@ class TestSyncRecovery:
         manager.request_sync("peer:a")
         assert len(sent) == 2
 
+    def test_response_to_an_earlier_attempt_is_accepted(self):
+        now = [0.0]
+        sent = []
+        manager = SyncManager(
+            _fake_chain(3),
+            lambda peer, message: sent.append(message),
+            clock=lambda: now[0],
+            retry_seconds=5.0,
+            max_retries=1,
+        )
+        manager.request_sync("peer:a")
+        first = sent[0]
+        first_id = first["data"]["request_id"]
+
+        now[0] = 6.0
+        manager.maintain()
+        second = sent[1]
+        second_id = second["data"]["request_id"]
+        assert first_id != second_id
+        assert manager._pending[first_id].retired
+
+        previous = manager.chain.chain[-1]
+        header = BlockHeader(
+            index=previous.index + 1,
+            previous_hash=previous.hash,
+            merkle_root=None,
+            state_root=None,
+            receipt_root=None,
+            timestamp=previous.timestamp + 1,
+            target=MAX_TARGET,
+            nonce=0,
+        )
+        header = replace(header, hash=header.compute_hash())
+        status = manager.handle_message(
+            "peer:a",
+            "headers",
+            {
+                "headers": [header.to_dict()],
+                "request_id": first_id,
+            },
+        )
+
+        assert status is None
+        assert manager._sessions
+        # A response to either attempt retires the whole request group.
+        assert first_id not in manager._pending
+        assert second_id not in manager._pending
+        assert [p.kind for p in manager._pending.values()] == ["blocks"]
+        assert sent[-1]["type"] == "getblocks"
+
+    def test_retired_attempts_expire_with_the_session(self):
+        now = [0.0]
+        manager = SyncManager(
+            _fake_chain(3),
+            lambda *_: None,
+            clock=lambda: now[0],
+            retry_seconds=5.0,
+            max_retries=1,
+        )
+        manager.request_sync("peer:a")
+        first_id = next(iter(manager._pending))
+
+        now[0] = 6.0
+        manager.maintain()
+        assert len(manager._pending) == 2
+        assert manager._pending[first_id].retired
+
+        now[0] = 31.0
+        manager.maintain()
+        assert not manager._pending
+        assert not manager._sessions
+
     def test_outgoing_requests_wait_for_a_peer_token(self):
         now = [0.0]
         sent = []
@@ -562,6 +634,65 @@ class TestSyncResponses:
 
         assert [b["index"] for b in response["data"]["blocks"]] == [1]
         assert len(canonical_json_dumps(response).encode("utf-8")) < MAX_FRAME_BYTES
+
+    def test_single_header_may_use_the_soft_budget(self):
+        chain = _fake_chain(2)
+        manager = SyncManager(
+            chain,
+            lambda *_: None,
+            max_response_bytes=64,
+        )
+
+        response = manager.build_headers_response({"locator": [chain.chain[0].hash]})
+
+        assert [h["index"] for h in response["data"]["headers"]] == [1]
+        assert len(canonical_json_dumps(response).encode("utf-8")) < MAX_FRAME_BYTES
+
+    def test_block_byte_limit_counts_utf8(self):
+        transaction = Transaction(
+            sender="11" * 32,
+            receiver="22" * 32,
+            amount=1,
+            nonce=0,
+            data="\u00e9" * 100,
+        )
+        blocks = []
+        for index in range(3):
+            block = Block(
+                index=index,
+                previous_hash="0" * 64 if index == 0 else blocks[-1].hash,
+                target=MAX_TARGET,
+                timestamp=1_700_000_000_000 + index,
+                transactions=[transaction],
+            )
+            block.hash = block.compute_hash()
+            blocks.append(block)
+        chain = SimpleNamespace(chain=blocks)
+        block_size = max(
+            len(canonical_json_dumps(block.to_dict()).encode("utf-8")) + 1
+            for block in blocks[1:]
+        )
+        envelope = len(
+            canonical_json_dumps({"type": "blocks", "data": {"blocks": []}}).encode(
+                "utf-8"
+            )
+        )
+        manager = SyncManager(
+            chain,
+            lambda *_: None,
+            max_blocks=3,
+            max_response_bytes=envelope + block_size,
+        )
+
+        response = manager.build_blocks_response(
+            {"hashes": [block.hash for block in blocks[1:]]}
+        )
+
+        assert [block["index"] for block in response["data"]["blocks"]] == [1]
+        encoded = canonical_json_dumps(response).encode("utf-8")
+        assert len(encoded) <= manager.max_response_bytes
+        # Character-based sizing would miss the extra UTF-8 bytes.
+        assert len(canonical_json_dumps(response)) < len(encoded)
 
     def test_request_bounds_are_enforced(self):
         chain = _fake_chain(5)
@@ -828,6 +959,51 @@ class TestNetworkHandlerIntegration:
 
         asyncio.run(scenario())
 
+    def test_modern_and_legacy_requests_share_the_rate_limit(self, tmp_path):
+        chain = self._genesis(tmp_path)
+        now = [0.0]
+
+        async def scenario():
+            network = self.FakeNetwork()
+            sync = SyncManager(
+                chain,
+                lambda peer, payload: asyncio.create_task(
+                    network._unicast_raw(peer, payload)
+                ),
+                rate_limiter=PeerRateLimiter(
+                    rate_per_second=1.0, burst=1, clock=lambda: now[0]
+                ),
+            )
+            handler = make_network_handler(chain, Mempool(), network, sync)
+
+            assert (
+                await handler(
+                    {
+                        "type": "getheaders",
+                        "data": {"locator": [chain.chain[0].hash]},
+                        "_peer_addr": "peer:a",
+                    }
+                )
+                is None
+            )
+            await asyncio.sleep(0)
+            assert network.sent[0][1]["type"] == "headers"
+
+            assert (
+                await handler(
+                    {
+                        "type": "chain_request",
+                        "data": {"start_index": 0, "limit": 1},
+                        "_peer_addr": "peer:a",
+                    }
+                )
+                is None
+            )
+            await asyncio.sleep(0)
+            assert len(network.sent) == 1
+
+        asyncio.run(scenario())
+
 
 class TestHeadersFirstSync:
     def test_linear_sync_paginates_headers_and_bodies(self, genesis_file):
@@ -1089,9 +1265,144 @@ class TestHeadersFirstSync:
 
         statuses = _pump(client, server, receiver_out, sender_out)
 
-        assert ValidationStatus.MALFORMED in statuses
+        # Exceeding the local retention cap is not a peer protocol violation.
+        assert all(status is None for status in statuses)
         assert not client._sessions
         assert not client._pending
+
+    def test_fork_header_cap_applies_to_the_first_batch(self):
+        receiver = _fake_chain(10)
+        sender = _fake_branch(receiver.chain[0], 12)
+        client, server, receiver_out, sender_out, receiver_sent = _make_sync_pair(
+            receiver,
+            sender,
+            max_headers=2,
+            max_fork_headers=1,
+        )
+        client.request_sync("peer:test")
+
+        statuses = _pump(client, server, receiver_out, sender_out)
+
+        assert all(status is None for status in statuses)
+        assert not client._sessions
+        assert not [m for m in receiver_sent if m["type"] == "getblocks"]
+
+    def test_fork_body_memory_is_bounded(self, genesis_file):
+        path, _, pk = genesis_file
+        template = Blockchain(genesis_path=path)
+        shared = _mine_empty_block(template, pk, template.last_block.timestamp + 1000)
+        receiver = Blockchain(genesis_path=path)
+        sender = Blockchain(genesis_path=path)
+        assert receiver.add_block(shared) == ValidationStatus.VALID
+        assert sender.add_block(shared) == ValidationStatus.VALID
+        local = _mine_empty_block(receiver, pk, shared.timestamp + 1000)
+        sender_2 = _mine_empty_block(sender, pk, shared.timestamp + 1000)
+        _mine_empty_block(sender, pk, sender_2.timestamp + 1000)
+
+        client, server, receiver_out, sender_out, receiver_sent = _make_sync_pair(
+            receiver,
+            sender,
+            max_blocks=2,
+            max_fork_body_bytes=1,
+        )
+        client.request_sync("peer:test")
+
+        statuses = _pump(client, server, receiver_out, sender_out)
+
+        assert all(status is None for status in statuses)
+        assert not client._sessions
+        assert not client._pending
+        assert receiver.last_block.hash == local.hash
+        assert [m["type"] for m in receiver_sent].count("getblocks") == 1
+
+    def test_fork_race_with_local_tip_restarts_without_penalty(self, genesis_file):
+        path, _, pk = genesis_file
+        template = Blockchain(genesis_path=path)
+        shared = _mine_empty_block(template, pk, template.last_block.timestamp + 1000)
+        receiver = Blockchain(genesis_path=path)
+        sender = Blockchain(genesis_path=path)
+        assert receiver.add_block(shared) == ValidationStatus.VALID
+        assert sender.add_block(shared) == ValidationStatus.VALID
+
+        local = _mine_empty_block(receiver, pk, shared.timestamp + 1000)
+        sender_2 = _mine_empty_block(sender, pk, shared.timestamp + 1000)
+        _mine_empty_block(sender, pk, sender_2.timestamp + 1000)
+
+        client, server, receiver_out, sender_out, receiver_sent = _make_sync_pair(
+            receiver,
+            sender,
+            max_blocks=1,
+        )
+        client.request_sync("peer:test")
+
+        peer, request = receiver_out.pop(0)
+        assert server.handle_message(peer, request["type"], request["data"]) is None
+        peer, response = sender_out.pop(0)
+        assert client.handle_message(peer, response["type"], response["data"]) is None
+
+        peer, request = receiver_out.pop(0)
+        assert request["type"] == "getblocks"
+        assert server.handle_message(peer, request["type"], request["data"]) is None
+        peer, response = sender_out.pop(0)
+        assert client.handle_message(peer, response["type"], response["data"]) is None
+
+        # The local chain gains more work while the fork bodies download.
+        next_local = _mine_empty_block(receiver, pk, local.timestamp + 1000)
+        final_local = _mine_empty_block(receiver, pk, next_local.timestamp + 1000)
+
+        peer, request = receiver_out.pop(0)
+        assert request["type"] == "getblocks"
+        assert server.handle_message(peer, request["type"], request["data"]) is None
+        peer, response = sender_out.pop(0)
+        status = client.handle_message(peer, response["type"], response["data"])
+
+        assert status is None
+        assert not client._sessions
+        assert receiver.last_block.hash == final_local.hash
+        assert [m["type"] for m in receiver_sent].count("getheaders") == 2
+        assert receiver_out[-1][1]["type"] == "getheaders"
+
+    def test_block_retry_preserves_the_batch_tip_and_restarts(self, genesis_file):
+        path, _, pk = genesis_file
+        receiver = Blockchain(genesis_path=path)
+        sender = Blockchain(genesis_path=path)
+        for _ in range(2):
+            assert mine_and_process_block(sender, Mempool(), pk) is not None
+
+        now = [0.0]
+        client, server, receiver_out, sender_out, _ = _make_sync_pair(
+            receiver,
+            sender,
+            clock=lambda: now[0],
+        )
+        client.request_sync("peer:test")
+
+        peer, request = receiver_out.pop(0)
+        assert server.handle_message(peer, request["type"], request["data"]) is None
+        peer, response = sender_out.pop(0)
+        assert client.handle_message(peer, response["type"], response["data"]) is None
+        peer, request = receiver_out.pop(0)
+        assert request["type"] == "getblocks"
+        batch = list(request["data"]["hashes"])
+
+        # A broadcast adds the first requested block before the retry.
+        assert receiver.add_block(sender.chain[1]) == ValidationStatus.VALID
+
+        now[0] = 6.0
+        client.maintain()
+        peer, retry = receiver_out.pop(0)
+        assert retry["type"] == "getblocks"
+        assert retry["data"]["hashes"] == batch
+
+        # Answer the retried batch with the original request's response.
+        assert server.handle_message(peer, request["type"], request["data"]) is None
+        peer, response = sender_out.pop(0)
+        status = client.handle_message(peer, response["type"], response["data"])
+
+        assert status is None
+        assert not client._sessions
+        assert receiver.last_block.hash == sender.chain[1].hash
+        assert receiver_out[-1][1]["type"] == "getheaders"
 
     def test_fork_sync_uses_the_forks_target_sequence(self, genesis_file):
         path, _, pk = genesis_file
