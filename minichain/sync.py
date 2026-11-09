@@ -25,13 +25,23 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 
 from .block import Block, BlockHeader
-from .network_config import MAX_FUTURE_BLOCK_TIME_MS, MAX_TARGET, MIN_TARGET
+from .network_config import (
+    MAX_FRAME_BYTES,
+    MAX_FUTURE_BLOCK_TIME_MS,
+    MAX_TARGET,
+    MIN_TARGET,
+)
 from .node_config import (
     MAX_BLOCKS_PER_REQUEST,
+    MAX_FORK_HEADERS,
     MAX_HEADERS_PER_REQUEST,
     MAX_LOCATOR_HASHES,
+    MAX_SYNC_REQUEST_ID_BYTES,
     MAX_SYNC_RESPONSE_BYTES,
+    SYNC_RATE_LIMIT_MAX_PEERS,
     SYNC_REQUEST_BURST,
+    SYNC_REQUEST_MAX_RETRIES,
+    SYNC_REQUEST_RETRY_SECONDS,
     SYNC_REQUEST_TIMEOUT_SECONDS,
     SYNC_REQUESTS_PER_SECOND,
 )
@@ -61,18 +71,30 @@ class PeerRateLimiter:
         rate_per_second: float = SYNC_REQUESTS_PER_SECOND,
         burst: int = SYNC_REQUEST_BURST,
         clock: Callable[[], float] = time.monotonic,
+        max_peers: int = SYNC_RATE_LIMIT_MAX_PEERS,
     ):
         if rate_per_second <= 0:
             raise ValueError("rate_per_second must be positive")
         if burst <= 0:
             raise ValueError("burst must be positive")
+        if max_peers <= 0:
+            raise ValueError("max_peers must be positive")
         self.rate_per_second = float(rate_per_second)
         self.burst = float(burst)
+        self.max_peers = max_peers
         self._clock = clock
         self._buckets: dict[str, tuple[float, float]] = {}
 
     def allow(self, peer_addr: str) -> bool:
         now = self._clock()
+        if peer_addr not in self._buckets and len(self._buckets) >= self.max_peers:
+            # Buckets that have refilled to the burst are indistinguishable
+            # from absent ones, so dropping them cannot change any active
+            # limit. If every retained bucket is still in use, refuse the new
+            # peer rather than evicting one and resetting a live rate limit.
+            self._prune(now)
+            if len(self._buckets) >= self.max_peers:
+                return False
         tokens, last_seen = self._buckets.get(peer_addr, (self.burst, now))
         elapsed = max(0.0, now - last_seen)
         tokens = min(self.burst, tokens + elapsed * self.rate_per_second)
@@ -82,12 +104,45 @@ class PeerRateLimiter:
         self._buckets[peer_addr] = (tokens - 1.0, now)
         return True
 
+    def prune(self) -> None:
+        """Drop buckets that have refilled completely, bounding retained state."""
+        self._prune(self._clock())
+
+    def retry_after(self, peer_addr: str) -> float:
+        """Seconds until this peer has a token, or zero if one is available."""
+        now = self._clock()
+        tokens, last_seen = self._buckets.get(peer_addr, (self.burst, now))
+        tokens = min(
+            self.burst,
+            tokens + max(0.0, now - last_seen) * self.rate_per_second,
+        )
+        if tokens >= 1.0:
+            return 0.0
+        return (1.0 - tokens) / self.rate_per_second
+
+    def _prune(self, now: float) -> None:
+        refilled = [
+            peer
+            for peer, (tokens, last_seen) in self._buckets.items()
+            if tokens + (now - last_seen) * self.rate_per_second >= self.burst
+        ]
+        for peer in refilled:
+            self._buckets.pop(peer, None)
+
 
 @dataclass
 class _PendingRequest:
     peer_addr: str
     kind: str
     created_at: float
+    expires_at: float = 0.0
+    attempts: int = 1
+
+
+@dataclass
+class _DeferredRequest:
+    message: dict
+    not_before: float
 
 
 @dataclass
@@ -96,8 +151,15 @@ class _SyncSession:
     headers: list[BlockHeader]
     common_ancestor: Block
     fork: bool
+    work: int = 0
+    local_tip: str | None = None
     next_index: int = 0
     blocks: list[Block] = field(default_factory=list)
+
+
+def _encoded_size(payload) -> int:
+    """Serialized size in bytes, matching the P2P layer's UTF-8 framing."""
+    return len(canonical_json_dumps(payload).encode("utf-8"))
 
 
 def _bounded_int(value, *, default: int, minimum: int, maximum: int) -> int:
@@ -197,8 +259,13 @@ class SyncManager:
         max_blocks: int = MAX_BLOCKS_PER_REQUEST,
         max_response_bytes: int = MAX_SYNC_RESPONSE_BYTES,
         locator_size: int = MAX_LOCATOR_HASHES,
+        max_fork_headers: int = MAX_FORK_HEADERS,
+        max_request_id_bytes: int = MAX_SYNC_REQUEST_ID_BYTES,
         request_timeout: float = SYNC_REQUEST_TIMEOUT_SECONDS,
+        retry_seconds: float = SYNC_REQUEST_RETRY_SECONDS,
+        max_retries: int = SYNC_REQUEST_MAX_RETRIES,
         rate_limiter: PeerRateLimiter | None = None,
+        outgoing_rate_limiter: PeerRateLimiter | None = None,
         clock: Callable[[], float] = time.monotonic,
         request_id_factory: Callable[[], str] = lambda: uuid.uuid4().hex,
     ):
@@ -208,6 +275,12 @@ class SyncManager:
             raise ValueError("max_response_bytes must be positive")
         if locator_size <= 0:
             raise ValueError("locator_size must be positive")
+        if max_fork_headers <= 0:
+            raise ValueError("max_fork_headers must be positive")
+        if max_request_id_bytes <= 0:
+            raise ValueError("max_request_id_bytes must be positive")
+        if request_timeout <= 0 or retry_seconds <= 0 or max_retries < 0:
+            raise ValueError("invalid sync retry policy")
         self.chain = chain
         self._send = send
         self._on_block_applied = on_block_applied
@@ -216,12 +289,28 @@ class SyncManager:
         self.max_blocks = max_blocks
         self.max_response_bytes = max_response_bytes
         self.locator_size = locator_size
+        self.max_fork_headers = max_fork_headers
+        self.max_request_id_bytes = max_request_id_bytes
         self.request_timeout = request_timeout
+        self.retry_seconds = retry_seconds
+        self.max_retries = max_retries
         self._rate_limiter = rate_limiter or PeerRateLimiter(clock=clock)
+        # Request pacing is separate from the inbound limiter: one bounds what
+        # we serve, the other keeps our requests inside the peer's budget.
+        self._outgoing_rate_limiter = outgoing_rate_limiter or PeerRateLimiter(
+            clock=clock
+        )
         self._clock = clock
         self._request_id_factory = request_id_factory
         self._pending: dict[str, _PendingRequest] = {}
+        self._deferred: dict[str, _DeferredRequest] = {}
         self._sessions: dict[str, _SyncSession] = {}
+        # Cached hash -> block/position maps for the current main chain. They
+        # are extended as blocks are appended and rebuilt after a reorg.
+        self._hash_index: dict[str, Block] = {}
+        self._hash_positions: dict[str, int] = {}
+        self._indexed_length = 0
+        self._indexed_tip: str | None = None
 
     @staticmethod
     def handles(message_type: str) -> bool:
@@ -231,31 +320,89 @@ class SyncManager:
 
     def request_sync(self, peer_addr: str) -> None:
         """Ask a peer for headers that follow our current best block."""
+        # Expire stale requests first: otherwise a request that timed out (for
+        # example because the peer rate-limited it) blocks every retry until
+        # some unrelated message happens to arrive.
+        self._prune_pending()
         if peer_addr in self._sessions:
             return
-        if any(
-            pending.peer_addr == peer_addr and pending.kind == "headers"
-            for pending in self._pending.values()
-        ):
+        if self._has_pending(peer_addr, "headers"):
             return
+        self._send_headers_request(peer_addr)
 
+    def allow_request(self, peer_addr: str) -> bool:
+        """Apply the per-peer sync request budget to any sync-style request."""
+        return self._rate_limiter.allow(peer_addr)
+
+    def maintain(self) -> None:
+        """Bound limiter state and recover requests that were never answered."""
+        self._rate_limiter.prune()
+        self._outgoing_rate_limiter.prune()
+        self._prune_pending()
+        self._flush_deferred()
+
+    def _has_pending(self, peer_addr: str, kind: str) -> bool:
+        return any(
+            pending.peer_addr == peer_addr and pending.kind == kind
+            for pending in self._pending.values()
+        )
+
+    def _send_headers_request(
+        self,
+        peer_addr: str,
+        *,
+        locator: Sequence[str] | None = None,
+        attempts: int = 1,
+        expires_at: float | None = None,
+    ) -> None:
+        now = self._clock()
         request_id = self._new_request_id()
         self._pending[request_id] = _PendingRequest(
             peer_addr=peer_addr,
             kind="headers",
-            created_at=self._clock(),
+            created_at=now,
+            expires_at=(
+                now + self.request_timeout if expires_at is None else expires_at
+            ),
+            attempts=attempts,
         )
-        self._send(
+        self._dispatch_sync(
             peer_addr,
             {
                 "type": "getheaders",
                 "data": {
                     "request_id": request_id,
-                    "locator": self.locator(),
+                    "locator": list(locator) if locator is not None else self.locator(),
                     "max": self.max_headers,
                 },
             },
         )
+
+    def _dispatch_sync(self, peer_addr: str, message: dict) -> None:
+        """Send a sync request, or queue it until the peer has a token."""
+        if self._outgoing_rate_limiter.allow(peer_addr):
+            self._deferred.pop(peer_addr, None)
+            self._send(peer_addr, message)
+            return
+        delay = self._outgoing_rate_limiter.retry_after(peer_addr)
+        self._deferred[peer_addr] = _DeferredRequest(
+            message=message,
+            not_before=self._clock() + delay,
+        )
+        logger.debug("Deferring %s to %s for %.3fs", message["type"], peer_addr, delay)
+
+    def _flush_deferred(self) -> None:
+        now = self._clock()
+        for peer_addr, deferred in list(self._deferred.items()):
+            if now < deferred.not_before:
+                continue
+            if not self._outgoing_rate_limiter.allow(peer_addr):
+                deferred.not_before = now + self._outgoing_rate_limiter.retry_after(
+                    peer_addr
+                )
+                continue
+            self._deferred.pop(peer_addr, None)
+            self._send(peer_addr, deferred.message)
 
     def locator(self) -> list[str]:
         """Return recent block hashes, newest first, with exponential spacing."""
@@ -291,9 +438,13 @@ class SyncManager:
             return ValidationStatus.MALFORMED
 
         if message_type in ("getheaders", "getblocks"):
-            if not self._rate_limiter.allow(peer_addr):
+            if not self.allow_request(peer_addr):
+                # A request can be dropped during a fast, honest bulk sync
+                # (for example after the burst is exhausted), so do not score
+                # the requester as failed. The client retries unanswered
+                # requests through maintain().
                 logger.warning("Rate-limited sync request from %s", peer_addr)
-                return ValidationStatus.FAILED
+                return None
             try:
                 response = (
                     self.build_headers_response(payload)
@@ -339,26 +490,26 @@ class SyncManager:
         stop_hash = payload.get("stop_hash")
         if stop_hash is not None and not isinstance(stop_hash, str):
             raise SyncError("stop_hash must be a string or null")
+        request_id = self._validated_request_id(payload)
 
         start_block = self.find_common_ancestor(locator)
         start_index = self._index_of(start_block) if start_block is not None else -1
-        budget = max(1, self.max_response_bytes - 512)
+        budget = self._payload_budget("headers", "headers", request_id)
         used = 0
         headers: list[dict] = []
         for block in self.chain.chain[start_index + 1 : start_index + 1 + max_headers]:
             if stop_hash is not None and block.hash == stop_hash:
                 break
             header = BlockHeader.from_block(block).to_dict()
-            size = len(canonical_json_dumps(header)) + 1
+            size = _encoded_size(header) + 1
             if used + size > budget:
                 break
             headers.append(header)
             used += size
 
-        response = {"type": "headers", "data": {"headers": headers}}
-        if isinstance(payload.get("request_id"), str):
-            response["data"]["request_id"] = payload["request_id"]
-        return response
+        return self._with_request_id(
+            {"type": "headers", "data": {"headers": headers}}, request_id
+        )
 
     def build_blocks_response(self, payload: dict) -> dict:
         hashes = _validate_hashes(
@@ -366,7 +517,8 @@ class SyncManager:
             maximum=self.max_blocks,
             field_name="hashes",
         )
-        by_hash = {block.hash: block for block in self.chain.chain}
+        request_id = self._validated_request_id(payload)
+        by_hash = self._chain_hash_index()[0]
         selected = []
         for block_hash in hashes:
             block = by_hash.get(block_hash)
@@ -376,18 +528,26 @@ class SyncManager:
                 break
             selected.append(block)
 
-        response = {
-            "type": "blocks",
-            "data": {"blocks": self._bounded_block_payloads(selected)},
-        }
-        if isinstance(payload.get("request_id"), str):
-            response["data"]["request_id"] = payload["request_id"]
-        return response
+        return self._with_request_id(
+            {
+                "type": "blocks",
+                "data": {
+                    "blocks": self._bounded_block_payloads(
+                        selected, response_type="blocks", request_id=request_id
+                    )
+                },
+            },
+            request_id,
+        )
 
     def build_legacy_blocks_response(self, start_index: int, limit: int) -> dict:
         """Build a bounded ``chain_response`` for pre-headers-first peers."""
         blocks = self.chain.chain[start_index : start_index + limit]
-        payloads = self._bounded_block_payloads(blocks)
+        payloads = self._bounded_block_payloads(
+            blocks,
+            response_type="chain_response",
+            extra={"requested_limit": 0},
+        )
         return {
             "type": "chain_response",
             "data": {
@@ -398,18 +558,90 @@ class SyncManager:
             },
         }
 
-    def _bounded_block_payloads(self, blocks: Sequence[Block]) -> list[dict]:
-        budget = max(1, self.max_response_bytes - 512)
+    def _validated_request_id(self, payload: dict) -> str | None:
+        request_id = payload.get("request_id")
+        if request_id is None:
+            return None
+        if not isinstance(request_id, str) or not request_id:
+            raise SyncError("request_id must be a non-empty string")
+        if len(request_id.encode("utf-8")) > self.max_request_id_bytes:
+            raise SyncError(
+                f"request_id exceeds the maximum of {self.max_request_id_bytes} bytes"
+            )
+        return request_id
+
+    def _response_base(
+        self,
+        response_type: str,
+        collection_key: str,
+        request_id: str | None,
+        extra: dict | None = None,
+    ) -> int:
+        base = {"type": response_type, "data": {collection_key: []}}
+        if request_id is not None:
+            base["data"]["request_id"] = request_id
+        if extra:
+            base["data"].update(extra)
+        return _encoded_size(base)
+
+    def _payload_budget(
+        self,
+        response_type: str,
+        collection_key: str,
+        request_id: str | None,
+        extra: dict | None = None,
+    ) -> int:
+        envelope = self._response_base(response_type, collection_key, request_id, extra)
+        return max(0, self.max_response_bytes - envelope)
+
+    @staticmethod
+    def _with_request_id(response: dict, request_id: str | None) -> dict:
+        if request_id is not None:
+            response["data"]["request_id"] = request_id
+        return response
+
+    def _bounded_block_payloads(
+        self,
+        blocks: Sequence[Block],
+        *,
+        response_type: str = "blocks",
+        request_id: str | None = None,
+        extra: dict | None = None,
+    ) -> list[dict]:
+        budget = self._payload_budget(response_type, "blocks", request_id, extra=extra)
         used = 0
         payloads: list[dict] = []
         for block in blocks:
             payload = block.to_dict()
-            size = len(canonical_json_dumps(payload)) + 1
+            size = _encoded_size(payload) + 1
             if used + size > budget:
+                # A valid block can be larger than the soft response budget
+                # yet still fit in one framed message. Keep it rather than
+                # stalling sync on a block that fits the network limit. The
+                # encoded overhead is only needed for this single payload.
+                if not payloads and self._fits_frame(
+                    response_type, payload, request_id, extra
+                ):
+                    payloads.append(payload)
                 break
             payloads.append(payload)
             used += size
         return payloads
+
+    def _fits_frame(
+        self,
+        response_type: str,
+        payload: dict,
+        request_id: str | None,
+        extra: dict | None,
+    ) -> bool:
+        response = {"type": response_type, "data": {"blocks": [payload]}}
+        if request_id is not None:
+            response["data"]["request_id"] = request_id
+        if extra:
+            response["data"].update(extra)
+        # +1 for the newline that frames the message on the wire.
+        return _encoded_size(response) + 1 <= MAX_FRAME_BYTES
 
     # ── inbound responses ────────────────────────────────────────────────────
 
@@ -432,9 +664,10 @@ class SyncManager:
 
         try:
             headers = [BlockHeader.from_dict(raw) for raw in raw_headers]
-        except (TypeError, ValueError) as exc:
+        except (TypeError, ValueError, OverflowError) as exc:
             raise SyncError(f"invalid header payload: {exc}") from exc
 
+        batch_work = _total_work(headers)
         session = self._sessions.get(peer_addr)
         if session is not None:
             # A fork with more than one header batch keeps requesting headers
@@ -446,7 +679,12 @@ class SyncManager:
             if headers[0].previous_hash != previous.hash:
                 raise SyncError("headers do not continue the advertised fork")
             validate_header_chain(headers, previous)
+            if len(session.headers) + len(headers) > self.max_fork_headers:
+                raise SyncError(
+                    f"fork headers exceed the maximum of {self.max_fork_headers}"
+                )
             session.headers.extend(headers)
+            session.work += batch_work
         else:
             start_block = self._find_block(headers[0].previous_hash)
             if start_block is None:
@@ -456,13 +694,12 @@ class SyncManager:
                 peer_addr=peer_addr,
                 headers=headers,
                 common_ancestor=start_block,
-                fork=start_block.hash != self.chain.last_block.hash,
+                fork=start_block.hash != self._tip_hash(),
+                work=batch_work,
             )
             self._sessions[peer_addr] = session
 
-        if session.fork and _total_work(session.headers) <= self._suffix_work(
-            session.common_ancestor
-        ):
+        if session.fork and session.work <= self._suffix_work(session.common_ancestor):
             self._request_next_headers(session)
             return None
 
@@ -496,12 +733,21 @@ class SyncManager:
 
         try:
             blocks = [Block.from_dict(raw) for raw in raw_blocks]
-        except (KeyError, TypeError, ValueError) as exc:
+        except (KeyError, TypeError, ValueError, AttributeError, OverflowError) as exc:
             raise SyncError(f"invalid block payload: {exc}") from exc
 
         for block, header in zip(blocks, expected_headers):
             if block.hash != header.hash:
                 raise SyncError(f"received block {block.hash}, expected {header.hash}")
+
+        if not session.fork and session.local_tip != self._tip_hash():
+            # A broadcast advanced our chain while this body request was in
+            # flight, so the response is validated against an old tip. Start
+            # over from the current chain instead of punishing an honest peer.
+            logger.info("Local tip changed during sync with %s; restarting", peer_addr)
+            self._drop_session(peer_addr)
+            self.request_sync(peer_addr)
+            return None
 
         if session.fork:
             session.blocks.extend(blocks)
@@ -533,27 +779,28 @@ class SyncManager:
 
     # ── session helpers ──────────────────────────────────────────────────────
 
-    def _request_next_headers(self, session: _SyncSession) -> None:
+    def _request_next_headers(
+        self,
+        session: _SyncSession,
+        *,
+        attempts: int = 1,
+        expires_at: float | None = None,
+    ) -> None:
         """Continue a fork's header range from its last known hash."""
-        request_id = self._new_request_id()
-        self._pending[request_id] = _PendingRequest(
-            peer_addr=session.peer_addr,
-            kind="headers",
-            created_at=self._clock(),
-        )
-        self._send(
+        self._send_headers_request(
             session.peer_addr,
-            {
-                "type": "getheaders",
-                "data": {
-                    "request_id": request_id,
-                    "locator": [session.headers[-1].hash],
-                    "max": self.max_headers,
-                },
-            },
+            locator=[session.headers[-1].hash],
+            attempts=attempts,
+            expires_at=expires_at,
         )
 
-    def _request_next_blocks(self, session: _SyncSession) -> None:
+    def _request_next_blocks(
+        self,
+        session: _SyncSession,
+        *,
+        attempts: int = 1,
+        expires_at: float | None = None,
+    ) -> None:
         batch = session.headers[
             session.next_index : session.next_index + self.max_blocks
         ]
@@ -561,13 +808,19 @@ class SyncManager:
             self._finish_session(session)
             return
 
+        now = self._clock()
+        session.local_tip = self._tip_hash()
         request_id = self._new_request_id()
         self._pending[request_id] = _PendingRequest(
             peer_addr=session.peer_addr,
             kind="blocks",
-            created_at=self._clock(),
+            created_at=now,
+            expires_at=(
+                now + self.request_timeout if expires_at is None else expires_at
+            ),
+            attempts=attempts,
         )
-        self._send(
+        self._dispatch_sync(
             session.peer_addr,
             {
                 "type": "getblocks",
@@ -580,14 +833,16 @@ class SyncManager:
 
     def _finish_session(self, session: _SyncSession) -> None:
         self._sessions.pop(session.peer_addr, None)
-        # A fork may have been adopted after only the prefix needed to prove more
-        # work, so always ask for what follows the new tip. A linear sync only
-        # needs another request when the peer filled a whole header batch.
-        if session.fork or len(session.headers) == self.max_headers:
+        # After every non-empty header batch, ask for what follows the (possibly
+        # newly adopted) tip. The peer returns an empty batch when we are caught
+        # up, which stops the loop. This also covers batches shortened by the
+        # peer's response byte budget rather than its header count.
+        if session.headers:
             self.request_sync(session.peer_addr)
 
     def _drop_session(self, peer_addr: str) -> None:
         self._sessions.pop(peer_addr, None)
+        self._deferred.pop(peer_addr, None)
         for request_id, pending in list(self._pending.items()):
             if pending.peer_addr == peer_addr:
                 self._pending.pop(request_id, None)
@@ -605,33 +860,87 @@ class SyncManager:
     def _prune_pending(self) -> None:
         now = self._clock()
         for request_id, pending in list(self._pending.items()):
-            if now - pending.created_at > self.request_timeout:
+            if now - pending.created_at <= self.retry_seconds:
+                continue
+            if pending.attempts <= self.max_retries:
+                self._pending.pop(request_id, None)
+                self._retry_request(pending)
+            elif now >= pending.expires_at:
                 self._pending.pop(request_id, None)
                 self._drop_session(pending.peer_addr)
+
+    def _retry_request(self, pending: _PendingRequest) -> None:
+        session = self._sessions.get(pending.peer_addr)
+        attempts = pending.attempts + 1
+        if pending.kind == "headers":
+            if session is None:
+                self._send_headers_request(
+                    pending.peer_addr,
+                    attempts=attempts,
+                    expires_at=pending.expires_at,
+                )
+            elif session.fork and session.next_index == 0:
+                self._request_next_headers(
+                    session,
+                    attempts=attempts,
+                    expires_at=pending.expires_at,
+                )
+            else:
+                self._drop_session(pending.peer_addr)
+        elif pending.kind == "blocks" and session is not None:
+            self._request_next_blocks(
+                session,
+                attempts=attempts,
+                expires_at=pending.expires_at,
+            )
+        else:
+            self._drop_session(pending.peer_addr)
 
     def _new_request_id(self) -> str:
         return self._request_id_factory()
 
     # ── chain helpers ────────────────────────────────────────────────────────
 
+    def _tip_hash(self) -> str | None:
+        chain = self.chain.chain
+        return chain[-1].hash if chain else None
+
+    def _chain_hash_index(self) -> tuple[dict[str, Block], dict[str, int]]:
+        """Return cached hash/position maps for the current main chain."""
+        chain = self.chain.chain
+        reorged = self._indexed_length > 0 and (
+            len(chain) < self._indexed_length
+            or chain[self._indexed_length - 1].hash != self._indexed_tip
+        )
+        if reorged:
+            self._hash_index = {}
+            self._hash_positions = {}
+            self._indexed_length = 0
+            self._indexed_tip = None
+        for index in range(self._indexed_length, len(chain)):
+            block = chain[index]
+            self._hash_index[block.hash] = block
+            self._hash_positions[block.hash] = index
+        if len(chain) != self._indexed_length:
+            self._indexed_length = len(chain)
+            self._indexed_tip = chain[-1].hash if chain else None
+        return self._hash_index, self._hash_positions
+
     def _find_block(self, block_hash: str) -> Block | None:
-        for block in reversed(self.chain.chain):
-            if block.hash == block_hash:
-                return block
-        return None
+        return self._chain_hash_index()[0].get(block_hash)
 
     def _index_of(self, block: Block) -> int:
-        for index, candidate in enumerate(self.chain.chain):
-            if candidate.hash == block.hash:
-                return index
-        raise SyncError("block is not part of the local chain")
+        position = self._chain_hash_index()[1].get(block.hash)
+        if position is None:
+            raise SyncError("block is not part of the local chain")
+        return position
 
     def _suffix_work(self, start_block: Block) -> int:
         start_index = self._index_of(start_block)
         return _total_work(self.chain.chain[start_index + 1 :])
 
     def find_common_ancestor(self, locator: Sequence[str]) -> Block | None:
-        by_hash = {block.hash: block for block in self.chain.chain}
+        by_hash = self._chain_hash_index()[0]
         for block_hash in locator:
             block = by_hash.get(block_hash)
             if block is not None:

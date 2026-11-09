@@ -120,11 +120,24 @@ Defaults live in [`minichain/node_config.py`](../minichain/node_config.py):
 | `MAX_LOCATOR_HASHES` | 32 | Locator cap |
 | `MAX_SYNC_RESPONSE_BYTES` | 768 KiB | Response byte budget, below the 1 MiB frame limit |
 | `SYNC_REQUEST_TIMEOUT_SECONDS` | 30 | Drop a stalled sync session |
-| `SYNC_REQUESTS_PER_SECOND` / `SYNC_REQUEST_BURST` | 5 / 10 | Per-peer token bucket for serving sync requests |
+| `SYNC_REQUESTS_PER_SECOND` / `SYNC_REQUEST_BURST` | 5 / 10 | Per-peer token bucket for serving requests and pacing outbound requests |
+| `SYNC_REQUEST_RETRY_SECONDS` / `SYNC_REQUEST_MAX_RETRIES` | 5 / 2 | Retry an unanswered request before dropping the session |
+| `MAX_FORK_HEADERS` | 16,000 | Cap on headers retained while following a fork |
 
-Out-of-range requests and malformed sync payloads are returned to the P2P layer
-as validation statuses, so existing peer scoring and banning apply. A peer that
-advertises a chain with no more work than ours is ignored rather than punished.
+A request's `max` field and a legacy `chain_request.limit` are clamped to their
+configured ranges, so an out-of-range value alone is not a validation failure.
+Oversized locator or hash lists and malformed sync payloads are returned to the
+P2P layer as validation statuses, so existing peer scoring and banning apply. A
+peer that advertises a chain with no more work than ours is ignored rather than
+punished.
+
+Requests are answered in bounded batches. A response may be shorter than the
+requested count because of the byte budget, and the requester continues from the
+last received item; an empty header batch ends the sync. Outbound requests are
+paced against the same per-peer budget, and a request that would exceed it is
+queued briefly instead of being dropped. Unanswered requests are retried before
+a stalled session is dropped. A single valid block may exceed the soft response
+budget when its complete frame still fits within `MAX_FRAME_BYTES`.
 
 ## Reorgs
 
@@ -140,9 +153,10 @@ mempool. Otherwise the session is dropped.
 
 `chain_request` and `chain_response` are still accepted for older peers:
 
-- A new node never sends them.
-- A legacy `chain_request` is answered with at most `MAX_BLOCKS_PER_REQUEST`
-  blocks, so an old peer cannot ask for an unbounded response.
+- A new node does not initiate legacy sync.
+- When a new node receives a legacy `chain_request`, it answers with a
+  `chain_response` containing at most `MAX_BLOCKS_PER_REQUEST` blocks, so an old
+  peer cannot ask for an unbounded response.
 - A legacy `chain_response` is ignored because this node no longer initiates
   that request.
 

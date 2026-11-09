@@ -41,3 +41,20 @@ MAX_SYNC_RESPONSE_BYTES = 768 * 1024
 SYNC_REQUEST_TIMEOUT_SECONDS = 30.0
 SYNC_REQUESTS_PER_SECOND = 5.0
 SYNC_REQUEST_BURST = 10
+# Hard cap on peers tracked by the per-peer sync token bucket. Fully refilled
+# buckets are dropped first; if every retained bucket is still active, new
+# peers are refused rather than resetting an active rate limit.
+SYNC_RATE_LIMIT_MAX_PEERS = 1024
+# A fork deeper than one header batch keeps accumulating headers until it
+# proves more work than our suffix. Cap that retention so a peer cannot make
+# us hold an unbounded branch in memory.
+MAX_FORK_HEADERS = MAX_HEADERS_PER_REQUEST * 16
+# Retry an unanswered sync request before dropping the session. This recovers
+# from a receiver that rate-limited (and therefore ignored) one request.
+SYNC_REQUEST_RETRY_SECONDS = 5.0
+SYNC_REQUEST_MAX_RETRIES = 2
+# Request IDs are opaque and echoed back; bound them so a response cannot be
+# inflated by a large ID that was not part of the payload budget.
+MAX_SYNC_REQUEST_ID_BYTES = 128
+# How often the node checks for stalled requests and expires idle limiter state.
+SYNC_MAINTENANCE_INTERVAL_SECONDS = 1.0

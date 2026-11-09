@@ -14,7 +14,8 @@ SUPPORTED_MESSAGE_TYPES = {
     "getblocks",
     "blocks",
     # Retained for backward compatibility with nodes that predate headers-first
-    # sync. New nodes never send these messages.
+    # sync. New nodes do not initiate these messages, but still answer a legacy
+    # chain_request with a chain_response.
     "chain_request",
     "chain_response",
     "getaddr",

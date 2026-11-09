@@ -32,6 +32,7 @@ from nacl.signing import SigningKey
 from nacl.encoding import HexEncoder
 
 from minichain import Transaction, Blockchain, Block, State, Mempool, P2PNetwork, mine_block
+from minichain.node_config import SYNC_MAINTENANCE_INTERVAL_SECONDS
 from minichain.rpc import JSONRPCServer
 from minichain.sync import SyncManager
 from minichain.validators import is_valid_receiver, ValidationStatus
@@ -289,12 +290,15 @@ def make_network_handler(chain, mempool, network, sync_manager=None):
 
         elif msg_type == "chain_request":
             # Deprecated compatibility path. New nodes use getheaders/getblocks;
-            # this path is still bounded so an old peer cannot request an
-            # arbitrarily large response.
+            # this path is still bounded and rate-limited so an old peer cannot
+            # request an arbitrarily large response or flood the node.
+            if not sync.allow_request(peer_addr):
+                logger.warning("Rate-limited legacy chain_request from %s", peer_addr)
+                return None
             try:
                 start_index = max(0, int(payload.get("start_index", 0)))
                 limit = max(1, min(int(payload.get("limit", sync.max_blocks)), sync.max_blocks))
-            except (TypeError, ValueError):
+            except (TypeError, ValueError, OverflowError):
                 return ValidationStatus.MALFORMED
             logger.info("📡 Peer requested blocks from %d (limit %d).", start_index, limit)
             resp_payload = sync.build_legacy_blocks_response(start_index, limit)
@@ -642,6 +646,15 @@ async def run_node(port: int, host: str, connect_to: str | None, fund: int, data
     sync = make_sync_manager(chain, mempool, network)
     handler = make_network_handler(chain, mempool, network, sync)
     network.register_handler(handler)
+
+    async def maintain_sync():
+        """Recover unanswered requests and expire idle limiter buckets."""
+        while True:
+            await asyncio.sleep(SYNC_MAINTENANCE_INTERVAL_SECONDS)
+            sync.maintain()
+
+    # The event loop keeps the task alive while it sleeps between ticks.
+    asyncio.create_task(maintain_sync())
     
     rpc_server = JSONRPCServer(chain, mempool, network)
 
