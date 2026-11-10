@@ -1,6 +1,7 @@
 import copy
 import json
 import logging
+from collections.abc import Mapping
 from nacl.hash import sha256
 from nacl.encoding import HexEncoder
 from .contract import ContractMachine
@@ -9,6 +10,151 @@ from .receipt import Receipt
 from .network_config import DEFAULT_MINING_REWARD
 
 logger = logging.getLogger(__name__)
+
+_DELETED = object()
+_MIN_SNAPSHOT_DELTA_ENTRIES = 1024
+_MAX_SNAPSHOT_DELTA_DEPTH = 10_000
+
+
+class StateSnapshot(Mapping):
+    """
+    An immutable account-state view stored as a delta from a parent snapshot.
+    Only accounts touched since the parent are copied. Materializing a snapshot
+    replays the deltas from its root.
+    """
+
+    __slots__ = ("_parent", "_changes", "depth", "total_changes")
+
+    def __init__(self, parent=None, changes=None):
+        self._parent = parent
+        self._changes = changes if changes is not None else {}
+        self.depth = 0 if parent is None else parent.depth + 1
+        self.total_changes = (
+            0 if parent is None else parent.total_changes + len(self._changes)
+        )
+
+    @classmethod
+    def full(cls, accounts):
+        """Build a self-contained snapshot from a mapping of accounts."""
+        return cls(changes={
+            address: copy.deepcopy(account)
+            for address, account in dict(accounts).items()
+        })
+
+    def materialize(self):
+        """Return the snapshot's accounts as a plain dictionary."""
+        chain = []
+        node = self
+        while node is not None:
+            chain.append(node)
+            node = node._parent
+
+        state = {}
+        for snapshot in reversed(chain):
+            for address, account in snapshot._changes.items():
+                if account is _DELETED:
+                    state.pop(address, None)
+                else:
+                    state[address] = account
+        return state
+
+    def to_dict(self):
+        """Return an independent deep copy of the snapshot's accounts."""
+        return copy.deepcopy(self.materialize())
+
+    def copy(self):
+        return self.to_dict()
+
+    def __getitem__(self, key):
+        return copy.deepcopy(self.materialize()[key])
+
+    def __iter__(self):
+        return iter(self.materialize())
+
+    def __len__(self):
+        return len(self.materialize())
+
+    def __deepcopy__(self, memo):
+        return self.to_dict()
+
+    def __repr__(self):
+        return f"StateSnapshot(depth={self.depth}, changes={len(self._changes)})"
+
+
+class AccountStore(dict):
+    """
+    The committed accounts dictionary. It records accounts that may have
+    changed since the last snapshot so snapshots can copy only those entries.
+    Reads also mark an account because callers may mutate it in place.
+    """
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._dirty = set()
+        self._snapshot = None
+
+    def __getitem__(self, key):
+        value = dict.__getitem__(self, key)
+        self._dirty.add(key)
+        return value
+
+    def __setitem__(self, key, value):
+        self._dirty.add(key)
+        dict.__setitem__(self, key, value)
+
+    def __delitem__(self, key):
+        self._dirty.add(key)
+        dict.__delitem__(self, key)
+
+    def get(self, key, default=None):
+        if dict.__contains__(self, key):
+            return self[key]
+        return default
+
+    def setdefault(self, key, default=None):
+        if not dict.__contains__(self, key):
+            self[key] = default
+        return self[key]
+
+    def pop(self, key, *default):
+        if dict.__contains__(self, key):
+            value = dict.pop(self, key)
+            self._dirty.add(key)
+            return value
+        if default:
+            return default[0]
+        raise KeyError(key)
+
+    def popitem(self):
+        key, value = dict.popitem(self)
+        self._dirty.add(key)
+        return key, value
+
+    def clear(self):
+        self._dirty.update(dict.keys(self))
+        dict.clear(self)
+
+    def update(self, *args, **kwargs):
+        for key, value in dict(*args, **kwargs).items():
+            self[key] = value
+
+    def items(self):
+        self._dirty.update(dict.keys(self))
+        return dict.items(self)
+
+    def values(self):
+        self._dirty.update(dict.keys(self))
+        return dict.values(self)
+
+    def copy(self):
+        return dict.copy(self)
+
+    def __deepcopy__(self, memo):
+        clone = AccountStore()
+        for key, value in dict.items(self):
+            dict.__setitem__(clone, key, copy.deepcopy(value, memo))
+        return clone
+
 
 class StateJournal:
     """
@@ -22,8 +168,11 @@ class StateJournal:
     def __getitem__(self, key):
         if key not in self.cache:
             if key in self.backing:
-                import copy
-                self.cache[key] = copy.deepcopy(self.backing[key])
+                if isinstance(self.backing, dict):
+                    raw_value = dict.__getitem__(self.backing, key)
+                else:
+                    raw_value = self.backing[key]
+                self.cache[key] = copy.deepcopy(raw_value)
             else:
                 raise KeyError(key)
         return self.cache[key]
@@ -74,9 +223,20 @@ class StateJournal:
 class State:
     def __init__(self):
         # { address: {'balance': int, 'nonce': int, 'code': str|None, 'storage': dict} }
-        self.accounts = {}
+        self._accounts = AccountStore()
         self.contract_machine = ContractMachine(self)
         self.chain_id = "minichain-default"
+
+    @property
+    def accounts(self):
+        return self._accounts
+
+    @accounts.setter
+    def accounts(self, value):
+        if isinstance(value, (AccountStore, StateJournal)):
+            self._accounts = value
+        else:
+            self._accounts = AccountStore(value)
 
     def state_root(self) -> str:
         """
@@ -84,8 +244,13 @@ class State:
         and returns the cryptographic state root hash.
         """
         trie = Trie()
+        accounts = self.accounts
+        if isinstance(accounts, dict):
+            items = dict.items(accounts)
+        else:
+            items = accounts.items()
         # Sort items to ensure deterministic insertion order if necessary (though MPT is order-independent)
-        for addr, acc in sorted(self.accounts.items()):
+        for addr, acc in sorted(items):
             if acc.get('balance', 0) == 0 and acc.get('nonce', 0) == 0 and not acc.get('code') and not acc.get('storage'):
                 continue
             trie.put(addr, json.dumps(acc, sort_keys=True))
@@ -139,15 +304,52 @@ class State:
 
     def snapshot(self):
         """
-        Returns a deep copy of the current accounts dictionary for rollback safety.
+        Capture the current accounts for rollback/reorg safety.
+
+        For a committed AccountStore this stores only the accounts touched since
+        the previous snapshot. The first snapshot (or one taken over a journal)
+        is self-contained, and the delta chain is periodically compacted so it
+        cannot grow without bound or depend on unbounded history.
         """
-        return copy.deepcopy(self.accounts)
+        accounts = self.accounts
+        if not isinstance(accounts, AccountStore):
+            return StateSnapshot.full(accounts.copy())
+
+        parent = accounts._snapshot
+        dirty = accounts._dirty
+
+        if parent is not None and not dirty:
+            return parent
+
+        compact = parent is not None and (
+            parent.depth >= _MAX_SNAPSHOT_DELTA_DEPTH
+            or parent.total_changes
+            > max(_MIN_SNAPSHOT_DELTA_ENTRIES, len(accounts))
+        )
+        if parent is None or compact:
+            snapshot = StateSnapshot.full(dict.items(accounts))
+        else:
+            changes = {}
+            for address in dirty:
+                if dict.__contains__(accounts, address):
+                    changes[address] = copy.deepcopy(dict.__getitem__(accounts, address))
+                else:
+                    changes[address] = _DELETED
+            snapshot = StateSnapshot(parent, changes)
+
+        dirty.clear()
+        accounts._snapshot = snapshot
+        return snapshot
 
     def restore(self, snapshot_data):
         """
         Restores the state's accounts dictionary from a snapshot.
         """
-        self.accounts = copy.deepcopy(snapshot_data)
+        if isinstance(snapshot_data, StateSnapshot):
+            self.accounts = AccountStore(snapshot_data.to_dict())
+            self.accounts._snapshot = snapshot_data
+        else:
+            self.accounts = AccountStore(copy.deepcopy(snapshot_data))
 
     @staticmethod
     def _amounts_well_formed(tx):
