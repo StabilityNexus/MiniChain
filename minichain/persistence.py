@@ -1,3 +1,4 @@
+
 """
 Chain persistence: save and load the blockchain and state to/from SQLite.
 
@@ -112,12 +113,22 @@ def load(path: str = ".") -> Blockchain:
     blockchain.chain = blocks
     blockchain.state.accounts = normalized_accounts
 
+    # Verify that the persisted account state matches the latest block.
+    expected_state_root = blockchain.chain[-1].state_root
+    actual_state_root = blockchain.state.state_root()
+
+    if actual_state_root != expected_state_root:
+        raise ValueError(
+            "Persisted account state does not match latest block state root"
+        )
+
     logger.info(
         "Loaded %d blocks and %d accounts from '%s'",
         len(blockchain.chain),
         len(blockchain.state.accounts),
         path,
     )
+
     return blockchain
 
 
@@ -132,6 +143,7 @@ def _verify_chain_integrity(blocks: list[Block]) -> None:
     if genesis.index != 0:
         raise ValueError("Invalid genesis block")
     from .pow import calculate_hash
+
     if genesis.hash != calculate_hash(genesis.to_header_dict()):
         raise ValueError("Invalid genesis block hash")
 
@@ -292,12 +304,14 @@ def _banned_peers_conn(path: str, create: bool):
     finally:
         conn.close()
 
+
 def ban_peer(peer_id: str, reason: str, path: str = ".") -> None:
     with _banned_peers_conn(path, create=True) as conn, conn:
         conn.execute(
             "INSERT OR REPLACE INTO banned_peers (peer_id, reason, timestamp) VALUES (?, ?, ?)",
-            (peer_id, reason, time.time())
+            (peer_id, reason, time.time()),
         )
+
 
 def unban_peer(peer_id: str, path: str = ".") -> None:
     with _banned_peers_conn(path, create=False) as conn:
@@ -306,18 +320,34 @@ def unban_peer(peer_id: str, path: str = ".") -> None:
         with conn:
             conn.execute("DELETE FROM banned_peers WHERE peer_id = ?", (peer_id,))
 
+
 def is_peer_banned(peer_id: str, path: str = ".") -> bool:
     with _banned_peers_conn(path, create=False) as conn:
         if conn is None:
             return False
-        return conn.execute("SELECT peer_id FROM banned_peers WHERE peer_id = ?", (peer_id,)).fetchone() is not None
+        return (
+            conn.execute(
+                "SELECT peer_id FROM banned_peers WHERE peer_id = ?", (peer_id,)
+            ).fetchone()
+            is not None
+        )
+
 
 def get_banned_peers(path: str = ".") -> list[dict[str, Any]]:
     with _banned_peers_conn(path, create=False) as conn:
         if conn is None:
             return []
-        rows = conn.execute("SELECT peer_id, reason, timestamp FROM banned_peers ORDER BY timestamp DESC").fetchall()
-        return [{"peer_id": r["peer_id"], "reason": r["reason"], "timestamp": r["timestamp"]} for r in rows]
+        rows = conn.execute(
+            "SELECT peer_id, reason, timestamp FROM banned_peers ORDER BY timestamp DESC"
+        ).fetchall()
+        return [
+            {
+                "peer_id": r["peer_id"],
+                "reason": r["reason"],
+                "timestamp": r["timestamp"],
+            }
+            for r in rows
+        ]
 
 
 # ---------------------------------------------------------------------------
@@ -358,7 +388,7 @@ def remember_peer(peer_id: str, multiaddr: str, path: str = ".") -> None:
     with _known_peers_conn(path, create=True) as conn, conn:
         conn.execute(
             "INSERT OR REPLACE INTO known_peers (peer_id, multiaddr, last_seen) VALUES (?, ?, ?)",
-            (peer_id, multiaddr, time.time())
+            (peer_id, multiaddr, time.time()),
         )
 
 
@@ -368,9 +398,16 @@ def get_known_peers(path: str = ".", limit: int = 50) -> list[dict[str, Any]]:
             return []
         rows = conn.execute(
             "SELECT peer_id, multiaddr, last_seen FROM known_peers ORDER BY last_seen DESC LIMIT ?",
-            (limit,)
+            (limit,),
         ).fetchall()
-        return [{"peer_id": r["peer_id"], "multiaddr": r["multiaddr"], "last_seen": r["last_seen"]} for r in rows]
+        return [
+            {
+                "peer_id": r["peer_id"],
+                "multiaddr": r["multiaddr"],
+                "last_seen": r["last_seen"],
+            }
+            for r in rows
+        ]
 
 
 # ---------------------------------------------------------------------------
@@ -381,6 +418,3 @@ def get_known_peers(path: str = ".", limit: int = 50) -> list[dict[str, Any]]:
 def _read_legacy_json(filepath: str) -> dict[str, Any]:
     with open(filepath, "r", encoding="utf-8") as f:
         return json.load(f)
-
-
-

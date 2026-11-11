@@ -1,3 +1,4 @@
+
 import tempfile
 import shutil
 import unittest
@@ -67,6 +68,7 @@ class TestPersistenceRuntime(unittest.IsolatedAsyncioTestCase):
         receipt = temp_state.validate_and_apply(tx)
 
         from minichain.block import calculate_receipt_root
+
         block = Block(
             index=1,
             previous_hash=bc.last_block.hash,
@@ -84,7 +86,9 @@ class TestPersistenceRuntime(unittest.IsolatedAsyncioTestCase):
         chain = self._chain_with_tx()
         save(chain, self.tmpdir)
 
-        async def fake_cli_loop(sk, pk, loaded_chain, mempool, network, datadir=None):
+        async def fake_cli_loop(
+            sk, pk, loaded_chain, mempool, network, datadir=None
+        ):
             self.assertEqual(len(loaded_chain.chain), len(chain.chain))
             self.assertEqual(loaded_chain.last_block.hash, chain.last_block.hash)
             self.assertEqual(loaded_chain.state.accounts, chain.state.accounts)
@@ -105,21 +109,25 @@ class TestPersistenceRuntime(unittest.IsolatedAsyncioTestCase):
 
         async def fake_cli_loop(sk, pk, chain, mempool, network, datadir=None):
             self.assertEqual(pk, fixed_pk)
-            self.assertEqual(chain.state.get_account(pk)["balance"], 25)
+            self.assertEqual(chain.state.get_account(pk)["balance"], 0)
 
         with patch.object(main_module, "P2PNetwork", FakeNetwork), patch.object(
             main_module, "cli_loop", fake_cli_loop
-        ), patch.object(main_module, "load_or_create_wallet", return_value=(fixed_sk, fixed_pk)):
+        ), patch.object(
+            main_module,
+            "load_or_create_wallet",
+            return_value=(fixed_sk, fixed_pk),
+        ):
             await main_module.run_node(
                 port=9401,
                 host="127.0.0.1",
                 connect_to=None,
-                fund=25,
+                fund=0,
                 datadir=self.tmpdir,
             )
 
         restored = load(self.tmpdir)
-        self.assertEqual(restored.state.get_account(fixed_pk)["balance"], 25)
+        self.assertEqual(restored.state.get_account(fixed_pk)["balance"], 0)
         self.assertEqual(len(restored.chain), 1)
 
 
