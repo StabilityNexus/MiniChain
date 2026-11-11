@@ -19,7 +19,6 @@ Commands (type in the terminal while the node is running):
 """
 
 import argparse
-import copy
 import asyncio
 import json
 import logging
@@ -640,6 +639,16 @@ async def run_node(port: int, host: str, connect_to: str | None, fund: int, data
                    relay: bool = False, relay_addr: str | None = None,
                    announce: str | None = None):
     """Boot the node, optionally connect to a peer, then enter the CLI."""
+    # Funding account balances outside a block is not a consensus state
+    # transition. Reject the legacy option rather than creating a snapshot
+    # that peers cannot reproduce or validate.
+    if fund != 0:
+        logger.error(
+            "--fund is disabled: balances must be created by consensus block "
+            "rewards. Start with --fund 0 and use the mine command."
+        )
+        return
+
     sk, pk = load_or_create_wallet(datadir)
 
     # Load existing chain from disk, or start fresh
@@ -648,7 +657,7 @@ async def run_node(port: int, host: str, connect_to: str | None, fund: int, data
         try:
             from minichain.persistence import load, persistence_exists
             if persistence_exists(datadir):
-                chain = load(datadir)
+                chain = load(datadir, recover_state=True)
                 logger.info("Restored chain from '%s'", datadir)
         except FileNotFoundError as e:
             logger.warning("Could not load saved chain: %s — starting fresh", e)
@@ -692,33 +701,6 @@ async def run_node(port: int, host: str, connect_to: str | None, fund: int, data
     rpc_port = 8545 + (port - 9000)
     await rpc_server.start(host=rpc_host, port=rpc_port)
 
-    # --fund is a local demo balance, not a consensus transaction. Apply it
-    # only to a genesis chain. Remember the exact pre-funding account so that
-    # an immediate shutdown does not persist state that disagrees with the
-    # genesis block's state_root.
-    funding_account_before = None
-    funding_account_existed = pk in chain.state.accounts
-    funding_applied = False
-    funding_start_tip_hash = chain.last_block.hash
-
-    if fund > 0 and chain.last_block.index == 0:
-        if funding_account_existed:
-            funding_account_before = copy.deepcopy(chain.state.accounts[pk])
-
-        chain.state.credit_mining_reward(pk, reward=fund)
-        funding_applied = True
-        logger.info("💰 Funded %s... with %d coins", pk[:12], fund)
-
-        if connect_to or bootstrap:
-            logger.warning(
-                "⚠️  --fund is nonzero while connecting to peers: this node's state will "
-                "diverge and its blocks will be rejected. Use --fund 0 and mine instead."
-            )
-    elif fund > 0:
-        logger.info(
-            "Skipping --fund because the restored chain has progressed beyond genesis."
-        )
-
     # Connect to a seed peer if requested
     if connect_to:
         await network.connect_to_peer(connect_to)
@@ -726,19 +708,6 @@ async def run_node(port: int, host: str, connect_to: str | None, fund: int, data
     try:
         await cli_loop(sk, pk, chain, mempool, network, datadir)
     finally:
-        # If the node is still on the same genesis block, the demo funding was
-        # never committed into a block. Restore the original wallet account
-        # before persisting so the saved state continues to match state_root.
-        # If a block was mined, keep the funded balance: that block commits it.
-        if (
-            funding_applied
-            and chain.last_block.hash == funding_start_tip_hash
-        ):
-            if funding_account_existed:
-                chain.state.accounts[pk] = funding_account_before
-            else:
-                chain.state.accounts.pop(pk, None)
-
         # Save chain to disk on shutdown.
         if datadir:
             try:
@@ -758,7 +727,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--rpc-host", type=str, default="127.0.0.1", help="Host/IP to bind the JSON-RPC server (default: 127.0.0.1, loopback-only)")
     parser.add_argument("--port", type=int, default=9000, help="TCP port to listen on (default: 9000)")
     parser.add_argument("--connect", type=str, default=None, help="Peer address to connect to (multiaddr)")
-    parser.add_argument("--fund", type=int, default=0, help="Initial coins to fund this wallet outside consensus (default: 0). Nonzero diverges state from every peer's -- see run_node.")
+    parser.add_argument("--fund", type=int, default=0, help="Deprecated and disabled. Use consensus mining rewards to earn coins (must be 0).")
     parser.add_argument("--datadir", type=str, default=".minichain", help="Directory to save/load blockchain state (enables persistence)")
     parser.add_argument("--upnp", action="store_true", help="Ask the router to forward our port, so peers on other networks can dial us")
     parser.add_argument("--bootstrap", type=str, nargs="*", default=None, help="Peer multiaddrs to dial on startup")

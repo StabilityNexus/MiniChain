@@ -64,8 +64,16 @@ def save(blockchain: Blockchain, path: str = ".") -> None:
     )
 
 
-def load(path: str = ".") -> Blockchain:
-    """Restore a Blockchain from SQLite inside *path* (with legacy JSON fallback)."""
+def load(path: str = ".", *, recover_state: bool = False) -> Blockchain:
+    """Restore a Blockchain from disk.
+
+    By default, persisted account state must match the latest block state root.
+    ``recover_state=True`` allows startup to discard a stale, uncommitted account
+    snapshot and rebuild state by replaying the validated blocks from genesis.
+    The replay must reproduce every committed block state root; otherwise load
+    still fails. This is intended for recovery of legacy snapshots containing
+    out-of-band ``--fund`` balances, not for accepting arbitrary state data.
+    """
     db_path = os.path.join(path, _DB_FILE)
     legacy_path = os.path.join(path, _LEGACY_DATA_FILE)
 
@@ -113,13 +121,51 @@ def load(path: str = ".") -> Blockchain:
     blockchain.chain = blocks
     blockchain.state.accounts = normalized_accounts
 
-    # Verify that the persisted account state matches the latest block.
+    # The persisted account snapshot is not authoritative: block history is.
+    # Keep strict validation as the default so callers reject tampered state.
     expected_state_root = blockchain.chain[-1].state_root
     actual_state_root = blockchain.state.state_root()
 
     if actual_state_root != expected_state_root:
-        raise ValueError(
-            "Persisted account state does not match latest block state root"
+        if not recover_state:
+            raise ValueError(
+                "Persisted account state does not match latest block state root"
+            )
+
+        # Rebuild from the canonical genesis state by replaying each block.
+        # Blockchain.add_block validates transactions, receipts, rewards and
+        # the resulting state root, so stale out-of-band balances are discarded
+        # only when the complete history independently reproduces its roots.
+        rebuilt = Blockchain()
+        from .validators import ValidationStatus
+
+        for block in blocks[1:]:
+            try:
+                status = rebuilt.add_block(block)
+            except (TypeError, ValueError, KeyError) as exc:
+                raise ValueError(
+                    "Cannot recover persisted state: block history failed replay"
+                ) from exc
+
+            if status != ValidationStatus.VALID:
+                raise ValueError(
+                    "Cannot recover persisted state: block history failed replay "
+                    f"(block {block.index}: {status})"
+                )
+
+        rebuilt_root = rebuilt.state.state_root()
+        if rebuilt_root != expected_state_root:
+            raise ValueError(
+                "Cannot recover persisted state: replayed state does not match "
+                "latest block state root"
+            )
+
+        blockchain = rebuilt
+        logger.warning(
+            "Recovered account state by replaying %d committed blocks from '%s'; "
+            "uncommitted snapshot changes were discarded",
+            len(blocks),
+            path,
         )
 
     logger.info(

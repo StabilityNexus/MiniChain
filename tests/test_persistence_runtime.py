@@ -3,9 +3,7 @@ import shutil
 import unittest
 from unittest.mock import patch
 
-from nacl.encoding import HexEncoder
-from nacl.signing import SigningKey
-
+from main import run_node
 import main as main_module
 from minichain import Blockchain, Block, Transaction, mine_block
 from minichain.persistence import load, save
@@ -41,45 +39,12 @@ class FakeNetwork:
         return None
 
 
-def _make_keypair():
-    sk = SigningKey.generate()
-    pk = sk.verify_key.encode(encoder=HexEncoder).decode()
-    return sk, pk
-
-
 class TestPersistenceRuntime(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         self.tmpdir = tempfile.mkdtemp()
 
     def tearDown(self):
         shutil.rmtree(self.tmpdir, ignore_errors=True)
-
-    def _chain_with_tx(self):
-        bc = Blockchain()
-        alice_sk, alice_pk = _make_keypair()
-        _, bob_pk = _make_keypair()
-
-        bc.state.credit_mining_reward(alice_pk, 100)
-        tx = Transaction(alice_pk, bob_pk, 30, 0)
-        tx.sign(alice_sk)
-
-        temp_state = bc.state.copy()
-        receipt = temp_state.validate_and_apply(tx)
-
-        from minichain.block import calculate_receipt_root
-
-        block = Block(
-            index=1,
-            previous_hash=bc.last_block.hash,
-            transactions=[tx],
-            target=bc.current_target,
-            state_root=temp_state.state_root(),
-            receipt_root=calculate_receipt_root([receipt]),
-            receipts=[receipt],
-        )
-        mine_block(block, target=bc.current_target)
-        bc.add_block(block)
-        return bc
 
     def _append_empty_block(self, chain):
         from minichain.block import calculate_receipt_root
@@ -95,9 +60,11 @@ class TestPersistenceRuntime(unittest.IsolatedAsyncioTestCase):
         )
         mine_block(block, target=chain.current_target)
         chain.add_block(block)
+        return block
 
     async def test_run_node_loads_existing_sqlite_snapshot(self):
-        chain = self._chain_with_tx()
+        chain = Blockchain()
+        self._append_empty_block(chain)
         save(chain, self.tmpdir)
 
         async def fake_cli_loop(
@@ -119,18 +86,15 @@ class TestPersistenceRuntime(unittest.IsolatedAsyncioTestCase):
             )
 
     async def test_run_node_saves_sqlite_snapshot_on_shutdown(self):
-        fixed_sk, fixed_pk = _make_keypair()
+        # Blockchain() initializes the protocol's predefined genesis accounts.
+        # A fresh node should preserve that state, not an empty account map.
+        expected_genesis_accounts = Blockchain().state.accounts
 
         async def fake_cli_loop(sk, pk, chain, mempool, network, datadir=None):
-            self.assertEqual(pk, fixed_pk)
-            self.assertEqual(chain.state.get_account(pk)["balance"], 0)
+            self.assertEqual(chain.state.accounts, expected_genesis_accounts)
 
         with patch.object(main_module, "P2PNetwork", FakeNetwork), patch.object(
             main_module, "cli_loop", fake_cli_loop
-        ), patch.object(
-            main_module,
-            "load_or_create_wallet",
-            return_value=(fixed_sk, fixed_pk),
         ):
             await main_module.run_node(
                 port=9401,
@@ -141,26 +105,25 @@ class TestPersistenceRuntime(unittest.IsolatedAsyncioTestCase):
             )
 
         restored = load(self.tmpdir)
-        self.assertEqual(restored.state.get_account(fixed_pk)["balance"], 0)
+        self.assertEqual(restored.state.accounts, expected_genesis_accounts)
         self.assertEqual(len(restored.chain), 1)
+        self.assertEqual(restored.state.state_root(), restored.last_block.state_root)
 
-    async def test_fund_is_not_persisted_when_shutdown_before_mining(self):
-        fixed_sk, fixed_pk = _make_keypair()
-        observed_balances = []
+    async def test_nonzero_fund_is_rejected_without_creating_snapshot(self):
+        async def should_not_start(*args, **kwargs):
+            self.fail("Node startup must stop before starting the network or CLI")
 
-        async def fake_cli_loop(sk, pk, chain, mempool, network, datadir=None):
-            observed_balances.append(chain.state.get_account(pk)["balance"])
-
-        patches = (
-            patch.object(main_module, "P2PNetwork", FakeNetwork),
-            patch.object(main_module, "cli_loop", fake_cli_loop),
-            patch.object(
-                main_module,
-                "load_or_create_wallet",
-                return_value=(fixed_sk, fixed_pk),
-            ),
-        )
-        with patches[0], patches[1], patches[2]:
+        with patch.object(main_module, "P2PNetwork", side_effect=AssertionError(
+            "Network must not start when --fund is nonzero"
+        )), patch.object(
+            main_module, "cli_loop", side_effect=AssertionError(
+                "CLI must not start when --fund is nonzero"
+            )
+        ), patch.object(
+            main_module, "load_or_create_wallet", side_effect=AssertionError(
+                "Wallet must not be loaded when --fund is nonzero"
+            )
+        ):
             await main_module.run_node(
                 port=9402,
                 host="127.0.0.1",
@@ -169,76 +132,28 @@ class TestPersistenceRuntime(unittest.IsolatedAsyncioTestCase):
                 datadir=self.tmpdir,
             )
 
-        restored = load(self.tmpdir)
-        self.assertEqual(observed_balances, [50])
-        self.assertEqual(restored.last_block.index, 0)
-        self.assertEqual(restored.state.get_account(fixed_pk)["balance"], 0)
-        self.assertEqual(restored.state.state_root(), restored.last_block.state_root)
+        from minichain.persistence import persistence_exists
+        self.assertFalse(persistence_exists(self.tmpdir))
 
-        # Restarting with the same demo funding must still load the snapshot.
-        with patch.object(main_module, "P2PNetwork", FakeNetwork), patch.object(
-            main_module, "cli_loop", fake_cli_loop
-        ), patch.object(
-            main_module,
-            "load_or_create_wallet",
-            return_value=(fixed_sk, fixed_pk),
-        ):
-            await main_module.run_node(
-                port=9403,
-                host="127.0.0.1",
-                connect_to=None,
-                fund=50,
-                datadir=self.tmpdir,
-            )
+    async def test_consensus_mined_block_is_accepted_by_unfunded_peer(self):
+        node_chain = Blockchain()
+        peer_chain = Blockchain()
 
-        self.assertEqual(observed_balances, [50, 50])
+        block = self._append_empty_block(node_chain)
 
-    async def test_funded_state_is_persisted_after_a_block_is_mined(self):
-        fixed_sk, fixed_pk = _make_keypair()
-        observed_balances = []
+        # A fresh peer starts from the same genesis state and must be able
+        # to validate and apply the exact block without any out-of-band funds.
+        peer_chain.add_block(block)
 
-        async def fake_cli_loop(sk, pk, chain, mempool, network, datadir=None):
-            observed_balances.append(chain.state.get_account(pk)["balance"])
-            if chain.last_block.index == 0:
-                self._append_empty_block(chain)
-
-        with patch.object(main_module, "P2PNetwork", FakeNetwork), patch.object(
-            main_module, "cli_loop", fake_cli_loop
-        ), patch.object(
-            main_module,
-            "load_or_create_wallet",
-            return_value=(fixed_sk, fixed_pk),
-        ):
-            await main_module.run_node(
-                port=9404,
-                host="127.0.0.1",
-                connect_to=None,
-                fund=50,
-                datadir=self.tmpdir,
-            )
-
-        restored = load(self.tmpdir)
-        self.assertEqual(restored.last_block.index, 1)
-        self.assertEqual(restored.state.get_account(fixed_pk)["balance"], 50)
-        self.assertEqual(restored.state.state_root(), restored.last_block.state_root)
-
-        # Funding is not applied again once the chain has advanced past genesis.
-        with patch.object(main_module, "P2PNetwork", FakeNetwork), patch.object(
-            main_module, "cli_loop", fake_cli_loop
-        ), patch.object(
-            main_module,
-            "load_or_create_wallet",
-            return_value=(fixed_sk, fixed_pk),
-        ):
-            await main_module.run_node(
-                port=9405,
-                host="127.0.0.1",
-                connect_to=None,
-                fund=50,
-                datadir=self.tmpdir,
-            )
-
-        self.assertEqual(observed_balances, [50, 50])
+        self.assertEqual(peer_chain.last_block.hash, node_chain.last_block.hash)
+        self.assertEqual(
+            peer_chain.state.state_root(),
+            node_chain.state.state_root(),
+        )
+        self.assertEqual(
+            peer_chain.state.state_root(),
+            peer_chain.last_block.state_root,
+        )
 
 
 if __name__ == "__main__":
