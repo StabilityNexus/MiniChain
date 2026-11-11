@@ -19,6 +19,7 @@ Commands (type in the terminal while the node is running):
 """
 
 import argparse
+import copy
 import asyncio
 import json
 import logging
@@ -691,18 +692,32 @@ async def run_node(port: int, host: str, connect_to: str | None, fund: int, data
     rpc_port = 8545 + (port - 9000)
     await rpc_server.start(host=rpc_host, port=rpc_port)
 
-    # Fund this node's wallet so it can transact in the demo. This is applied
-    # outside of block validation, so it diverges this node's state from every
-    # peer's — any block built on top of it will be rejected by them on the
-    # state-root check. Only safe on a single isolated node.
-    if fund > 0:
+    # --fund is a local demo balance, not a consensus transaction. Apply it
+    # only to a genesis chain. Remember the exact pre-funding account so that
+    # an immediate shutdown does not persist state that disagrees with the
+    # genesis block's state_root.
+    funding_account_before = None
+    funding_account_existed = pk in chain.state.accounts
+    funding_applied = False
+    funding_start_tip_hash = chain.last_block.hash
+
+    if fund > 0 and chain.last_block.index == 0:
+        if funding_account_existed:
+            funding_account_before = copy.deepcopy(chain.state.accounts[pk])
+
         chain.state.credit_mining_reward(pk, reward=fund)
+        funding_applied = True
         logger.info("💰 Funded %s... with %d coins", pk[:12], fund)
+
         if connect_to or bootstrap:
             logger.warning(
                 "⚠️  --fund is nonzero while connecting to peers: this node's state will "
                 "diverge and its blocks will be rejected. Use --fund 0 and mine instead."
             )
+    elif fund > 0:
+        logger.info(
+            "Skipping --fund because the restored chain has progressed beyond genesis."
+        )
 
     # Connect to a seed peer if requested
     if connect_to:
@@ -711,7 +726,20 @@ async def run_node(port: int, host: str, connect_to: str | None, fund: int, data
     try:
         await cli_loop(sk, pk, chain, mempool, network, datadir)
     finally:
-        # Save chain to disk on shutdown
+        # If the node is still on the same genesis block, the demo funding was
+        # never committed into a block. Restore the original wallet account
+        # before persisting so the saved state continues to match state_root.
+        # If a block was mined, keep the funded balance: that block commits it.
+        if (
+            funding_applied
+            and chain.last_block.hash == funding_start_tip_hash
+        ):
+            if funding_account_existed:
+                chain.state.accounts[pk] = funding_account_before
+            else:
+                chain.state.accounts.pop(pk, None)
+
+        # Save chain to disk on shutdown.
         if datadir:
             try:
                 from minichain.persistence import save
@@ -719,7 +747,7 @@ async def run_node(port: int, host: str, connect_to: str | None, fund: int, data
                 logger.info("Chain saved to '%s'", datadir)
             except Exception as e:
                 logger.error("Failed to save chain during shutdown: %s", e)
-        
+
         await rpc_server.stop()
         await network.stop()
 

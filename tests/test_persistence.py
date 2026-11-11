@@ -222,6 +222,26 @@ class TestPersistence(unittest.TestCase):
         with self.assertRaises(ValueError):
             load(path=self.tmpdir)
 
+    def test_state_root_rejects_case_variant_address_collision(self):
+        state = Blockchain().state
+        address = "ab" * 20
+
+        state.accounts[address] = {
+            "balance": 100,
+            "nonce": 0,
+            "code": None,
+            "storage": {},
+        }
+        state.accounts[address.upper()] = {
+            "balance": 999,
+            "nonce": 0,
+            "code": None,
+            "storage": {},
+        }
+
+        with self.assertRaisesRegex(ValueError, "canonical lowercase hexadecimal"):
+            state.state_root()
+
     def test_load_rejects_account_state_root_mismatch(self):
         bc, _, _ = self._chain_with_tx()
         save(bc, path=self.tmpdir)
