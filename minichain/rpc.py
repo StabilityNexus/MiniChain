@@ -42,8 +42,23 @@ class JSONRPCServer:
             return web.json_response(self._err(-32700, "Parse error", None))
 
         if isinstance(req_data, list):
-            return web.json_response([await self._process_single(req) for req in req_data])
-        return web.json_response(await self._process_single(req_data))
+            if not req_data:
+                return web.json_response(self._err(-32600, "Invalid Request", None))
+
+            responses = []
+            for req in req_data:
+                response = await self._process_single(req)
+                if response is not None:
+                    responses.append(response)
+
+            if not responses:
+                return web.Response(status=204)
+            return web.json_response(responses)
+
+        response = await self._process_single(req_data)
+        if response is None:
+            return web.Response(status=204)
+        return web.json_response(response)
 
     async def _process_single(self, req):
         if not isinstance(req, dict) or "method" not in req or req.get("jsonrpc") != "2.0":
@@ -52,6 +67,7 @@ class JSONRPCServer:
         method = req["method"]
         params = req.get("params", [])
         req_id = req.get("id")
+        is_notification = "id" not in req
 
         try:
             if method == "mc_blockNumber":
@@ -90,9 +106,15 @@ class JSONRPCServer:
                 else:
                     raise ValueError("Transaction rejected by Mempool")
             else:
+                if is_notification:
+                    return None
                 return self._err(-32601, f"Method not found: {method}", req_id)
 
+            if is_notification:
+                return None
             return self._ok(result, req_id)
         except Exception as e:
             logger.error("RPC Error processing %s: %s", method, e)
+            if is_notification:
+                return None
             return self._err(-32000, str(e), req_id)

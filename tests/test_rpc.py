@@ -114,6 +114,88 @@ async def test_rpc_batch_request(rpc_server):
 
 
 @pytest.mark.anyio
+async def test_rpc_notification_executes_without_response(rpc_server):
+    """A notification is processed but produces no JSON-RPC response body."""
+    server, port, chain, mempool = rpc_server
+
+    sk = SigningKey.generate()
+    pk = sk.verify_key.encode(encoder=HexEncoder).decode()
+    chain.state.credit_mining_reward(pk, reward=100)
+    tx = Transaction(pk, "receiver", amount=1, nonce=0)
+    tx.sign(sk)
+
+    async with aiohttp.ClientSession() as session:
+        payload = {
+            "jsonrpc": "2.0",
+            "method": "mc_sendTransaction",
+            "params": [tx.to_dict()],
+        }
+        async with session.post(f"http://127.0.0.1:{port}/", json=payload) as resp:
+            assert resp.status == 204
+            assert await resp.read() == b""
+
+    assert len(mempool) == 1
+
+
+@pytest.mark.anyio
+async def test_rpc_explicit_null_id_receives_response(rpc_server):
+    """Only an absent id marks a notification; an explicit null id is answered."""
+    server, port, chain, mempool = rpc_server
+
+    async with aiohttp.ClientSession() as session:
+        payload = {"jsonrpc": "2.0", "method": "mc_blockNumber", "id": None}
+        async with session.post(f"http://127.0.0.1:{port}/", json=payload) as resp:
+            assert resp.status == 200
+            data = await resp.json()
+            assert data == {"jsonrpc": "2.0", "result": 0, "id": None}
+
+
+@pytest.mark.anyio
+async def test_rpc_batch_omits_notification_responses(rpc_server):
+    server, port, chain, mempool = rpc_server
+
+    async with aiohttp.ClientSession() as session:
+        payload = [
+            {"jsonrpc": "2.0", "method": "mc_blockNumber"},
+            {"jsonrpc": "2.0", "method": "mc_blockNumber", "id": 1},
+            {"jsonrpc": "2.0", "method": "mc_unknown"},
+        ]
+        async with session.post(f"http://127.0.0.1:{port}/", json=payload) as resp:
+            assert resp.status == 200
+            data = await resp.json()
+            assert data == [{"jsonrpc": "2.0", "result": 0, "id": 1}]
+
+
+@pytest.mark.anyio
+async def test_rpc_notification_only_batch_returns_no_content(rpc_server):
+    server, port, chain, mempool = rpc_server
+
+    async with aiohttp.ClientSession() as session:
+        payload = [
+            {"jsonrpc": "2.0", "method": "mc_blockNumber"},
+            {"jsonrpc": "2.0", "method": "mc_unknown"},
+        ]
+        async with session.post(f"http://127.0.0.1:{port}/", json=payload) as resp:
+            assert resp.status == 204
+            assert await resp.read() == b""
+
+
+@pytest.mark.anyio
+async def test_rpc_empty_batch_is_invalid_request(rpc_server):
+    server, port, chain, mempool = rpc_server
+
+    async with aiohttp.ClientSession() as session:
+        async with session.post(f"http://127.0.0.1:{port}/", json=[]) as resp:
+            assert resp.status == 200
+            data = await resp.json()
+            assert data == {
+                "jsonrpc": "2.0",
+                "error": {"code": -32600, "message": "Invalid Request"},
+                "id": None,
+            }
+
+
+@pytest.mark.anyio
 async def test_rpc_getBlockByNumber_latest(rpc_server):
     server, port, chain, mempool = rpc_server
 
