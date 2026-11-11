@@ -1,3 +1,4 @@
+
 """Tests for chain persistence (save / load round-trip)."""
 
 import json
@@ -219,6 +220,54 @@ class TestPersistence(unittest.TestCase):
                 (json.dumps(["not-an-account-dict"]), next(iter(bc.state.accounts))),
             )
         with self.assertRaises(ValueError):
+            load(path=self.tmpdir)
+
+    def test_state_root_rejects_case_variant_address_collision(self):
+        state = Blockchain().state
+        address = "ab" * 20
+
+        state.accounts[address] = {
+            "balance": 100,
+            "nonce": 0,
+            "code": None,
+            "storage": {},
+        }
+        state.accounts[address.upper()] = {
+            "balance": 999,
+            "nonce": 0,
+            "code": None,
+            "storage": {},
+        }
+
+        with self.assertRaisesRegex(ValueError, "canonical lowercase hexadecimal"):
+            state.state_root()
+
+    def test_load_rejects_account_state_root_mismatch(self):
+        bc, _, _ = self._chain_with_tx()
+        save(bc, path=self.tmpdir)
+
+        db_path = os.path.join(self.tmpdir, DB_FILE)
+
+        with sqlite3.connect(db_path) as conn:
+            row = conn.execute(
+                "SELECT address, account_json FROM accounts LIMIT 1"
+            ).fetchone()
+
+            self.assertIsNotNone(row)
+
+            address, account_json = row
+            account = json.loads(account_json)
+            account["balance"] = account.get("balance", 0) + 1
+
+            conn.execute(
+                "UPDATE accounts SET account_json = ? WHERE address = ?",
+                (json.dumps(account), address),
+            )
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "Persisted account state does not match latest block state root",
+        ):
             load(path=self.tmpdir)
 
     def test_missing_file_raises(self):

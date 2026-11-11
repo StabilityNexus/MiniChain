@@ -80,15 +80,47 @@ class State:
 
     def state_root(self) -> str:
         """
-        Dynamically builds the Merkle Patricia Trie from the current state dictionary
-        and returns the cryptographic state root hash.
+        Build the Merkle Patricia Trie from the current account state.
+
+        Account addresses must use canonical lowercase hexadecimal encoding.
+        This prevents different strings (for example, lowercase and uppercase
+        versions of the same address) from mapping to the same trie key.
         """
         trie = Trie()
-        # Sort items to ensure deterministic insertion order if necessary (though MPT is order-independent)
+        seen_addresses = set()
+
         for addr, acc in sorted(self.accounts.items()):
-            if acc.get('balance', 0) == 0 and acc.get('nonce', 0) == 0 and not acc.get('code') and not acc.get('storage'):
+            if not isinstance(addr, str):
+                raise ValueError("Account address must be a string")
+
+            # Require non-empty, even-length, lowercase hexadecimal text.
+            # bytes.fromhex() alone is too permissive because it accepts spaces.
+            if (
+                not addr
+                or len(addr) % 2 != 0
+                or any(char not in "0123456789abcdef" for char in addr)
+            ):
+                raise ValueError(
+                    f"Account address must use canonical lowercase hexadecimal: {addr!r}"
+                )
+
+            address_bytes = bytes.fromhex(addr)
+            if address_bytes in seen_addresses:
+                raise ValueError(
+                    f"Duplicate account address encoding: {addr}"
+                )
+            seen_addresses.add(address_bytes)
+
+            if (
+                acc.get('balance', 0) == 0
+                and acc.get('nonce', 0) == 0
+                and not acc.get('code')
+                and not acc.get('storage')
+            ):
                 continue
+
             trie.put(addr, json.dumps(acc, sort_keys=True))
+
         return trie.root_hash()
 
     DEFAULT_MINING_REWARD = DEFAULT_MINING_REWARD
