@@ -18,6 +18,7 @@ from minichain.block import Block
 from minichain.chain import Blockchain, validate_block_link_and_hash
 from minichain.network_config import MAX_TARGET
 from minichain.pow import calculate_hash
+from minichain.validators import ValidationStatus
 
 
 def _prev_block():
@@ -105,6 +106,17 @@ def test_link_rejects_timestamp_too_far_in_future():
     child = _self_consistent_block(1, prev.hash, MAX_TARGET, far_future)
     with pytest.raises(ValueError, match="too far in the future"):
         validate_block_link_and_hash(prev, child)
+
+
+def test_add_block_on_other_parent_is_failed_not_invalid():
+    chain = Blockchain()
+    tip = chain.last_block
+    fork = _self_consistent_block(1, "0" * 64, tip.target, tip.timestamp + 1)
+    assert chain.add_block(fork) == ValidationStatus.FAILED
+
+    forged = _self_consistent_block(1, tip.hash, tip.target, tip.timestamp + 1)
+    forged.hash = "f" * 64
+    assert chain.add_block(forged) == ValidationStatus.INVALID
 
 
 # ------------------------------------------------------------------
