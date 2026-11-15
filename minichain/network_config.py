@@ -17,3 +17,15 @@ MAX_CALL_DEPTH = 10  # Maximum depth for cross-contract calls
 MAX_TARGET = int("F" * 64, 16)
 MIN_TARGET = 1
 
+# Difficulty-adjustment bounds. These are consensus-critical: changing them
+# changes which blocks are accepted by the network.
+#
+# The EMA target may move by at most this percentage in one block. Without a
+# bound, a single unusually short timestamp interval can move the target by
+# several orders of magnitude.
+MAX_TARGET_CHANGE_PERCENT = 25
+#
+# Difficulty (1 / target) may not fall below this fraction of the genesis
+# difficulty. In target terms the easiest allowed target is
+# genesis_target * MIN_DIFFICULTY_FLOOR_DIVISOR, capped at MAX_TARGET.
+MIN_DIFFICULTY_FLOOR_DIVISOR = 4

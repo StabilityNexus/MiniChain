@@ -201,6 +201,24 @@ def test_genesis_zero_target_exits(tmpdir):
         Blockchain(genesis_path=path)
 
 
+def test_genesis_invalid_target_block_time_exits(tmpdir):
+    path = _write_genesis(tmpdir, overrides={"target_block_time": 0})
+    with pytest.raises(SystemExit):
+        Blockchain(genesis_path=path)
+
+
+def test_genesis_invalid_alpha_exits(tmpdir):
+    path = _write_genesis(tmpdir, overrides={"alpha": 1.5})
+    with pytest.raises(SystemExit):
+        Blockchain(genesis_path=path)
+
+
+def test_genesis_non_numeric_difficulty_config_exits(tmpdir):
+    path = _write_genesis(tmpdir, overrides={"alpha": "fast"})
+    with pytest.raises(SystemExit):
+        Blockchain(genesis_path=path)
+
+
 def test_genesis_hash_mismatch_exits(tmpdir):
     path = _write_genesis(tmpdir, overrides={"hash": "f" * 64})
     with pytest.raises(SystemExit):

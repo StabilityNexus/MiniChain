@@ -52,8 +52,19 @@ def save(blockchain: Blockchain, path: str = ".") -> None:
     with blockchain._lock:
         chain_data = [block.to_dict() for block in blockchain.chain]
         state_data = copy.deepcopy(blockchain.state.accounts)
+        difficulty_config = {
+            "target_block_time": blockchain.target_block_time,
+            "alpha": blockchain.alpha,
+        }
 
-    _save_snapshot_to_sqlite(db_path, {"chain": chain_data, "state": state_data})
+    _save_snapshot_to_sqlite(
+        db_path,
+        {
+            "chain": chain_data,
+            "state": state_data,
+            "difficulty_config": difficulty_config,
+        },
+    )
 
     logger.info(
         "Saved %d blocks and %d accounts to '%s'",
@@ -111,6 +122,22 @@ def load(path: str = ".") -> Blockchain:
     blockchain = Blockchain()
     blockchain.chain = blocks
     blockchain.state.accounts = normalized_accounts
+
+    difficulty_config = snapshot.get("difficulty_config")
+    if difficulty_config is not None:
+        if not isinstance(difficulty_config, dict):
+            raise ValueError(f"Invalid difficulty config in '{path}'")
+        try:
+            if "target_block_time" in difficulty_config:
+                blockchain.target_block_time = int(
+                    difficulty_config["target_block_time"]
+                )
+            if "alpha" in difficulty_config:
+                blockchain.alpha = float(difficulty_config["alpha"])
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"Invalid difficulty config in '{path}'") from exc
+
+    blockchain.recompute_difficulty_from_chain()
 
     logger.info(
         "Loaded %d blocks and %d accounts from '%s'",
@@ -212,6 +239,11 @@ def _save_snapshot_to_sqlite(db_path: str, snapshot: dict[str, Any]) -> None:
                 "INSERT INTO metadata (key, value) VALUES (?, ?)",
                 ("chain_length", str(len(snapshot["chain"]))),
             )
+            for key, value in snapshot.get("difficulty_config", {}).items():
+                conn.execute(
+                    "INSERT INTO metadata (key, value) VALUES (?, ?)",
+                    (key, json.dumps(value)),
+                )
     finally:
         conn.close()
 
@@ -235,6 +267,10 @@ def _load_snapshot_from_sqlite(db_path: str) -> dict[str, Any]:
             "SELECT value FROM metadata WHERE key = ?",
             ("chain_length",),
         ).fetchone()
+        difficulty_rows = conn.execute(
+            "SELECT key, value FROM metadata "
+            "WHERE key IN ('target_block_time', 'alpha')"
+        ).fetchall()
     except sqlite3.DatabaseError as exc:
         raise ValueError(invalid) from exc
     finally:
@@ -255,10 +291,17 @@ def _load_snapshot_from_sqlite(db_path: str) -> dict[str, Any]:
             row["address"]: json.loads(row["account_json"])
             for row in account_rows
         }
+        difficulty_config = {
+            row["key"]: json.loads(row["value"]) for row in difficulty_rows
+        }
     except json.JSONDecodeError as exc:
         raise ValueError(f"Invalid persisted JSON payload in '{db_path}'") from exc
 
-    return {"chain": chain, "state": state}
+    return {
+        "chain": chain,
+        "state": state,
+        "difficulty_config": difficulty_config,
+    }
 
 
 # ---------------------------------------------------------------------------

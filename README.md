@@ -184,6 +184,7 @@ We appreciate your feedback and contributions!
 
 ### Resources
 
+* See [docs/difficulty.md](docs/difficulty.md) for how per-block EMA difficulty adjustment, its bounds, and restart behavior work.
 * If you would like to learn blockchain technologies, we recommend reading this book (https://www.marabu.dev/blockchain-foundations.pdf) in addition to inspecting MiniChain's codebase.
 
 ---
