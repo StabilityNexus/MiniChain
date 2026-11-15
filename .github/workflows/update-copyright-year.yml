@@ -1,0 +1,52 @@
+name: Update Copyright Year
+
+on:
+  schedule:
+    # January 1 at 00:00 UTC
+    - cron: "0 0 1 1 *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  update-copyright:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Update README copyright year
+        run: |
+          python - <<'PY'
+          import re
+          from datetime import datetime, timezone
+          from pathlib import Path
+
+          start_year = 2025
+          year = datetime.now(timezone.utc).year
+          copyright = (
+              f"© {start_year} The Stable Order"
+              if year == start_year
+              else f"© {start_year}-{year} The Stable Order"
+          )
+
+          readme = Path("README.md")
+          content = readme.read_text(encoding="utf-8")
+          updated = re.sub(
+              r"© 2025(?:-\d{4})? The Stable Order",
+              copyright,
+              content,
+          )
+
+          if updated == content:
+              print("Copyright year is already current.")
+          else:
+              readme.write_text(updated, encoding="utf-8")
+              print(f"Updated README copyright to: {copyright}")
+          PY
+
+      - name: Commit changes
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: "docs: update copyright year"
+          file_pattern: README.md

@@ -188,4 +188,4 @@ We appreciate your feedback and contributions!
 
 ---
 
-© 2025 The Stable Order.
+© 2025-2026 The Stable Order.
