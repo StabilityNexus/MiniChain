@@ -256,6 +256,89 @@ class TestPersistence(unittest.TestCase):
         self.assertTrue(restored.add_block(block2))
         self.assertEqual(len(restored.chain), len(bc.chain) + 1)
 
+    def test_restart_preserves_difficulty_state(self):
+        bc = Blockchain()
+        for _ in range(2):
+            block = Block(
+                index=bc.last_block.index + 1,
+                previous_hash=bc.last_block.hash,
+                transactions=[],
+                target=bc.current_target,
+                timestamp=bc.last_block.timestamp + 1,
+                state_root=bc.state.state_root(),
+            )
+            mine_block(block)
+            self.assertTrue(bc.add_block(block))
+
+        self.assertNotEqual(bc.current_target, bc.chain[0].target)
+        self.assertNotEqual(bc.avg_block_time, bc.target_block_time)
+
+        save(bc, path=self.tmpdir)
+        restored = load(path=self.tmpdir)
+
+        self.assertEqual(restored.current_target, bc.current_target)
+        self.assertEqual(restored.avg_block_time, bc.avg_block_time)
+        self.assertEqual(restored.target_block_time, bc.target_block_time)
+        self.assertEqual(restored.alpha, bc.alpha)
+
+        # The next block must use the restored target, not the genesis target.
+        block = Block(
+            index=restored.last_block.index + 1,
+            previous_hash=restored.last_block.hash,
+            transactions=[],
+            target=restored.current_target,
+            timestamp=restored.last_block.timestamp + 1,
+            state_root=restored.state.state_root(),
+        )
+        mine_block(block)
+        self.assertTrue(restored.add_block(block))
+
+    def test_legacy_snapshot_recomputes_difficulty(self):
+        bc = Blockchain()
+        for _ in range(2):
+            block = Block(
+                index=bc.last_block.index + 1,
+                previous_hash=bc.last_block.hash,
+                transactions=[],
+                target=bc.current_target,
+                timestamp=bc.last_block.timestamp + 1,
+                state_root=bc.state.state_root(),
+            )
+            mine_block(block)
+            self.assertTrue(bc.add_block(block))
+
+        snapshot = {
+            "chain": [block.to_dict() for block in bc.chain],
+            "state": bc.state.accounts,
+        }
+        with open(os.path.join(self.tmpdir, LEGACY_FILE), "w", encoding="utf-8") as f:
+            json.dump(snapshot, f)
+
+        restored = load(path=self.tmpdir)
+        self.assertEqual(restored.current_target, bc.current_target)
+        self.assertEqual(restored.avg_block_time, bc.avg_block_time)
+
+    def test_persisted_difficulty_config_is_restored(self):
+        bc = Blockchain()
+        bc.target_block_time = 2000
+        bc.alpha = 0.2
+        save(bc, path=self.tmpdir)
+
+        restored = load(path=self.tmpdir)
+        self.assertEqual(restored.target_block_time, 2000)
+        self.assertEqual(restored.alpha, 0.2)
+
+    def test_invalid_persisted_difficulty_config_raises(self):
+        bc = Blockchain()
+        save(bc, path=self.tmpdir)
+        db_path = os.path.join(self.tmpdir, DB_FILE)
+        with sqlite3.connect(db_path) as conn:
+            conn.execute(
+                "UPDATE metadata SET value = '2' WHERE key = 'alpha'"
+            )
+        with self.assertRaises(ValueError):
+            load(path=self.tmpdir)
+
     def test_legacy_json_load_still_supported(self):
         bc = Blockchain()
         snapshot = {

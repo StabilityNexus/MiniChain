@@ -99,14 +99,31 @@ class Blockchain:
             sys.exit(1)
             
         self.current_target = int(raw_target, 16) if isinstance(raw_target, str) else int(raw_target)
-        from .network_config import MAX_TARGET
+        from .network_config import MAX_TARGET, MIN_DIFFICULTY_FLOOR_DIVISOR
         if not isinstance(self.current_target, int) or self.current_target <= 0 or self.current_target > MAX_TARGET:
             logger.error("Genesis target out of bounds: %s", self.current_target)
             sys.exit(1)
-        
-        self.target_block_time = config.get("target_block_time", 10000)
-        self.alpha = config.get("alpha", 0.1)
-        self.avg_block_time = self.target_block_time
+
+        # Difficulty can never fall below a fraction of the genesis difficulty.
+        # Store the easiest allowed target so every retarget can enforce it.
+        self.genesis_target = self.current_target
+        self.max_target_for_floor = min(
+            MAX_TARGET, self.genesis_target * MIN_DIFFICULTY_FLOOR_DIVISOR
+        )
+
+        try:
+            self.target_block_time = int(config.get("target_block_time", 10000))
+            self.alpha = float(config.get("alpha", 0.1))
+        except (TypeError, ValueError):
+            logger.error("target_block_time and alpha must be numbers")
+            sys.exit(1)
+        if self.target_block_time <= 0:
+            logger.error("target_block_time must be positive")
+            sys.exit(1)
+        if not 0 < self.alpha <= 1:
+            logger.error("alpha must be greater than 0 and at most 1")
+            sys.exit(1)
+        self.avg_block_time = float(self.target_block_time)
         
         genesis_block = Block(
             index=0,
@@ -159,14 +176,61 @@ class Blockchain:
 
     def _next_target(self, target, avg_block_time):
         """Advance the EMA target control after a block, returning the new value."""
-        from .network_config import MAX_TARGET, MIN_TARGET
-        
+        from .network_config import MAX_TARGET, MAX_TARGET_CHANGE_PERCENT, MIN_TARGET
+
         # Proportional difficulty adjustment:
         # If blocks are too slow (avg_block_time > target_block_time), the target INCREASES (easier)
         # If blocks are too fast (avg_block_time < target_block_time), the target DECREASES (harder)
-        new_target = (target * int(avg_block_time)) // self.target_block_time
-        
-        return max(MIN_TARGET, min(MAX_TARGET, new_target))
+        adjusted = (target * int(avg_block_time)) // self.target_block_time
+
+        # A single short or long interval must not move the target by orders of
+        # magnitude. Bound each step while still allowing the EMA to converge.
+        max_delta = max(1, (target * MAX_TARGET_CHANGE_PERCENT) // 100)
+        lower = max(MIN_TARGET, target - max_delta)
+        upper = min(MAX_TARGET, target + max_delta)
+        adjusted = min(upper, max(lower, adjusted))
+
+        # Keep difficulty above the chain's floor. max_target_for_floor is the
+        # easiest target allowed, so the final value must not exceed it.
+        return min(adjusted, self.max_target_for_floor)
+
+    def recompute_difficulty_from_chain(self):
+        """Rebuild the next target and EMA average from canonical chain data.
+
+        ``current_target`` and ``avg_block_time`` are derived state, not block
+        fields. Recomputing them from the persisted chain makes restart and
+        reorg independent of whichever genesis config happens to be present in
+        the working directory. Historical targets are not revalidated here, so
+        chains produced by older retarget rules still load.
+        """
+        from .network_config import MAX_TARGET, MIN_DIFFICULTY_FLOOR_DIVISOR
+
+        with self._lock:
+            if not self.chain or self.chain[0].index != 0:
+                raise ValueError("chain must start with a genesis block")
+            if self.target_block_time <= 0:
+                raise ValueError("target_block_time must be positive")
+            if not 0 < self.alpha <= 1:
+                raise ValueError("alpha must be greater than 0 and at most 1")
+
+            # The persisted genesis block is the authority for the difficulty
+            # baseline, not the local genesis.json used to construct self.
+            self.genesis_target = self.chain[0].target
+            self.max_target_for_floor = min(
+                MAX_TARGET, self.genesis_target * MIN_DIFFICULTY_FLOOR_DIVISOR
+            )
+
+            avg_block_time = float(self.target_block_time)
+            for previous, block in zip(self.chain, self.chain[1:]):
+                block_time = block.timestamp - previous.timestamp
+                avg_block_time = (
+                    self.alpha * block_time + (1 - self.alpha) * avg_block_time
+                )
+
+            self.avg_block_time = avg_block_time
+            self.current_target = self._next_target(
+                self.chain[-1].target, avg_block_time
+            )
 
     def _apply_block(self, prev_block, block, state, target, avg_block_time):
         """
