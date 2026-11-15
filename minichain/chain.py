@@ -181,7 +181,7 @@ class Blockchain:
             validate_block_link_and_hash(prev_block, block)
         except ValueError as exc:
             logger.warning("Block %s rejected: %s", block.index, exc)
-            status = ValidationStatus.INVALID if "hash" in str(exc) else ValidationStatus.FAILED
+            status = ValidationStatus.INVALID if str(exc).startswith(("invalid hash", "invalid Proof of Work")) else ValidationStatus.FAILED
             return status, target, avg_block_time
 
         if block.target != target:
